@@ -15,6 +15,7 @@ import {
   Play,
   Heart,
   ChevronRight,
+  Wand2,
 } from "lucide-react";
 import { db, getUserProfile, getApiConfig } from "../../db";
 import type { Character, ChatSession, DiaryEntry, ExtractedFact } from "../../types";
@@ -733,6 +734,24 @@ export function HomePage({ onNavigate, onOpenSession }: HomePageProps) {
                 </button>
               </section>
             )}
+
+            <button
+              type="button"
+              onClick={() => onNavigate("studio")}
+              title="Промпты для генерации изображений"
+              className="flex w-full items-center justify-between rounded-2xl border border-white/[0.07] bg-[#121620]/90 px-4 py-3 text-left text-xs transition-colors hover:border-white/[0.14] hover:bg-[#161b26]"
+            >
+              <span className="flex items-center gap-2">
+                <Wand2 size={16} className="text-accent" />
+                <span className="text-content-secondary">
+                  Промпт-студия: кадр для сцены
+                </span>
+              </span>
+              <span className="flex items-center gap-1 font-semibold text-accent">
+                <span>Открыть</span>
+                <ArrowRight size={13} />
+              </span>
+            </button>
 
             <button
               type="button"

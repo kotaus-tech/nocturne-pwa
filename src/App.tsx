@@ -18,6 +18,7 @@ import {
   ChevronRight,
   Moon,
   Settings,
+  Wand2,
 } from "lucide-react";
 import { BottomNav, type TabKey } from "./components/layout/BottomNav";
 import { HomePage } from "./components/home/HomePage";
@@ -28,6 +29,7 @@ import { PersonaPage } from "./components/profile/PersonaPage";
 import { MemoryPage } from "./components/knowledge/MemoryPage";
 import { DiaryPage } from "./components/knowledge/DiaryPage";
 import { LorePage } from "./components/knowledge/LorePage";
+import { PromptStudioPage } from "./components/prompt/PromptStudioPage";
 import { ChatView } from "./components/chat/ChatView";
 import { AmbientPlayer } from "./components/chat/AmbientPlayer";
 import { Avatar } from "./components/common/Avatar";
@@ -265,6 +267,22 @@ export default function App() {
 
               <button
                 type="button"
+                onClick={() => handleNavigate("studio")}
+                className={cn(
+                  "flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150",
+                  tab === "studio"
+                    ? "bg-accent/15 text-accent shadow-sm"
+                    : "text-content-secondary hover:bg-white/[0.04] hover:text-content"
+                )}
+              >
+                <div className="flex items-center gap-3">
+                  <Wand2 size={18} strokeWidth={1.7} />
+                  <span>Промпт-студия</span>
+                </div>
+              </button>
+
+              <button
+                type="button"
                 onClick={handleNavigateFavorites}
                 className={cn(
                   "flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150",
@@ -453,6 +471,7 @@ export default function App() {
                 {tab === "memory" && "Хранилище памяти и фактов"}
                 {tab === "diary" && "Тайные дневники персонажей"}
                 {tab === "lore" && "Миры и база знаний"}
+                {tab === "studio" && "Промпты для генерации изображений"}
               </span>
             </div>
 
@@ -527,6 +546,7 @@ export default function App() {
           {tab === "memory" && <MemoryPage />}
           {tab === "diary" && <DiaryPage />}
           {tab === "lore" && <LorePage />}
+          {tab === "studio" && <PromptStudioPage />}
         </main>
       </div>
 

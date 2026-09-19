@@ -16,6 +16,7 @@ export type TabKey =
   | "memory"
   | "diary"
   | "lore"
+  | "studio"
   | "backup";
 
 interface BottomNavProps {

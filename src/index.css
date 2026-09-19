@@ -1,0 +1,409 @@
+@import "tailwindcss";
+
+/* ==========================================================
+   NOCTURNE — Atmospheric Obsidian & Soft Glass Design System
+   Локальные системные шрифты и ультратёмная кинематографичная палитра.
+   ========================================================== */
+
+:root {
+  color-scheme: dark;
+
+  /* Typography */
+  --font-ui:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans",
+    Arial, sans-serif;
+  --font-reading:
+    Charter, "Bitstream Charter", "Sitka Text", Cambria,
+    Georgia, "Times New Roman", serif;
+
+  /* Obsidian Backgrounds */
+  --bg-base: #090b10;
+  --bg-recessed: #06080c;
+
+  /* Obsidian Surfaces (Слои глубины) */
+  --surface-1: #10141d;
+  --surface-2: #161b26;
+  --surface-3: #1e2433;
+  --surface-floating: #141824;
+
+  /* Typography Colors */
+  --text-primary: #f2f3f8;
+  --text-secondary: #9da6b9;
+  --text-muted: #677186;
+  --text-disabled: #474f60;
+  --text-placeholder: #5d677c;
+
+  /* Primary Accent (Лунный аметист / Индиго) */
+  --accent-primary: #8b5cf6;
+  --accent-hover: #9d74f7;
+  --accent-pressed: #7c3aed;
+  --on-accent: #ffffff;
+
+  /* Subtle Glass Borders */
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --border-control: rgba(255, 255, 255, 0.15);
+
+  /* Interaction States */
+  --state-hover: rgba(255, 255, 255, 0.05);
+  --state-pressed: rgba(255, 255, 255, 0.09);
+  --state-selected: rgba(139, 92, 246, 0.12);
+  --state-selected-border: rgba(139, 92, 246, 0.5);
+  --state-disabled: #11141c;
+  --focus-ring: #8b5cf6;
+
+  /* Semantic Feedback */
+  --success: #34d399;
+  --warning: #f59e0b;
+  --danger: #f87171;
+  --info: #38bdf8;
+
+  /* Relationship Scales */
+  --relationship-trust: #38bdf8;
+  --relationship-affection: #f472b6;
+  --relationship-closeness: #a78bfa;
+  --relationship-tension: #fbbf24;
+  --relationship-conflict: #f87171;
+
+  /* Reading Mode */
+  --text-action: #9da6b9;
+  --text-dialogue: #f8fafc;
+  --message-assistant: #141924;
+  --message-user: #221b33;
+
+  /* Avatars */
+  --avatar-background: #1c1a2d;
+  --avatar-foreground: #d8b4fe;
+
+  /* Radii Geometry */
+  --radius-small: 8px;
+  --radius-control: 12px;
+  --radius-card: 20px;
+  --radius-dialog: 24px;
+
+  /* Soft Glass Shadows */
+  --shadow-floating:
+    0 16px 40px -8px rgba(0, 0, 0, 0.6),
+    0 4px 12px -2px rgba(0, 0, 0, 0.4);
+  --shadow-dialog:
+    0 24px 70px -12px rgba(0, 0, 0, 0.8),
+    0 0 0 1px rgba(255, 255, 255, 0.08);
+  --shadow-glow: 0 0 24px -4px rgba(139, 92, 246, 0.25);
+
+  /* Motion */
+  --duration-fast: 150ms;
+  --duration-normal: 220ms;
+  --duration-panel: 280ms;
+  --ease-standard: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@theme inline {
+  --font-sans: var(--font-ui);
+  --font-serif: var(--font-reading);
+
+  --color-bg: var(--bg-base);
+  --color-recessed: var(--bg-recessed);
+  --color-surface: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+
+  --color-border: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+  --color-control-border: var(--border-control);
+
+  --color-content: var(--text-primary);
+  --color-content-secondary: var(--text-secondary);
+  --color-content-muted: var(--text-muted);
+
+  --color-accent: var(--accent-primary);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-pressed: var(--accent-pressed);
+  --color-on-accent: var(--on-accent);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+}
+
+@theme {
+  --color-neon-cyan: var(--accent-primary);
+  --color-neon-pink: var(--relationship-affection);
+  --color-neon-purple: var(--relationship-closeness);
+  --color-neon-green: var(--success);
+  --color-neon-amber: var(--warning);
+  --color-neon-red: var(--danger);
+}
+
+/* ==========================================================
+   Document and Viewport Shell
+   ========================================================== */
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: var(--bg-base);
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+}
+
+button:not(:disabled),
+select:not(:disabled),
+input[type="range"]:not(:disabled) {
+  cursor: pointer;
+}
+
+button:disabled,
+input:disabled,
+textarea:disabled,
+select:disabled {
+  cursor: not-allowed;
+}
+
+::selection {
+  color: #ffffff;
+  background: rgba(139, 92, 246, 0.45);
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+input[type="range"] {
+  accent-color: var(--accent-primary);
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent-primary);
+}
+
+/* ==========================================================
+   Refined Scrollbars
+   ========================================================== */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+*::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ==========================================================
+   Safe Area Utilities
+   ========================================================== */
+
+.safe-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.pt-safe-top {
+  padding-top: max(0.75rem, env(safe-area-inset-top, 0px));
+}
+
+.pb-safe-bottom {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
+}
+
+/* ==========================================================
+   Shared Form Controls & Inputs
+   ========================================================== */
+
+.input-field {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-control);
+  background-color: var(--surface-2);
+  padding: 11px 14px;
+  color: var(--text-primary);
+  font-size: 15px;
+  line-height: 1.5;
+  caret-color: var(--accent-primary);
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    background-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard);
+}
+
+.input-field::placeholder {
+  color: var(--text-placeholder);
+  opacity: 1;
+}
+
+.input-field:focus {
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 1px var(--focus-ring), 0 0 16px -2px rgba(139, 92, 246, 0.25);
+  background-color: var(--surface-3);
+}
+
+.input-field:focus-visible {
+  outline: none;
+}
+
+.input-field:disabled {
+  border-color: var(--border-subtle);
+  background-color: var(--state-disabled);
+  color: var(--text-disabled);
+}
+
+.input-field[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: var(--radius-control);
+  color: var(--text-secondary);
+  transition:
+    color var(--duration-fast) var(--ease-standard),
+    background-color var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard);
+}
+
+.icon-btn:active:not(:disabled) {
+  background-color: var(--state-pressed);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .icon-btn:hover:not(:disabled) {
+    background-color: var(--state-hover);
+    color: var(--text-primary);
+  }
+
+  .input-field:hover:not(:disabled):not(:focus) {
+    border-color: rgba(255, 255, 255, 0.25);
+  }
+}
+
+/* ==========================================================
+   Roleplay Reading & Dialogue Styles
+   ========================================================== */
+
+.rp-action {
+  color: var(--text-action);
+  font-style: italic;
+  font-family: var(--font-reading);
+}
+
+.rp-dialogue {
+  color: var(--text-dialogue);
+  font-weight: 500;
+}
+
+.rp-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  line-height: 1.75;
+}
+
+.novel-font {
+  font-family: var(--font-reading);
+}
+
+/* ==========================================================
+   Animations & Polish
+   ========================================================== */
+
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--surface-1) 25%,
+    var(--surface-3) 50%,
+    var(--surface-1) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+@keyframes typing-dot {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
+.typing-dot {
+  animation: typing-dot 1s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer,
+  .typing-dot,
+  .animate-spin,
+  .animate-pulse,
+  .animate-bounce {
+    animation: none !important;
+  }
+
+  .input-field,
+  .icon-btn {
+    transition: none;
+  }
+}

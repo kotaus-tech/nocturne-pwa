@@ -1,0 +1,349 @@
+import { newId } from "../utils/id";
+import type { ApiConfig, Character } from "../types";
+import { DEFAULT_STATS } from "../types";
+import { resolveEndpoints } from "./apiClient";
+
+export interface TagOption {
+  id: string;
+  name: string;
+  desc: string;
+}
+
+export interface TagCategory {
+  id: string;
+  title: string;
+  icon: string;
+  tags: TagOption[];
+}
+
+export const TAG_CATEGORIES: TagCategory[] = [
+  {
+    id: "archetype",
+    title: "Характер и Психотип",
+    icon: "🎭",
+    tags: [
+      { id: "tsundere", name: "Цундере", desc: "Сначала дерзит и язвит, но в глубине души тает и заботится" },
+      { id: "yandere", name: "Яндере", desc: "Одержимая любовь, ревность до безумия, никого к тебе не подпустит" },
+      { id: "kuudere", name: "Кудере", desc: "«Снежная королева»: сдержанная, говорит спокойно, эмоции под замком" },
+      { id: "dandere", name: "Дандере", desc: "Застенчивая скромница: краснеет от взглядов, говорит тихо и неловко" },
+      { id: "femme_fatale", name: "Роковая личность", desc: "Уверенная в себе, соблазнительная, опасный шарм" },
+      { id: "kind_soul", name: "Добрая душа", desc: "Искренний, открытый, немного наивный и очень заботливый" },
+      { id: "caregiver", name: "Опекун / Защитник", desc: "Окружает теплом, оберегает и заботится, как о самом дорогом" },
+      { id: "trickster", name: "Трикстер / Интриган", desc: "Хитрый провокатор: обожает подкалывать, спорить и манипулировать" },
+      { id: "antihero", name: "Антигерой", desc: "Циничный, дерзкий, со своим моральным кодексом" },
+      { id: "stoic", name: "Стоик / Страж", desc: "Молчаливая верность, надежная опора, каменная скала" },
+      { id: "chaotic", name: "Хаос / Бунтарь", desc: "Взрывной характер, адреналин 24/7, живет без тормозов" },
+      { id: "aristocrat", name: "Аристократ / Гордец", desc: "Высокомерный, утонченный, с чувством превосходства" },
+    ],
+  },
+  {
+    id: "speech_style",
+    title: "Стиль речи и Общение",
+    icon: "💬",
+    tags: [
+      { id: "casual_speech", name: "Разговорный / Бытовой", desc: "Естественная речь обычного человека, простые слова, живые междометия, паузы, без пафоса" },
+      { id: "street_slang", name: "Уличный / Дерзкий сленг", desc: "Уличный жаргон, неформальные обороты, резкие фразы, пацанский стиль" },
+      { id: "emotional_profanity", name: "Эмоциональный мат", desc: "Органично матерится при сильных эмоциях (гнев, шок, страсть, удивление) без цензуры" },
+      { id: "zoomer_slang", name: "Зумерский / Интернет-сленг", desc: "Вайб, кринж, база, сокращения, стиль быстрых переписок в Telegram" },
+      { id: "dry_concise", name: "Сухой и Лаконичный", desc: "Короткие рубленые фразы, общение строго по делу, минимум лишних слов" },
+      { id: "sarcastic_wit", name: "Саркастичный / Подколы", desc: "Постоянная едкая ирония, насмешки, подначки и колкие замечания" },
+      { id: "hesitant_shy", name: "Неуверенный / Запинающийся", desc: "Многоточия, оговорки, заминки, поиск слов, смущение в голосе" },
+      { id: "blunt_nofilter", name: "Грубый / Без фильтров", desc: "Говорит в лоб всю правду, прямолинейность, плевать на нормы приличия" },
+      { id: "literary_speech", name: "Литературный / Книжный", desc: "Сложные витиеватые конструкции, возвышенный слог классических романов" },
+    ],
+  },
+  {
+    id: "setting",
+    title: "Сеттинг и Мир",
+    icon: "🌆",
+    tags: [
+      { id: "modern", name: "Современность", desc: "Повседневная городская жизнь, улицы, квартиры" },
+      { id: "student", name: "Студенчество", desc: "Университет, общежитие, пары и юность" },
+      { id: "cyberpunk", name: "Киберпанк", desc: "Неоновые мегаполисы, импланты и мегакорпорации" },
+      { id: "mafia", name: "Криминал и Мафия", desc: "Подпольные клубы, синдикаты, опасные сделки" },
+      { id: "dark_fantasy", name: "Тёмное фэнтези", desc: "Суровый мир магии, тайны, древние опасности" },
+      { id: "high_fantasy", name: "Высокое фэнтези", desc: "Магия, эльфы, королевства и замки" },
+      { id: "urban_fantasy", name: "Городское фэнтези", desc: "Скрытые магические кланы в современном городе" },
+      { id: "magic_academy", name: "Магическая академия", desc: "Обучение заклинаниям, турниры и дуэли" },
+      { id: "postapoc", name: "Постапокалипсис", desc: "Выживание на руинах цивилизации, пустоши" },
+      { id: "scifi", name: "Космос и Sci-Fi", desc: "Звездолеты, далекие планеты, колонии" },
+      { id: "androids", name: "Андроиды и ИИ", desc: "Синтетики, кибер-эмоции, восстание машин" },
+      { id: "noir", name: "Нуар и Детектив", desc: "Дождливые ночи, расследования, сигаретный дым" },
+      { id: "victorian", name: "Викторианская эпоха", desc: "Корсеты, старинные поместья, балы и тайны" },
+      { id: "east", name: "Древний Восток", desc: "Императорский двор, шелка, дворцовые интриги" },
+      { id: "isekai", name: "Исекай", desc: "Попаданец / перерождение в другом мире" },
+      { id: "mystic", name: "Лавкрафт и Мистика", desc: "Древние культы, потусторонний ужас и тайны" },
+    ],
+  },
+  {
+    id: "dynamic",
+    title: "Стартовая динамика",
+    icon: "⚡",
+    tags: [
+      { id: "enemies_to_lovers", name: "От врагов к любви", desc: "Ненависть и соперничество, переходящие в страсть" },
+      { id: "rivals", name: "Соперники", desc: "Вечная конкуренция и азарт борьбы за первенство" },
+      { id: "hunter_prey", name: "Охотник и Добыча", desc: "Погоня, выслеживание, опасная игра в кошки-мышки" },
+      { id: "captor_prisoner", name: "Пленник и Тюремщик", desc: "Заключение, власть, подчинение и зависимость" },
+      { id: "debtor", name: "Должник и Кредитор", desc: "Финансовая или моральная кабала" },
+      { id: "boss_subordinate", name: "Босс и Подчинённый", desc: "Служебная субординация и скрытое притяжение" },
+      { id: "master_servant", name: "Господин и Слуга", desc: "Служение, безоговорочная преданность и повиновение" },
+      { id: "bodyguard_vip", name: "Телохранитель и VIP", desc: "Защита ценой жизни, постоянная близость" },
+      { id: "mentor_student", name: "Наставник и Ученик", desc: "Опыт против импульсивности, передача знаний" },
+      { id: "childhood_friends", name: "Друзья детства", desc: "Годы совместного прошлого, неловкость взросления" },
+      { id: "strangers", name: "Случайные незнакомцы", desc: "Неожиданная встреча при необычных обстоятельствах" },
+      { id: "roommates", name: "Соседи по квартире", desc: "Вынужденное сожительство в одном пространстве" },
+      { id: "fake_dating", name: "Фиктивные отношения", desc: "Притворство парой ради выгоды или спасения" },
+      { id: "arranged_marriage", name: "Брак по расчёту", desc: "Свадьба по долгу, холод, который постепенно тает" },
+      { id: "secret_admirer", name: "Тайный поклонник", desc: "Скрытые чувства, тайные знаки и наблюдение" },
+    ],
+  },
+  {
+    id: "tone",
+    title: "Атмосфера и Тон",
+    icon: "🎨",
+    tags: [
+      { id: "wholesome", name: "Уют и Теплота", desc: "Комфорт, забота, романтическая милота и нежность" },
+      { id: "angst", name: "Острая драма", desc: "Ревность, обиды, эмоциональные качели и накал" },
+      { id: "slowburn", name: "Медленный темп (Slow Burn)", desc: "Постепенное, глубокое и детальное сближение" },
+      { id: "melancholy", name: "Стекло и Меланхолия", desc: "Эмоциональный надрыв, боль прошлого, щемящая грусть" },
+      { id: "humor", name: "Юмор и Ирония", desc: "Лёгкие подколы, сарказм, забавные неловкости" },
+      { id: "mind_games", name: "Психологические игры", desc: "Манипуляции, проверки на прочность, чтение мыслей" },
+      { id: "grim", name: "Мрачная атмосфера", desc: "Тяжелое гнетущее окружение, напряжение" },
+      { id: "adrenaline", name: "Опасность и Адреналин", desc: "Постоянный риск для жизни, бешеный пульс" },
+    ],
+  },
+  {
+    id: "style",
+    title: "Профессия и Стиль",
+    icon: "👗",
+    tags: [
+      { id: "mercenary", name: "Наёмник / Киллер", desc: "Опасная работа, оружие, скрытность" },
+      { id: "hacker", name: "Хакер / Кодер", desc: "Киберпространство, терминалы, скрытность" },
+      { id: "detective", name: "Детектив / Следователь", desc: "Интуиция, допросы, поиск улик" },
+      { id: "scientist", name: "Врач / Учёный", desc: "Стерильность, острый ум, эксперименты" },
+      { id: "rockstar", name: "Рок-музыкант / Басист", desc: "Сцена, драйв, кожаная куртка, бунтарство" },
+      { id: "barista", name: "Бармен / Бариста", desc: "Слушает секреты, смешивает напитки, уют" },
+      { id: "artist", name: "Художник / Дизайнер", desc: "Творческий хаос, тонкое чувство эстетики" },
+      { id: "gamer", name: "Геймер / Стример", desc: "Наушники, ночные стримы, азарт" },
+      { id: "occultist", name: "Оккультист / Жрец", desc: "Свечи, руны, контакт с потусторонним" },
+      { id: "goth", name: "Гот / Альтернативщик", desc: "Темная эстетика, шипы, меланхолия" },
+      { id: "vampire", name: "Вампир / Оборотень", desc: "Сверхъестественная сущность, жажда, клыки" },
+      { id: "aristocratic_style", name: "Аристократичный стиль", desc: "Безупречные манеры, роскошь, элегантность" },
+      { id: "military", name: "Милитари / В форме", desc: "Дисциплина, тактика, строгий стиль" },
+      { id: "tattooed", name: "Татуированный бунтарь", desc: "Кожа, чернила, протест против правил" },
+    ],
+  },
+  {
+    id: "nsfw",
+    title: "Взрослые темы (18+)",
+    icon: "🔞",
+    tags: [
+      { id: "spicy_general", name: "Высокая страсть (18+)", desc: "Чувственность, физическое притяжение, огонь" },
+      { id: "bdsm", name: "Властные игры (BDSM)", desc: "Контроль, связывание, власть и подчинение" },
+      { id: "dom_sub", name: "Доминирование / Саб", desc: "Чёткое разделение ролей ведущего и ведомого" },
+      { id: "seduction", name: "Искушение и Соблазн", desc: "Провокации, откровенные намеки, флирт" },
+      { id: "taboo", name: "Запретная связь (Табу)", desc: "Отношения, которые общество осуждает" },
+      { id: "dirty_talk", name: "Откровенный флирт", desc: "Раскрепощенные разговоры без стеснения" },
+      { id: "rough", name: "Грубость и Напор", desc: "Дикая, собственническая и необузданная страсть" },
+      { id: "tender_18", name: "Нежность 18+", desc: "Медленная, интимная и трепетная чувственность" },
+      { id: "office_affair", name: "Служебный роман 18+", desc: "Тайные интимные встречи на работе или учебе" },
+      { id: "tactile_tension", name: "Тактильное напряжение", desc: "Язык тела, частые касания, игра взглядов" },
+    ],
+  },
+];
+
+function safeParseJson(raw: string): any {
+  let text = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+  const firstBrace = text.indexOf("{");
+  if (firstBrace === -1) {
+    throw new Error("Ответ модели не содержит JSON-структуры.");
+  }
+  text = text.slice(firstBrace);
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    let repaired = text;
+    const quoteCount = (repaired.match(/"/g) || []).length;
+    if (quoteCount % 2 !== 0) repaired += '"';
+
+    const openBrackets = (repaired.match(/\[/g) || []).length - (repaired.match(/\]/g) || []).length;
+    for (let i = 0; i < openBrackets; i++) repaired += "]";
+
+    const openBraces = (repaired.match(/\{/g) || []).length - (repaired.match(/\}/g) || []).length;
+    for (let i = 0; i < openBraces; i++) repaired += "}";
+
+    try {
+      return JSON.parse(repaired);
+    } catch {
+      throw new Error("Модель вернула некорректный JSON. Попробуйте еще раз.");
+    }
+  }
+}
+
+export async function generateAiCharacter(
+  apiConfig: ApiConfig,
+  gender: "female" | "male" | "any",
+  selectedTags: string[],
+  customIdea: string
+): Promise<Partial<Character>> {
+  const genderPrompt =
+    gender === "female"
+      ? "Пол персонажа: Девушка (женский)."
+      : gender === "male"
+      ? "Пол персонажа: Парень (мужской)."
+      : "Пол персонажа: На усмотрение модели (девушка или парень).";
+
+  const tagsList = selectedTags.length > 0 ? selectedTags.join(", ") : "Повседневность, Разговорный / Бытовой";
+
+  const systemInstruction = `Ты — ведущий нарративный дизайнер и специалист по живому диалоговому AI RolePlay.
+Твоя задача — создать глубокого, психологически достоверного и ёмкого персонажа для ролевой игры на русском языке.
+
+ВХОДНЫЕ ПАРАМЕТРЫ:
+- ${genderPrompt}
+- Выбранные теги, стиль речи и сеттинг: ${tagsList}
+${customIdea.trim() ? `- Особая авторская задумка: "${customIdea.trim()}"` : ""}
+
+ПРАВИЛА СМЫСЛОВОЙ ПЛОТНОСТИ И РЕЧИ (КРИТИЧЕСКИ ВАЖНО):
+1. ПИШИ ЁМКО И КОНЦЕНТРИРОВАННО (высокая информационная плотность, без воды). Не растягивай текст на километры — каждое предложение должно нести характер и деталь.
+2. Реплики персонажа (включая firstMessage) должны звучать как речь ЖИВОГО ЧЕЛОВЕКА.
+3. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ искусственные высокопарные клише и поэзия XIX века (вроде «мой взор затуманился», «сердце затрепетало»), если прямо не выбран тег «Литературный / Книжный».
+
+ТРЕБОВАНИЯ К ПОЛЯМ (СОБЛЮДАЙ ОБЪЁМ):
+- name: звучное, естественное имя или прозвище.
+- tagline: 1-3 слова сути («Дерзкая соседка», «Циничный напарник»).
+- description: 2-3 плотных предложения (рост, глаза, волосы, одежда, особые приметы).
+- personality: 3-4 предложения (психотип, привычки, слабости, триггеры, отношение к людям).
+- scenario: 2-3 предложения (где и как они оказались вместе в момент старта).
+- systemPrompt: 2-3 строгие директивы для ИИ (манера речи, сленг, реакция на эмоции).
+- firstMessage: 2-4 предложения опенинга (*действия в звёздочках*, прямая речь через тире).
+- lorebook: ровно 2 коротких ключевых факта или воспоминания (по 1-2 предложения).
+- initialStats: стартовые шкалы отношений (0-100) и статус.
+
+ОТВЕТ ДОЛЖЕН БЫТЬ СТРОГО В ФОРМАТЕ ВАЛИДНОГО JSON:
+{
+  "name": "Имя",
+  "tagline": "Краткий статус",
+  "description": "Описание внешности (2-3 предложения)",
+  "personality": "Характер и психотип (3-4 предложения)",
+  "scenario": "Сценарий старта (2-3 предложения)",
+  "systemPrompt": "Инструкции стиля общения (2-3 директивы)",
+  "firstMessage": "*Действие...* — Живая реплика.",
+  "initialStats": {
+    "trust": 30,
+    "affection": 20,
+    "closeness": 15,
+    "tension": 25,
+    "conflict": 0,
+    "statusTitle": "Первая встреча"
+  },
+  "lorebook": [
+    { "keys": ["ключ1", "ключ2"], "content": "Короткий факт или тайна персонажа (1-2 предложения)", "isActive": true },
+    { "keys": ["ключ3", "ключ4"], "content": "Второй ключевой факт (1-2 предложения)", "isActive": true }
+  ]
+}`;
+
+  let rawJson = "";
+
+  if (apiConfig.mode === "gemini") {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${apiConfig.model || "gemini-2.0-flash"}:generateContent?key=${apiConfig.apiKey}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: systemInstruction }] }],
+        generationConfig: {
+          temperature: 0.85,
+          maxOutputTokens: 2500,
+          responseMimeType: "application/json",
+        },
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Gemini API Error: ${err}`);
+    }
+    const data = await res.json();
+    rawJson = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  } else {
+    const { isOllama, primaryUrl, fallbackUrl } = resolveEndpoints(apiConfig.baseUrl);
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (apiConfig.apiKey && apiConfig.apiKey.trim().length > 0) {
+      headers["Authorization"] = `Bearer ${apiConfig.apiKey.trim()}`;
+    }
+
+    const bodyPayload: Record<string, any> = {
+      model: apiConfig.model || (isOllama ? "qwen3.5:9b-q8_0" : "openai/gpt-4o-mini"),
+      messages: [{ role: "user", content: systemInstruction }],
+      temperature: 0.85,
+      stream: false,
+    };
+
+    if (isOllama) {
+      bodyPayload.think = false;
+      bodyPayload.format = "json";
+      bodyPayload.options = {
+        temperature: 0.85,
+        num_ctx: apiConfig.localNumCtx ?? 8192,
+      };
+    } else {
+      bodyPayload.max_tokens = 2500;
+      bodyPayload.response_format = { type: "json_object" };
+    }
+
+    let res = await fetch(primaryUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(bodyPayload),
+    });
+
+    if (!res.ok && res.status === 404 && fallbackUrl) {
+      const fallbackRes = await fetch(fallbackUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(bodyPayload),
+      });
+      if (fallbackRes.ok) res = fallbackRes;
+    }
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`API Error: ${err}`);
+    }
+    const data = await res.json();
+    rawJson = data.choices?.[0]?.message?.content ?? data.message?.content ?? "";
+  }
+
+  const parsed = safeParseJson(rawJson);
+
+  const settingTags = TAG_CATEGORIES.find((c) => c.id === "setting")?.tags.map((t) => t.name) ?? [];
+  const detectedGenre = selectedTags.find((tag) => settingTags.includes(tag)) || "";
+
+  return {
+    name: parsed.name || "Безымянный",
+    tagline: parsed.tagline || "",
+    description: parsed.description || "",
+    personality: parsed.personality || "",
+    scenario: parsed.scenario || "",
+    systemPrompt: parsed.systemPrompt || "",
+    firstMessage: parsed.firstMessage || "*Смотрит на тебя в тишине...*",
+    tags: selectedTags,
+    genre: detectedGenre,
+    originTag: "ОРИГИНАЛЬНЫЙ ПЕРСОНАЖ",
+    initialStats: {
+      ...DEFAULT_STATS,
+      ...(parsed.initialStats || {}),
+    },
+    lorebook: Array.isArray(parsed.lorebook)
+      ? parsed.lorebook.map((l: any) => ({
+          id: newId(),
+          keys: Array.isArray(l.keys) ? l.keys : ["память"],
+          content: l.content || "",
+          isActive: true,
+        }))
+      : [],
+  };
+}

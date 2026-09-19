@@ -198,14 +198,18 @@ export function CharactersPage({
     setEditing(null);
   };
 
-  /** Одиночный режим генератора, открытого из библиотеки: просто сохраняем героя. */
+  /** Одиночный режим генератора из библиотеки: сохраняем и показываем карточку. */
   const handleApplySingle = async (generated: Partial<Character>) => {
-    await persistCharacter({
+    const saved = {
       ...emptyCharacter(),
       ...generated,
       id: newId(),
       createdAt: Date.now(),
-    } as Character);
+    } as Character;
+
+    await persistCharacter(saved);
+    // Сразу показываем, кого придумала модель: оттуда видно и «Редактировать».
+    setViewing(saved);
   };
 
   /**

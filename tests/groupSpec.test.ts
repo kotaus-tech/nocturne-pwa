@@ -4,6 +4,7 @@ import {
   db,
   sanitizeAbsentReasons,
   sanitizeActiveCharacterIds,
+  sanitizeCharacter,
   sanitizeSceneRelations,
 } from "../src/db";
 import {
@@ -15,10 +16,12 @@ import { buildRoutingPrompt, parseRoutingAnswer } from "../src/services/groupRou
 import {
   GROUP_SIZE_MAX,
   GROUP_SIZE_MIN,
+  ModelJsonError,
   buildGroupInstruction,
   clampGroupSize,
   normalizeGeneratedCharacter,
   parseGeneratedGroup,
+  parseModelJson,
 } from "../src/services/characterGenerator";
 import { createGroupSession } from "../src/utils/sessionActions";
 import { DEFAULT_STATS } from "../src/types";
@@ -294,6 +297,60 @@ describe("групповая сцена: генератор группы", () =>
     ]);
   });
 
+  it("достаёт JSON из markdown-обёртки и болтовни вокруг", () => {
+    const parsed = parseModelJson(
+      'Конечно! Вот сцена:\n```json\n{"opening": "Ночь.", "characters": []}\n```\nУдачи!'
+    );
+
+    expect(parsed.opening).toBe("Ночь.");
+  });
+
+  it("чинит оборванный ответ модели", () => {
+    const parsed = parseModelJson(
+      '{"characters": [{"name": "Ая", "firstMessage": "— Привет.'
+    );
+
+    expect(parsed.characters[0].name).toBe("Ая");
+  });
+
+  it("объясняет прозу вместо JSON и пустой ответ", () => {
+    expect(() => parseModelJson("Держи, вот три героя: Ая, Рин и Кай.")).toThrow(
+      ModelJsonError
+    );
+    expect(() => parseModelJson("Держи героев")).toThrow(/текстом вместо JSON/);
+    expect(() => parseModelJson("   ")).toThrow(/пустой ответ/);
+  });
+
+  it("принимает список героев под другими именами и словарём", () => {
+    const byKey = parseGeneratedGroup(
+      { heroes: [{ name: "Ая" }, { name: "Рин" }], opening: "Сцена." },
+      []
+    );
+    expect(byKey.characters.map((item) => item.name)).toEqual(["Ая", "Рин"]);
+
+    const byDict = parseGeneratedGroup(
+      {
+        characters: {
+          "Ая": { name: "Ая", personality: "Тихая" },
+          "Рин": { name: "Рин", personality: "Дерзкая" },
+        },
+      },
+      []
+    );
+    expect(byDict.characters.map((item) => item.name)).toEqual(["Ая", "Рин"]);
+  });
+
+  it("один герой объектом в корне ответа тоже попадает в список", () => {
+    const group = parseGeneratedGroup(
+      { name: "Ая", firstMessage: "— Я здесь." },
+      []
+    );
+
+    expect(group.characters).toHaveLength(1);
+    expect(group.characters[0].name).toBe("Ая");
+    expect(group.opening).toBe("— Я здесь.");
+  });
+
   it("без опенинга сцена открывается репликой первого героя", () => {
     const group = parseGeneratedGroup(
       [{ name: "Ая", firstMessage: "— Я первая." }],
@@ -353,6 +410,55 @@ describe("групповая сцена: создание ветки", () => {
 
     expect(session.characterIds).toEqual(["c-2"]);
     expect(Object.keys(session.participantStats ?? {})).toEqual(["c-2"]);
+  });
+
+  it("из ответа модели получается готовая к игре ветка", async () => {
+    // Такой ответ ждём от модели в режиме «Группа» — проверяем весь путь:
+    // разбор → карточки → сохранение → ветка с общим опенингом.
+    const raw = `Вот сцена:
+\`\`\`json
+{
+  "opening": "*Ночь, крыша.* — Все трое здесь.",
+  "characters": [
+    { "name": "Ая", "tagline": "Тихая", "personality": "Спокойная.", "firstMessage": "— Привет." },
+    { "name": "Рин", "tagline": "Дерзкая", "personality": "Резкая.", "firstMessage": "— Ну и холод." },
+    { "name": "Кай", "tagline": "Скептик", "personality": "Ироничный.", "firstMessage": "— Опять вы." }
+  ]
+}
+\`\`\``;
+
+    const group = parseGeneratedGroup(parseModelJson(raw), []);
+    expect(group.characters).toHaveLength(3);
+
+    const saved = group.characters.map((draft, index) =>
+      sanitizeCharacter({
+        ...character(`m-${index}`, draft.name || "Безымянный"),
+        ...draft,
+        id: `m-${index}`,
+        initialStats: draft.initialStats ?? { ...DEFAULT_STATS },
+        lorebook: draft.lorebook ?? [],
+        createdAt: index + 1,
+      } as Character)
+    );
+
+    await db.characters.bulkPut(saved);
+
+    const [leader, ...rest] = saved;
+    const session = await createGroupSession(leader, rest, {
+      opening: group.opening,
+    });
+
+    expect(session.isGroup).toBe(true);
+    expect(session.characterIds).toEqual(["m-1", "m-2"]);
+
+    const messages = await db.messages
+      .where("sessionId")
+      .equals(session.id)
+      .toArray();
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].swipes[0]).toBe("*Ночь, крыша.* — Все трое здесь.");
+    expect((await db.characters.count())).toBe(3);
   });
 
   it("персонажи сцены лежат в базе и находятся по составу ветки", async () => {

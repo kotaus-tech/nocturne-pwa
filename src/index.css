@@ -284,6 +284,15 @@ input[type="radio"] {
   padding-right: 38px;
 }
 
+/* Компактное поле для тесных строк (связи в панели режиссёра): свой padding и
+   кегль, иначе фиксированная высота обрезает текст по вертикали. */
+.input-field--compact {
+  min-height: 36px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .input-field::placeholder {
   color: var(--text-placeholder);
   opacity: 1;

@@ -916,7 +916,7 @@ export function DirectorPanel({
                               )
                             }
                             aria-label="Кто думает"
-                            className="input-field h-9 min-w-0 flex-1 text-[11px]"
+                            className="input-field input-field--compact min-w-0 flex-1"
                           >
                             {castOptions.map((option) => (
                               <option key={option.id} value={option.id}>
@@ -946,7 +946,7 @@ export function DirectorPanel({
                               )
                             }
                             aria-label="О ком"
-                            className="input-field h-9 min-w-0 flex-1 text-[11px]"
+                            className="input-field input-field--compact min-w-0 flex-1"
                           >
                             <option value="">вся группа</option>
                             {castOptions.map((option) => (
@@ -972,7 +972,7 @@ export function DirectorPanel({
                             }
                             placeholder="считает его баловнем, но тайно переживает"
                             aria-label="Отношение"
-                            className="input-field h-9 min-w-0 flex-1 text-[11px]"
+                            className="input-field input-field--compact min-w-0 flex-1"
                           />
 
                           <button

@@ -34,6 +34,7 @@ import { ChatView } from "./components/chat/ChatView";
 import { AmbientPlayer } from "./components/chat/AmbientPlayer";
 import { Avatar } from "./components/common/Avatar";
 import { PwaBanners } from "./components/common/PwaBanners";
+import { PersonaSwitcher } from "./components/common/PersonaSwitcher";
 import { db, ensurePersonas, getUserProfile } from "./db";
 import { ensureSeedData } from "./seed";
 import { initPwa } from "./services/pwa";
@@ -407,6 +408,12 @@ export default function App() {
         {/* Нижний блок: плеер, кнопка настроек и профиль */}
         <div className="p-3 border-t border-white/[0.07] space-y-2.5">
           <AmbientPlayer variant="compact" />
+
+          {/* Быстрое переключение персоны, не уходя из раздела */}
+          <PersonaSwitcher
+            align="top"
+            onOpenManager={() => handleNavigate("persona")}
+          />
 
           {/* Прямая кнопка настроек системы */}
           <button

@@ -47,6 +47,7 @@ import { MessageBubble } from "./MessageBubble";
 import { NovelReader } from "./NovelReader";
 import { CharacterProfileModal } from "./CharacterProfileModal";
 import { ConfirmDialog } from "../common/ConfirmDialog";
+import { PersonaSwitcher } from "../common/PersonaSwitcher";
 import { PromptInspectorModal } from "./PromptInspectorModal";
 import {
   RelationshipToast,
@@ -1265,16 +1266,17 @@ export function ChatView({
                 <p className="truncate text-sm font-bold text-zinc-100 group-hover:text-accent sm:text-base">
                   {character.name}
                 </p>
-                {characterTagline && (
-                  <p className="truncate text-xs text-content-muted">
-                    {characterTagline}
-                  </p>
-                )}
+                <p className="truncate text-xs text-content-muted">
+                  {characterTagline ? `${characterTagline} · ` : ""}
+                  вы — {userProfile?.name || "Странник"}
+                </p>
               </div>
             </button>
           </div>
 
           <div className="flex items-center gap-2.5">
+            <PersonaSwitcher variant="compact" className="hidden sm:block" />
+
             <StatsBadge stats={stats} onClick={() => setStatsOpen(true)} />
 
             <button

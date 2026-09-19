@@ -31,8 +31,10 @@ import { LorePage } from "./components/knowledge/LorePage";
 import { ChatView } from "./components/chat/ChatView";
 import { AmbientPlayer } from "./components/chat/AmbientPlayer";
 import { Avatar } from "./components/common/Avatar";
+import { PwaBanners } from "./components/common/PwaBanners";
 import { db, getUserProfile } from "./db";
 import { ensureSeedData } from "./seed";
+import { initPwa } from "./services/pwa";
 import type { UserProfile } from "./types";
 import { cn } from "./utils/cn";
 
@@ -90,9 +92,8 @@ export default function App() {
         setReady(true);
       });
 
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(() => {});
-    }
+    const disposePwa = initPwa();
+    return disposePwa;
   }, []);
 
   const handleNavigate = (newTab: TabKey) => {
@@ -535,6 +536,8 @@ export default function App() {
           onBack={() => setActiveSessionId(null)}
         />
       )}
+
+      <PwaBanners />
     </div>
   );
 }

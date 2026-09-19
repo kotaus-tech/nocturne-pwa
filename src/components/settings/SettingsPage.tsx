@@ -1,35 +1,37 @@
 import {
+  AlertCircle,
+  AlertTriangle,
+  Bookmark,
+  BookmarkPlus,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  Cpu,
+  DatabaseBackup,
+  DownloadCloud,
+  HardDrive,
+  Layers,
+  Loader2,
+  Radio,
+  RefreshCw,
+  RotateCcw,
+  Save,
+  Search,
+  Server,
+  ShieldCheck,
+  Sliders,
+  Trash2,
+  UploadCloud,
+  X,
+  XCircle,
+} from "lucide-react";
+import {
   useEffect,
   useId,
   useMemo,
   useRef,
   useState,
 } from "react";
-import {
-  Cpu,
-  DatabaseBackup,
-  DownloadCloud,
-  UploadCloud,
-  Trash2,
-  CheckCircle2,
-  XCircle,
-  AlertTriangle,
-  RefreshCw,
-  Loader2,
-  AlertCircle,
-  Check,
-  Save,
-  Server,
-  Sliders,
-  Radio,
-  Bookmark,
-  BookmarkPlus,
-  X,
-  Search,
-  ChevronDown,
-  Layers,
-  RotateCcw,
-} from "lucide-react";
 import {
   getApiConfig,
   setApiConfig,
@@ -47,6 +49,13 @@ import type {
   ThinkingMode,
 } from "../../types";
 import { fetchAvailableModels, isLocalEndpoint } from "../../services/apiClient";
+import {
+  formatBytes,
+  getStorageStatus,
+  requestPersistentStorage,
+  type StorageStatus,
+} from "../../services/storage";
+import { APP_CODENAME, APP_VERSION } from "../../appInfo";
 import { cn } from "../../utils/cn";
 
 interface SettingsPageProps {
@@ -281,6 +290,9 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
   const [backupBusy, setBackupBusy] = useState<"export" | "import" | "wipe" | null>(null);
   const [backupStatus, setBackupStatus] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
+  const [storage, setStorage] = useState<StorageStatus | null>(null);
+  const [storageBusy, setStorageBusy] = useState(false);
+
   const id = useId();
   const mountedRef = useRef(false);
   const apiRevisionRef = useRef(0);
@@ -311,6 +323,37 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (activeTab !== "backup") return;
+
+    let active = true;
+
+    getStorageStatus()
+      .then((status) => {
+        if (active) setStorage(status);
+      })
+      .catch(() => {
+        if (active) setStorage(null);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [activeTab, backupBusy]);
+
+  const handleProtectStorage = async () => {
+    if (storageBusy) return;
+    setStorageBusy(true);
+
+    try {
+      await requestPersistentStorage();
+      const status = await getStorageStatus();
+      if (mountedRef.current) setStorage(status);
+    } finally {
+      if (mountedRef.current) setStorageBusy(false);
+    }
+  };
 
   const triggerPresetToast = (msg: string) => {
     setPresetToast(msg);
@@ -1323,6 +1366,117 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
               <span>{backupStatus.text}</span>
             </div>
           )}
+
+          <section className="rounded-3xl border border-white/[0.07] bg-[#121620]/90 p-6 backdrop-blur-xl">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <HardDrive size={22} className="mt-0.5 shrink-0 text-accent" />
+                <div>
+                  <h3 className="text-sm font-bold text-zinc-100">
+                    Данные и хранилище
+                  </h3>
+                  <p className="mt-1 max-w-xl text-xs leading-relaxed text-content-secondary">
+                    Вся библиотека хранится только в этом браузере. Постоянное
+                    хранилище защищает её от автоматической очистки системой.
+                  </p>
+                </div>
+              </div>
+
+              <span className="rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-1.5 text-[11px] font-medium text-content-muted">
+                NOCTURNE v{APP_VERSION} · {APP_CODENAME}
+              </span>
+            </div>
+
+            {storage && !storage.supported && (
+              <p className="mt-4 rounded-xl border border-warning/30 bg-warning/5 p-3 text-[11px] leading-relaxed text-warning">
+                Браузер не отдаёт сведения о хранилище. Следите за регулярными
+                экспортами бэкапа.
+              </p>
+            )}
+
+            {storage?.supported && (
+              <div className="mt-5 space-y-4">
+                <div>
+                  <div className="mb-1.5 flex items-center justify-between text-[11px]">
+                    <span className="font-semibold uppercase tracking-wider text-content-secondary">
+                      Занято
+                    </span>
+                    <span className="tabular-nums text-content-muted">
+                      {formatBytes(storage.usage)}
+                      {storage.quota > 0 ? ` из ${formatBytes(storage.quota)}` : ""}
+                    </span>
+                  </div>
+
+                  <div
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.round(storage.usageRatio * 100)}
+                    aria-label="Использование локального хранилища"
+                    className="h-1.5 w-full overflow-hidden rounded-full bg-white/[0.08]"
+                  >
+                    <div
+                      className={cn(
+                        "h-full rounded-full transition-all duration-300",
+                        storage.usageRatio > 0.9
+                          ? "bg-danger"
+                          : storage.usageRatio > 0.7
+                            ? "bg-warning"
+                            : "bg-accent"
+                      )}
+                      style={{ width: `${Math.max(2, storage.usageRatio * 100)}%` }}
+                    />
+                  </div>
+
+                  {storage.usageRatio > 0.85 && (
+                    <p className="mt-2 text-[11px] leading-relaxed text-warning">
+                      Хранилище почти заполнено. Удалите старые ветки или уменьшите
+                      размер обоев, чтобы избежать ошибок записи.
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-white/[0.06] bg-surface-2/60 p-3.5">
+                  <ShieldCheck
+                    size={18}
+                    className={cn(
+                      "shrink-0",
+                      storage.persisted ? "text-success" : "text-warning"
+                    )}
+                  />
+
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold text-zinc-100">
+                      {storage.persisted
+                        ? "Постоянное хранилище включено"
+                        : "Данные могут быть очищены браузером"}
+                    </p>
+                    <p className="mt-0.5 text-[11px] leading-relaxed text-content-muted">
+                      {storage.persisted
+                        ? "Браузер не удалит истории даже при долгом простое."
+                        : "Особенно актуально для Safari на iOS: без флага данные могут исчезнуть примерно через неделю без визитов."}
+                    </p>
+                  </div>
+
+                  {!storage.persisted && (
+                    <button
+                      type="button"
+                      onClick={() => void handleProtectStorage()}
+                      disabled={storageBusy}
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-accent/40 bg-accent/15 px-3 py-1.5 text-xs font-semibold text-accent transition-colors hover:bg-accent/25 disabled:opacity-50"
+                    >
+                      {storageBusy ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <ShieldCheck size={14} />
+                      )}
+                      <span>Защитить данные</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+          </section>
 
           <section className="rounded-3xl border border-danger/25 bg-danger/5 p-6 backdrop-blur-xl">
             <div className="flex items-start gap-4">

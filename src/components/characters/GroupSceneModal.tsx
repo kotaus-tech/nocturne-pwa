@@ -282,7 +282,7 @@ export function GroupSceneModal({
           <span className="text-[11px] text-content-muted">
             {enough
               ? `В сцене будет ${selected.length} героя`
-              : `Выберите ещё ${GROUP_SIZE_MIN - selected.length}`}
+              : `Нужно минимум ${GROUP_SIZE_MIN} героя`}
           </span>
           <button
             type="button"

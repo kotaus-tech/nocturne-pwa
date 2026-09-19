@@ -2,16 +2,13 @@ import { useState, useRef, useEffect, useId } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import {
   Upload,
-  FileText,
   Check,
   AlertCircle,
   Loader2,
   Sparkles,
   UserPlus,
   MessagesSquare,
-  ArrowRight,
   Heart,
-  Sliders,
 } from "lucide-react";
 import { Modal } from "../common/Modal";
 import { Avatar } from "../common/Avatar";
@@ -22,7 +19,6 @@ import {
   saveImportedSession,
   type ParsedChatPreview,
 } from "../../utils/chatExport";
-import type { Character } from "../../types";
 import { cn } from "../../utils/cn";
 
 interface ChatImportModalProps {
@@ -42,7 +38,8 @@ export function ChatImportModal({
 }: ChatImportModalProps) {
   const characters = useLiveQuery(() => db.characters.toArray(), []);
 
-  const [file, setFile] = useState<File | null>(initialFile || null);
+  // Содержимое файла читается в preview; здесь храним только сам выбор.
+  const [, setFile] = useState<File | null>(initialFile || null);
   const [parsing, setParsing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [preview, setPreview] = useState<ParsedChatPreview | null>(null);
@@ -236,6 +233,11 @@ export function ChatImportModal({
                       {preview.character?.genre && (
                         <Badge size="sm">{preview.character.genre}</Badge>
                       )}
+                      {preview.participants.length > 0 && (
+                        <Badge size="sm">
+                          сцена: +{preview.participants.length}
+                        </Badge>
+                      )}
                     </div>
                     <p className="truncate text-xs text-accent font-medium mt-0.5">
                       {preview.title}
@@ -257,6 +259,12 @@ export function ChatImportModal({
                 <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-zinc-300 italic">
                   «{preview.lastMessagePreview}»
                 </p>
+                {preview.participants.length > 0 && (
+                  <p className="mt-1.5 truncate text-[11px] text-content-muted">
+                    В сцене ещё:{" "}
+                    {preview.participants.map((item) => item.name).join(", ")}
+                  </p>
+                )}
               </div>
 
               {/* Шкалы отношений, если есть */}

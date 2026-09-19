@@ -13,8 +13,10 @@ import {
   X,
   Sparkles,
   Play,
+  Square,
 } from "lucide-react";
 import { rollFate } from "../../services/dice";
+import { Avatar } from "../common/Avatar";
 import { cn } from "../../utils/cn";
 
 interface Props {
@@ -22,9 +24,18 @@ interface Props {
   onOpenDirector: () => void;
   onRequestSuggestions: () => Promise<string[]>;
   onContinue: () => void;
+  /** Прерывает текущую генерацию, если она идёт. */
+  onStop?: () => void;
   sending: boolean;
   characterName?: string;
   modelName?: string;
+  /** В ветке несколько персонажей — «Продолжить» передаёт ход следующему. */
+  groupScene?: boolean;
+  /** Групповая сцена: присутствующие, кому можно адресовать реплику. */
+  participants?: { id: string; name: string; avatarUrl?: string }[];
+  /** Выбранный адресат: его ответ ждём следующим. */
+  targetId?: string | null;
+  onSelectTarget?: (characterId: string) => void;
 }
 
 export function InputBar({
@@ -32,9 +43,14 @@ export function InputBar({
   onOpenDirector,
   onRequestSuggestions,
   onContinue,
+  onStop,
   sending,
   characterName = "персонажу",
   modelName = "AI Model",
+  groupScene = false,
+  participants,
+  targetId,
+  onSelectTarget,
 }: Props) {
   const [text, setText] = useState("");
   const [ooc, setOoc] = useState(false);
@@ -156,13 +172,68 @@ export function InputBar({
         </section>
       )}
 
+      {participants && participants.length > 1 && onSelectTarget && (
+        <div
+          role="group"
+          aria-label="Кому адресована реплика"
+          className="mb-2 flex items-center gap-1.5 overflow-x-auto overscroll-contain pb-1"
+        >
+          <span className="shrink-0 pr-0.5 text-[10px] font-bold uppercase tracking-wider text-content-muted">
+            Ответит
+          </span>
+
+          {participants.map((participant) => {
+            const isTarget = targetId === participant.id;
+
+            return (
+              <button
+                key={participant.id}
+                type="button"
+                onClick={() => onSelectTarget(participant.id)}
+                disabled={sending}
+                aria-pressed={isTarget}
+                title={
+                  isTarget
+                    ? `Снять выбор: отвечает любой`
+                    : `Адресовать реплику: ${participant.name}`
+                }
+                className={cn(
+                  "flex shrink-0 items-center gap-1.5 rounded-full border py-1 pl-1 pr-2.5",
+                  "text-[11px] font-medium transition-all active:scale-95 disabled:opacity-40",
+                  isTarget
+                    ? "border-accent/60 bg-accent/20 text-accent shadow-[0_0_16px_rgba(139,92,246,0.25)]"
+                    : "border-white/[0.08] bg-[#121622]/80 text-content-secondary hover:border-accent/40 hover:bg-[#161b28] hover:text-accent"
+                )}
+              >
+                <Avatar src={participant.avatarUrl} name={participant.name} size={20} />
+                <span className="max-w-[7rem] truncate">{participant.name}</span>
+              </button>
+            );
+          })}
+
+          {targetId && (
+            <button
+              type="button"
+              onClick={() => onSelectTarget(targetId)}
+              className="shrink-0 rounded-full px-2 py-1 text-[10px] font-medium text-content-muted hover:text-content"
+            >
+              любой
+            </button>
+          )}
+        </div>
+      )}
+
       {/* На мобильных: сетка из 5 колонок без скролла. На ПК: flex с текстом */}
       <div className="mb-2.5 grid grid-cols-5 gap-1.5 sm:flex sm:items-center sm:gap-1.5 sm:overflow-x-auto pb-1">
         <button
           type="button"
           onClick={onContinue}
           disabled={sending}
-          title="Продолжить — инициатива персонажа"
+          title={
+            groupScene
+              ? "Продолжить — передать ход следующему персонажу"
+              : "Продолжить — инициатива персонажа"
+          }
           className={toolButtonClass}
         >
           <Play size={14} fill="currentColor" className="text-accent shrink-0" />
@@ -246,18 +317,30 @@ export function InputBar({
           className="block max-h-44 min-h-[44px] min-w-0 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-relaxed text-zinc-100 placeholder:text-content-muted focus:outline-none sm:text-base"
         />
 
-        <button
-          type="button"
-          onClick={send}
-          disabled={!text.trim() || sending}
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-accent text-on-accent shadow-[0_0_18px_rgba(139,92,246,0.35)] transition-all hover:bg-accent-hover active:scale-95 disabled:opacity-25 disabled:shadow-none"
-        >
-          {sending ? (
-            <Loader2 size={18} className="animate-spin" />
-          ) : (
-            <Send size={18} />
-          )}
-        </button>
+        {sending && onStop ? (
+          <button
+            type="button"
+            onClick={onStop}
+            title="Прервать генерацию"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-danger/40 bg-danger/15 text-danger transition-all hover:bg-danger/25 active:scale-95"
+          >
+            <Square size={16} fill="currentColor" />
+            <span className="sr-only">Остановить генерацию</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={send}
+            disabled={!text.trim() || sending}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-accent text-on-accent shadow-[0_0_18px_rgba(139,92,246,0.35)] transition-all hover:bg-accent-hover active:scale-95 disabled:opacity-25 disabled:shadow-none"
+          >
+            {sending ? (
+              <Loader2 size={18} className="animate-spin" />
+            ) : (
+              <Send size={18} />
+            )}
+          </button>
+        )}
       </div>
 
       <div className="mt-2 flex items-center justify-between px-2 text-[11px] text-content-muted">

@@ -1,0 +1,653 @@
+import "fake-indexeddb/auto";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  db,
+  sanitizeAbsentReasons,
+  sanitizeActiveCharacterIds,
+  sanitizeCharacter,
+  sanitizeSceneRelations,
+} from "../src/db";
+import {
+  findMentionedCharacter,
+  nextSpeaker,
+  resolvePresence,
+} from "../src/services/groupScene";
+import { buildRoutingPrompt, parseRoutingAnswer } from "../src/services/groupRouter";
+import { buildSystemPrompt } from "../src/services/promptBuilder";
+import {
+  matchLeftCharacters,
+  matchReturnedCharacters,
+  mergeSceneRelations,
+} from "../src/services/groupScene";
+import {
+  GROUP_SIZE_MAX,
+  GROUP_SIZE_MIN,
+  ModelJsonError,
+  buildGroupInstruction,
+  clampGroupSize,
+  normalizeGeneratedCharacter,
+  parseGeneratedGroup,
+  parseModelJson,
+} from "../src/services/characterGenerator";
+import { createGroupSession } from "../src/utils/sessionActions";
+import { DEFAULT_STATS } from "../src/types";
+import type { Character } from "../src/types";
+
+/**
+ * Техзаказ по групповым сценам: присутствие в сцене, выбор говорящего,
+ * генератор группы 2–4 героев и создание самой ветки.
+ */
+
+const character = (
+  id: string,
+  name: string,
+  overrides: Partial<Character> = {}
+): Character => ({
+  id,
+  name,
+  avatarUrl: "",
+  tagline: "",
+  personality: "Сдержанная и внимательная.",
+  systemPrompt: "",
+  firstMessage: `*Кивает.* — Я ${name}.`,
+  initialStats: { ...DEFAULT_STATS },
+  lorebook: [],
+  createdAt: 1,
+  ...overrides,
+});
+
+const player = {
+  name: "Странник",
+  avatarUrl: "",
+  personaDescription: "гость",
+};
+
+const cast = [
+  character("c-1", "Ая"),
+  character("c-2", "Рин"),
+  character("c-3", "Кай"),
+];
+
+afterEach(async () => {
+  await db.characters.clear();
+  await db.sessions.clear();
+  await db.messages.clear();
+});
+
+describe("групповая сцена: присутствие", () => {
+  it("без activeCharacterIds в сцене остаются все", () => {
+    const presence = resolvePresence(
+      { characterId: "c-1", characterIds: ["c-2", "c-3"] },
+      cast
+    );
+
+    expect(presence.present.map((item) => item.name)).toEqual([
+      "Ая",
+      "Рин",
+      "Кай",
+    ]);
+    expect(presence.absent).toHaveLength(0);
+  });
+
+  it("разделяет состав на присутствующих и отсутствующих с причиной", () => {
+    const presence = resolvePresence(
+      {
+        characterId: "c-1",
+        characterIds: ["c-2", "c-3"],
+        activeCharacterIds: ["c-1", "c-3"],
+        absentReasons: { "c-2": "ушла в гараж" },
+      },
+      cast
+    );
+
+    expect(presence.present.map((item) => item.id)).toEqual(["c-1", "c-3"]);
+    expect(presence.absent).toEqual([
+      { character: cast[1], reason: "ушла в гараж" },
+    ]);
+  });
+
+  it("не оставляет сцену без единого героя", () => {
+    const presence = resolvePresence(
+      {
+        characterId: "c-1",
+        characterIds: ["c-2"],
+        activeCharacterIds: ["c-9"],
+      },
+      cast
+    );
+
+    expect(presence.present).toHaveLength(3);
+    expect(presence.absent).toHaveLength(0);
+  });
+
+  it("список присутствия чистится: чужие id и дубли уходят, лидер допустим", () => {
+    expect(
+      sanitizeActiveCharacterIds(
+        ["c-2", "c-2", "c-1", "чужой", 5, " c-3 "],
+        ["c-2", "c-3"],
+        "c-1"
+      )
+    ).toEqual(["c-2", "c-1", "c-3"]);
+
+    expect(sanitizeActiveCharacterIds([], ["c-2"])).toBeUndefined();
+    expect(sanitizeActiveCharacterIds("мусор", ["c-2"])).toBeUndefined();
+  });
+
+  it("причины отсутствия обрезаются и не терпят пустых значений", () => {
+    expect(
+      sanitizeAbsentReasons({
+        "c-2": "  ушла в гараж  ",
+        "c-3": "   ",
+        "c-4": 42,
+        "c-5": "я".repeat(200),
+      })
+    ).toEqual({ "c-2": "ушла в гараж", "c-5": "я".repeat(120) });
+
+    expect(sanitizeAbsentReasons(undefined)).toEqual({});
+  });
+
+  it("связи в группе сохраняются, а мусор отбрасывается", () => {
+    const relations = sanitizeSceneRelations([
+      { from: "c-1", to: "c-2", text: "  тайно влюблена  " },
+      { from: "c-2", text: "соперничает со всеми" },
+      { from: "c-3", text: "   " },
+      "мусор",
+      null,
+    ]);
+
+    expect(relations).toHaveLength(2);
+    expect(relations[0]).toMatchObject({
+      from: "c-1",
+      to: "c-2",
+      text: "тайно влюблена",
+    });
+    expect(relations[0].id).toBeTruthy();
+    expect(relations[1].to).toBeUndefined();
+  });
+});
+
+describe("групповая сцена: выбор говорящего", () => {
+  it("находит героя по имени в ответе роутера", () => {
+    expect(parseRoutingAnswer("[Отвечает: Рин]", cast)?.id).toBe("c-2");
+    expect(parseRoutingAnswer("Отвечает: Кай, потому что он рядом", cast)?.id).toBe(
+      "c-3"
+    );
+    expect(
+      parseRoutingAnswer("<speaker>Ая</speaker>", cast)?.id
+    ).toBe("c-1");
+  });
+
+  it("терпим к свободному ответу и к незнакомым именам", () => {
+    expect(parseRoutingAnswer("Думаю, ответит Рин.", cast)?.id).toBe("c-2");
+    expect(parseRoutingAnswer("[Отвечает: Незнакомец]", cast)).toBeUndefined();
+    expect(parseRoutingAnswer("", cast)).toBeUndefined();
+  });
+
+  it("упоминание в реплике игрока выбирает того, к кому обратились", () => {
+    expect(findMentionedCharacter("Кай, ты слышал?", cast)?.id).toBe("c-3");
+    expect(
+      findMentionedCharacter("Рин, а ты что скажешь, Кай?", cast)?.id
+    ).toBe("c-2");
+    expect(findMentionedCharacter("Никого не зову", cast)).toBeUndefined();
+    expect(findMentionedCharacter("Ая", cast)).toBeDefined();
+  });
+
+  it("передаёт ход по кругу", () => {
+    expect(nextSpeaker(cast, "c-1")?.id).toBe("c-2");
+    expect(nextSpeaker(cast, "c-3")?.id).toBe("c-1");
+    expect(nextSpeaker(cast)?.id).toBe("c-1");
+    expect(nextSpeaker(cast, "нет такого")?.id).toBe("c-1");
+    expect(nextSpeaker([], "c-1")).toBeUndefined();
+  });
+
+  it("промпт роутера перечисляет героев и требует строгий формат", () => {
+    const prompt = buildRoutingPrompt({
+      present: cast,
+      relations: [
+        { id: "r-1", from: "c-1", to: "c-2", text: "соперницы" },
+        { id: "r-2", from: "c-2", to: undefined, text: "душа компании" },
+      ],
+      userName: "Странник",
+      lastUserText: "Кай, ты слышал этот шум?",
+      lastSpeakerId: "c-1",
+      directorNotes: "Ночь, гроза",
+    });
+
+    expect(prompt).toContain("Ая");
+    expect(prompt).toContain("Кай");
+    expect(prompt).toContain("Ая → Рин: соперницы");
+    expect(prompt).toContain("Рин → группа: душа компании");
+    expect(prompt).toContain("Ночь, гроза");
+    expect(prompt).toContain("[Отвечает: Имя]");
+  });
+
+  it("промпт разрешает модели вернуть персонажа из-за кадра", () => {
+    const prompt = buildSystemPrompt(
+      cast[0],
+      {
+        id: "s-1",
+        characterId: "c-1",
+        characterIds: ["c-2", "c-3"],
+        activeCharacterIds: ["c-1", "c-3"],
+        absentReasons: { "c-2": "ушла в магазин" },
+        title: "Ветка",
+        directorNotes: "",
+        currentStats: { ...DEFAULT_STATS },
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      player,
+      [],
+      false,
+      {
+        others: [cast[1], cast[2]],
+        absent: [{ character: cast[1], reason: "ушла в магазин" }],
+      }
+    );
+
+    expect(prompt).toContain("СЦЕНИЧЕСКОЕ ПРИСУТСТВИЕ");
+    expect(prompt).toContain("ушла в магазин");
+    expect(prompt).toContain('"returned"');
+    expect(prompt).toContain("не говори за них");
+  });
+
+  it("сопоставляет вернувшихся по имени, включая падежи", () => {
+    const absent = [cast[1], cast[2]];
+
+    expect(matchReturnedCharacters(["Рин"], absent).map((item) => item.id)).toEqual([
+      "c-2",
+    ]);
+    expect(matchReturnedCharacters(["Рина"], absent).map((item) => item.id)).toEqual([
+      "c-2",
+    ]);
+    expect(
+      matchReturnedCharacters(["Рин, Кай"], absent).map((item) => item.id)
+    ).toEqual(["c-2", "c-3"]);
+    expect(matchReturnedCharacters(["кая"], absent).map((item) => item.id)).toEqual([
+      "c-3",
+    ]);
+  });
+
+  it("не выдумывает тех, кого за кадром нет", () => {
+    expect(matchReturnedCharacters(["Незнакомец"], [cast[1]])).toEqual([]);
+    expect(matchReturnedCharacters([], [cast[1]])).toEqual([]);
+    expect(matchReturnedCharacters(["а"], [cast[1]])).toEqual([]);
+    expect(matchReturnedCharacters(["Рин"], [cast[1], cast[1]])).toHaveLength(1);
+  });
+
+  it("уводит за кадр только тех, кто есть в сцене, и сохраняет причину", () => {
+    const result = matchLeftCharacters(
+      [
+        { name: "Рин", reason: "ушла за сигаретами" },
+        { name: "Незнакомец", reason: "нет такого" },
+      ],
+      [cast[1], cast[2]]
+    );
+
+    expect(result).toEqual([
+      { character: cast[1], reason: "ушла за сигаретами" },
+    ]);
+  });
+
+  it("не уводит одного и того же героя дважды", () => {
+    const result = matchLeftCharacters(
+      [{ name: "Рин" }, { name: "Рина" }],
+      [cast[1]]
+    );
+
+    expect(result).toHaveLength(1);
+  });
+
+  it("обновляет уже известную связь и не плодит дубли", () => {
+    const existing = [
+      { id: "r-1", from: "c-2", to: "c-3", text: "считает его баловнем" },
+      { id: "r-2", from: "c-1", to: "c-3", text: "доверяет" },
+    ];
+
+    const result = mergeSceneRelations(
+      existing,
+      [{ from: "Рин", to: "Кай", text: "начала ревновать" }],
+      cast
+    );
+
+    expect(result.relations).toHaveLength(2);
+    expect(result.relations[0]).toMatchObject({
+      id: "r-1",
+      from: "c-2",
+      to: "c-3",
+      text: "начала ревновать",
+    });
+    expect(result.relations[0].updatedAt).toBeTypeOf("number");
+    expect(result.changed).toEqual([{ from: "Рин", to: "Кай" }]);
+  });
+
+  it("добавляет новую связь и обходится без изменений, если текст тот же", () => {
+    const added = mergeSceneRelations([], [{ from: "Ая", text: "насторожилась" }], cast);
+
+    expect(added.relations).toHaveLength(1);
+    expect(added.relations[0].from).toBe("c-1");
+    expect(added.relations[0].to).toBeUndefined();
+
+    const same = mergeSceneRelations(
+      [{ id: "r-1", from: "c-2", to: "c-3", text: "друзья" }],
+      [{ from: "Рин", to: "Кай", text: "друзья" }],
+      cast
+    );
+
+    expect(same.changed).toEqual([]);
+    expect(same.relations).toHaveLength(1);
+  });
+
+  it("игнорирует незнакомые имена и битые пары", () => {
+    const result = mergeSceneRelations(
+      [],
+      [
+        { from: "Незнакомец", text: "что-то" },
+        { from: "Рин", to: "Призрак", text: "что-то" },
+        { from: "Кай", to: "Рин", text: "   " },
+      ],
+      cast
+    );
+
+    expect(result.relations).toEqual([]);
+    expect(result.changed).toEqual([]);
+  });
+
+  it("живая сцена разрешает короткие реакции других героев, а выключенная — нет", () => {
+    const base = {
+      id: "s-1",
+      characterId: "c-1",
+      characterIds: ["c-2", "c-3"],
+      title: "Ветка",
+      directorNotes: "",
+      currentStats: { ...DEFAULT_STATS },
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const group = { others: [cast[1], cast[2]] };
+
+    const enabled = buildSystemPrompt(cast[0], base, player, [], false, group);
+    const disabled = buildSystemPrompt(
+      cast[0],
+      { ...base, liveScene: false },
+      player,
+      [],
+      false,
+      group
+    );
+
+    expect(enabled).toContain("ЖИВАЯ СЦЕНА");
+    expect(disabled).not.toContain("ЖИВАЯ СЦЕНА");
+  });
+
+  it("в промпт роутера попадает не больше шести связей", () => {
+    const relations = Array.from({ length: 9 }, (_, index) => ({
+      id: `r-${index}`,
+      from: "c-1",
+      text: `факт ${index}`,
+    }));
+
+    const prompt = buildRoutingPrompt({
+      present: cast,
+      relations,
+      userName: "Странник",
+      lastUserText: "Привет",
+    });
+
+    expect(prompt).toContain("факт 5");
+    expect(prompt).not.toContain("факт 6");
+  });
+});
+
+describe("групповая сцена: генератор группы", () => {
+  it("размер группы зажат в диапазон 2–4", () => {
+    expect(clampGroupSize(1)).toBe(GROUP_SIZE_MIN);
+    expect(clampGroupSize(3)).toBe(3);
+    expect(clampGroupSize(99)).toBe(GROUP_SIZE_MAX);
+    expect(clampGroupSize(Number.NaN)).toBe(GROUP_SIZE_MIN);
+    expect(clampGroupSize(3.4)).toBe(3);
+  });
+
+  it("инструкция требует и персонажей, и общий опенинг", () => {
+    const instruction = buildGroupInstruction(
+      "any",
+      ["Современность"],
+      "общежитие",
+      3
+    );
+
+    expect(instruction).toContain("СЦЕНУ из 3 персонажей");
+    expect(instruction).toContain("общежитие");
+    expect(instruction).toContain('"opening"');
+    expect(instruction).toContain('"characters"');
+    expect(instruction).toContain("ВАЛИДНОГО JSON");
+  });
+
+  it("карточка персонажа получает безопасные значения по умолчанию", () => {
+    const draft = normalizeGeneratedCharacter(
+      {
+        name: "  Мира  ",
+        initialStats: { trust: 80 },
+        lorebook: [{ content: "боится воды" }, { keys: "строка", content: "" }],
+      },
+      ["Современность"]
+    );
+
+    expect(draft.name).toBe("Мира");
+    expect(draft.firstMessage).toBe("*Смотрит на тебя в тишине...*");
+    expect(draft.initialStats?.trust).toBe(80);
+    expect(draft.initialStats?.affection).toBe(DEFAULT_STATS.affection);
+    expect(draft.tags).toEqual(["Современность"]);
+    expect(draft.lorebook).toHaveLength(2);
+    expect(draft.lorebook?.[0].keys).toEqual(["память"]);
+    expect(draft.lorebook?.[0].id).toBeTruthy();
+  });
+
+  it("разбор ответа модели терпим к форме", () => {
+    const group = parseGeneratedGroup(
+      {
+        opening: "  *Дождь.* — Ну и вечер.  ",
+        characters: [
+          { name: "Ая", firstMessage: "— Привет." },
+          { name: "Рин" },
+          null,
+          { name: "Кай" },
+          { name: "Лишний" },
+          { name: "Ещё лишний" },
+        ],
+      },
+      []
+    );
+
+    expect(group.opening).toBe("*Дождь.* — Ну и вечер.");
+    expect(group.characters.map((item) => item.name)).toEqual([
+      "Ая",
+      "Рин",
+      "Кай",
+      "Лишний",
+    ]);
+  });
+
+  it("достаёт JSON из markdown-обёртки и болтовни вокруг", () => {
+    const parsed = parseModelJson(
+      'Конечно! Вот сцена:\n```json\n{"opening": "Ночь.", "characters": []}\n```\nУдачи!'
+    );
+
+    expect(parsed.opening).toBe("Ночь.");
+  });
+
+  it("чинит оборванный ответ модели", () => {
+    const parsed = parseModelJson(
+      '{"characters": [{"name": "Ая", "firstMessage": "— Привет.'
+    );
+
+    expect(parsed.characters[0].name).toBe("Ая");
+  });
+
+  it("объясняет прозу вместо JSON и пустой ответ", () => {
+    expect(() => parseModelJson("Держи, вот три героя: Ая, Рин и Кай.")).toThrow(
+      ModelJsonError
+    );
+    expect(() => parseModelJson("Держи героев")).toThrow(/текстом вместо JSON/);
+    expect(() => parseModelJson("   ")).toThrow(/пустой ответ/);
+  });
+
+  it("принимает список героев под другими именами и словарём", () => {
+    const byKey = parseGeneratedGroup(
+      { heroes: [{ name: "Ая" }, { name: "Рин" }], opening: "Сцена." },
+      []
+    );
+    expect(byKey.characters.map((item) => item.name)).toEqual(["Ая", "Рин"]);
+
+    const byDict = parseGeneratedGroup(
+      {
+        characters: {
+          "Ая": { name: "Ая", personality: "Тихая" },
+          "Рин": { name: "Рин", personality: "Дерзкая" },
+        },
+      },
+      []
+    );
+    expect(byDict.characters.map((item) => item.name)).toEqual(["Ая", "Рин"]);
+  });
+
+  it("один герой объектом в корне ответа тоже попадает в список", () => {
+    const group = parseGeneratedGroup(
+      { name: "Ая", firstMessage: "— Я здесь." },
+      []
+    );
+
+    expect(group.characters).toHaveLength(1);
+    expect(group.characters[0].name).toBe("Ая");
+    expect(group.opening).toBe("— Я здесь.");
+  });
+
+  it("без опенинга сцена открывается репликой первого героя", () => {
+    const group = parseGeneratedGroup(
+      [{ name: "Ая", firstMessage: "— Я первая." }],
+      []
+    );
+
+    expect(group.opening).toBe("— Я первая.");
+  });
+});
+
+describe("групповая сцена: создание ветки", () => {
+  it("ветка хранит состав, шкалы участников и их стартовые реплики", async () => {
+    const session = await createGroupSession(cast[0], [cast[1], cast[2]]);
+
+    expect(session.isGroup).toBe(true);
+    expect(session.characterId).toBe("c-1");
+    expect(session.characterIds).toEqual(["c-2", "c-3"]);
+    expect(session.currentStats).toEqual(cast[0].initialStats);
+    expect(Object.keys(session.participantStats ?? {}).sort()).toEqual([
+      "c-2",
+      "c-3",
+    ]);
+
+    const messages = await db.messages
+      .where("sessionId")
+      .equals(session.id)
+      .sortBy("timestamp");
+
+    expect(messages).toHaveLength(3);
+    expect(messages.map((item) => item.characterId)).toEqual([
+      "c-1",
+      "c-2",
+      "c-3",
+    ]);
+    expect(messages.map((item) => item.characterName)).toEqual([
+      "Ая",
+      "Рин",
+      "Кай",
+    ]);
+    expect(messages[0].swipes[0]).toContain("Я Ая.");
+  });
+
+  it("общий опенинг становится первым сообщением сцены", async () => {
+    const session = await createGroupSession(cast[0], [cast[1]], {
+      opening: "*Ночь. Все трое в мастерской.*",
+    });
+
+    const messages = await db.messages.where("sessionId").equals(session.id).toArray();
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].characterId).toBe("c-1");
+    expect(messages[0].swipes[0]).toBe("*Ночь. Все трое в мастерской.*");
+  });
+
+  it("лидер не дублируется, если его передали в списке участников", async () => {
+    const session = await createGroupSession(cast[0], [cast[0], cast[1], cast[1]]);
+
+    expect(session.characterIds).toEqual(["c-2"]);
+    expect(Object.keys(session.participantStats ?? {})).toEqual(["c-2"]);
+  });
+
+  it("из ответа модели получается готовая к игре ветка", async () => {
+    // Такой ответ ждём от модели в режиме «Группа» — проверяем весь путь:
+    // разбор → карточки → сохранение → ветка с общим опенингом.
+    const raw = `Вот сцена:
+\`\`\`json
+{
+  "opening": "*Ночь, крыша.* — Все трое здесь.",
+  "characters": [
+    { "name": "Ая", "tagline": "Тихая", "personality": "Спокойная.", "firstMessage": "— Привет." },
+    { "name": "Рин", "tagline": "Дерзкая", "personality": "Резкая.", "firstMessage": "— Ну и холод." },
+    { "name": "Кай", "tagline": "Скептик", "personality": "Ироничный.", "firstMessage": "— Опять вы." }
+  ]
+}
+\`\`\``;
+
+    const group = parseGeneratedGroup(parseModelJson(raw), []);
+    expect(group.characters).toHaveLength(3);
+
+    const saved = group.characters.map((draft, index) =>
+      sanitizeCharacter({
+        ...character(`m-${index}`, draft.name || "Безымянный"),
+        ...draft,
+        id: `m-${index}`,
+        initialStats: draft.initialStats ?? { ...DEFAULT_STATS },
+        lorebook: draft.lorebook ?? [],
+        createdAt: index + 1,
+      } as Character)
+    );
+
+    await db.characters.bulkPut(saved);
+
+    const [leader, ...rest] = saved;
+    const session = await createGroupSession(leader, rest, {
+      opening: group.opening,
+    });
+
+    expect(session.isGroup).toBe(true);
+    expect(session.characterIds).toEqual(["m-1", "m-2"]);
+
+    const messages = await db.messages
+      .where("sessionId")
+      .equals(session.id)
+      .toArray();
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].swipes[0]).toBe("*Ночь, крыша.* — Все трое здесь.");
+    expect((await db.characters.count())).toBe(3);
+  });
+
+  it("персонажи сцены лежат в базе и находятся по составу ветки", async () => {
+    await db.characters.bulkAdd(cast);
+    const session = await createGroupSession(cast[0], [cast[1], cast[2]]);
+
+    const stored = await db.sessions.get(session.id);
+    expect(stored?.characterIds).toEqual(["c-2", "c-3"]);
+
+    const participants = await db.characters
+      .where("id")
+      .anyOf([stored!.characterId, ...(stored?.characterIds ?? [])])
+      .toArray();
+
+    expect(participants.map((item) => item.name).sort()).toEqual([
+      "Ая",
+      "Кай",
+      "Рин",
+    ]);
+  });
+});

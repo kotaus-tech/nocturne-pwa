@@ -16,6 +16,47 @@ export interface GeminiContent {
   parts: GeminiContentPart[];
 }
 
+/**
+ * Убирает из адреса markdown-обёртку вида
+ * "[https://host/path](https://host/path)" — такие значения остались в
+ * сохранённых настройках и пресетах и приводили к запросу на собственный
+ * домен приложения. Корректные адреса возвращаются без изменений.
+ */
+export function sanitizeBaseUrl(baseUrl?: string): string {
+  const raw = (baseUrl || "").trim();
+  if (!raw || !raw.includes("](")) return raw;
+
+  const match = raw.match(/https?:\/\/[^\s)\]`"']+/);
+  return match ? match[0] : raw;
+}
+
+/** Хост сервиса RU OpenRouter: его API живёт под путём `/v1`. */
+const RU_OPENROUTER_HOST = "api.ru-openrouter.ru";
+
+/**
+ * RU OpenRouter отвечает 404, если в адресе нет `/v1` (их документация требует
+ * `https://api.ru-openrouter.ru/v1/chat/completions`). Если игрок указал только
+ * хост, дописываем путь сами — иначе ошибка выглядит как «неверный URL».
+ * Корректные адреса возвращаются без изменений.
+ */
+export function normalizeRuOpenRouterUrl(baseUrl?: string): string {
+  const raw = sanitizeBaseUrl(baseUrl);
+  if (!raw) return raw;
+
+  try {
+    const url = new URL(raw);
+    if (url.hostname !== RU_OPENROUTER_HOST) return raw;
+
+    const path = url.pathname.replace(/\/+$/, "");
+    if (path && path !== "/") return raw;
+
+    url.pathname = "/v1";
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return raw;
+  }
+}
+
 export function isLocalEndpoint(baseUrl?: string): boolean {
   if (!baseUrl) return false;
   const lower = baseUrl.toLowerCase();
@@ -50,7 +91,7 @@ export function isOllamaEndpoint(baseUrl?: string): boolean {
 }
 
 export function isDeepSeekEndpoint(config: ApiConfig): boolean {
-  const base = (config.baseUrl || "").toLowerCase();
+  const base = sanitizeBaseUrl(config.baseUrl).toLowerCase();
   const model = (config.model || "").toLowerCase();
   return base.includes("deepseek") || model.includes("deepseek") || model.includes("r1");
 }
@@ -67,7 +108,7 @@ export function resolveEndpoints(baseUrl: string): {
   primaryUrl: string;
   fallbackUrl: string | null;
 } {
-  const clean = (baseUrl || "").trim().replace(/\/+$/, "");
+  const clean = normalizeRuOpenRouterUrl(baseUrl).replace(/\/+$/, "");
 
   if (!clean) {
     throw new Error("Base URL не указан в настройках API. Укажите адрес сервера (например, адрес Ollama или провайдера).");
@@ -141,13 +182,35 @@ export function buildGeminiThinkingConfig(modelName: string, mode: ThinkingMode 
   return undefined;
 }
 
-export function messagesToTurns(messages: Message[]): ChatTurn[] {
+/**
+ * Преобразует сообщения в реплики для API.
+ *
+ * Для групповых сцен можно передать labelAssistant: он вернёт имя автора для
+ * тех реплик персонажей, которые принадлежат не текущему отвечающему. Такие
+ * реплики помечаются префиксом «Имя: », чтобы модель понимала, кто что сказал.
+ */
+export function messagesToTurns(
+  messages: Message[],
+  labelAssistant?: (message: Message) => string | undefined
+): ChatTurn[] {
   return messages
     .filter((m) => m.sender !== "system")
-    .map((m) => ({
-      role: m.sender === "user" ? "user" : "assistant",
-      content: m.swipes[m.currentSwipeIndex] ?? "",
-    }));
+    .map((m) => {
+      const content = m.swipes[m.currentSwipeIndex] ?? "";
+
+      if (m.sender === "assistant" && labelAssistant) {
+        const label = labelAssistant(m);
+        const name = typeof label === "string" ? label.trim() : "";
+        if (name) {
+          return { role: "assistant" as const, content: `${name}: ${content}` };
+        }
+      }
+
+      return {
+        role: m.sender === "user" ? ("user" as const) : ("assistant" as const),
+        content,
+      };
+    });
 }
 
 export function formatApiError(
@@ -320,7 +383,8 @@ async function callOllamaStream(
   config: ApiConfig,
   systemPrompt: string,
   turns: ChatTurn[],
-  onChunk: (accumulatedText: string) => void
+  onChunk: (accumulatedText: string) => void,
+  signal?: AbortSignal
 ): Promise<string> {
   const { primaryUrl } = resolveEndpoints(config.baseUrl);
 
@@ -359,6 +423,7 @@ async function callOllamaStream(
     method: "POST",
     headers,
     body: JSON.stringify(bodyPayload),
+    signal,
   });
 
   if (!res.ok) {
@@ -393,6 +458,93 @@ async function callOllamaStream(
   return fullOutput;
 }
 
+/**
+ * Понятное имя узла для сообщений об ошибке (без query-параметров,
+ * чтобы API-ключ не попал в текст на экране).
+ */
+export function describeEndpoint(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Читает тело ответа как JSON. Если сервер вернул HTML (обычно это значит,
+ * что запрос ушёл не на тот адрес и хостинг отдал index.html), пользователь
+ * получит понятный текст вместо «Unexpected token '<'».
+ */
+export async function readJsonResponse(res: Response, url?: string): Promise<any> {
+  const body = await res.text();
+  const trimmed = body.trim();
+  const host = url ? describeEndpoint(url) : "";
+  const where = host ? ` (${host})` : "";
+
+  if (trimmed.startsWith("<")) {
+    throw new Error(
+      `Сервер вернул HTML вместо JSON${where}. Проверьте адрес API и ключ: запрос, скорее всего, ушёл не туда.`
+    );
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    throw new Error(
+      `Ответ сервера${where} не является JSON: ${trimmed.slice(0, 200) || "(пустой ответ)"}`
+    );
+  }
+}
+
+/** Путь резервного прокси: совпадает с edge-функцией Netlify (netlify.toml). */
+export const LLM_PROXY_PATH = "/api/llm-proxy";
+
+/**
+ * Проблема именно на резервном канале, а не на стороне провайдера: браузер
+ * заблокировал прямой запрос (CORS), а прокси на этом домене нет или он не
+ * смог дойти до API. Раньше такой случай показывался как «Эндпоинт API не
+ * найден (404). Проверьте URL» — и уводил в сторону от настоящей причины.
+ */
+export class ProxyChannelError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProxyChannelError";
+  }
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+function proxyUnavailableMessage(url: string): string {
+  return (
+    `Браузер заблокировал прямой запрос к ${hostOf(url)} (CORS), а резервный прокси ` +
+    `${LLM_PROXY_PATH} на этом домене не отвечает.\n` +
+    "Откройте приложение на Netlify-домене (там работает edge-функция) или запустите " +
+    "локально: npm run dev поднимает прокси вместе с сервером."
+  );
+}
+
+function proxyHostBlockedMessage(url: string): string {
+  return (
+    `Резервный прокси пропускает только api.ru-openrouter.ru, поэтому запрос к ` +
+    `${hostOf(url)} заблокирован. Укажите адрес провайдера напрямую или доработайте ` +
+    "allow-list прокси."
+  );
+}
+
+function proxyUpstreamFailedMessage(url: string, status: number, details?: string): string {
+  const reason = details?.trim() ? details.trim().slice(0, 160) : `код ${status}`;
+  return (
+    `Резервный прокси не смог соединиться с ${hostOf(url)}: ${reason}. ` +
+    "Проверьте соединение и адрес API в Настройках."
+  );
+}
+
 async function resilientFetch(
   url: string,
   options: RequestInit,
@@ -401,10 +553,53 @@ async function resilientFetch(
   try {
     return await fetch(url, options);
   } catch (err) {
+    // Пользователь отменил генерацию — не пытаемся идти через прокси.
+    if (options.signal?.aborted) throw err;
+
     if (allowProxy && err instanceof TypeError) {
-      const proxied = `/api/llm-proxy?target=${encodeURIComponent(url)}`;
-      return await fetch(proxied, options);
+      const proxied = `${LLM_PROXY_PATH}?target=${encodeURIComponent(url)}`;
+
+      let res: Response;
+      try {
+        res = await fetch(proxied, options);
+      } catch (proxyErr) {
+        if (options.signal?.aborted) throw proxyErr;
+        throw new ProxyChannelError(proxyUnavailableMessage(url));
+      }
+
+      // Прокси есть не на каждом хостинге: вместо функции прилетает страница
+      // 404 самим хостингом, а не ответ провайдера.
+      if (!res.ok) {
+        const contentType = res.headers.get("content-type") ?? "";
+        const body = await res
+          .clone()
+          .text()
+          .catch(() => "");
+
+        if (!contentType.includes("json")) {
+          throw new ProxyChannelError(proxyUnavailableMessage(url));
+        }
+
+        if (body.includes("Host not allowed")) {
+          throw new ProxyChannelError(proxyHostBlockedMessage(url));
+        }
+
+        if (body.includes("Proxy fetch failed") || body.includes("target parameter")) {
+          const details = (() => {
+            try {
+              return JSON.parse(body)?.details as string | undefined;
+            } catch {
+              return undefined;
+            }
+          })();
+
+          throw new ProxyChannelError(proxyUpstreamFailedMessage(url, res.status, details));
+        }
+      }
+
+      return res;
     }
+
     throw err;
   }
 }
@@ -413,7 +608,8 @@ async function callOpenAICompatibleStream(
   config: ApiConfig,
   systemPrompt: string,
   turns: ChatTurn[],
-  onChunk: (accumulatedText: string) => void
+  onChunk: (accumulatedText: string) => void,
+  signal?: AbortSignal
 ): Promise<string> {
   const { primaryUrl, fallbackUrl } = resolveEndpoints(config.baseUrl);
   const isDeepSeek = isDeepSeekEndpoint(config);
@@ -446,6 +642,7 @@ async function callOpenAICompatibleStream(
       method: "POST",
       headers,
       body: JSON.stringify(bodyPayload),
+      signal,
     }, allowProxy);
 
     if (!res.ok && res.status === 404 && fallbackUrl) {
@@ -453,6 +650,7 @@ async function callOpenAICompatibleStream(
         method: "POST",
         headers,
         body: JSON.stringify(bodyPayload),
+        signal,
       }, allowProxy);
     }
   } catch (netErr) {
@@ -517,7 +715,8 @@ async function callGeminiStream(
   config: ApiConfig,
   systemPrompt: string,
   turns: ChatTurn[],
-  onChunk: (accumulatedText: string) => void
+  onChunk: (accumulatedText: string) => void,
+  signal?: AbortSignal
 ): Promise<string> {
   const model = cleanGeminiModel(config.model);
   const apiKey = (config.apiKey || "").trim();
@@ -555,6 +754,7 @@ async function callGeminiStream(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(bodyPayload),
+      signal,
     });
   } catch (netErr) {
     throw new Error(formatApiError(netErr));
@@ -566,7 +766,7 @@ async function callGeminiStream(
   }
 
   if (!res.body) {
-    return callGemini(config, systemPrompt, turns);
+    return callGemini(config, systemPrompt, turns, signal);
   }
 
   const reader = res.body.getReader();
@@ -623,7 +823,7 @@ async function callGeminiStream(
   }
 
   if (!fullOutput || !fullOutput.trim()) {
-    return callGemini(config, systemPrompt, turns);
+    return callGemini(config, systemPrompt, turns, signal);
   }
 
   return fullOutput;
@@ -633,7 +833,8 @@ export async function callLLM(
   config: ApiConfig,
   systemPrompt: string,
   turns: ChatTurn[],
-  onChunk?: (text: string) => void
+  onChunk?: (text: string) => void,
+  signal?: AbortSignal
 ): Promise<string> {
   const isStreamingEnabled =
     config.streamEnabled !== false &&
@@ -642,28 +843,28 @@ export async function callLLM(
 
   if (config.mode === "gemini") {
     if (isStreamingEnabled && onChunk) {
-      return callGeminiStream(config, systemPrompt, turns, onChunk);
+      return callGeminiStream(config, systemPrompt, turns, onChunk, signal);
     }
-    return callGemini(config, systemPrompt, turns);
+    return callGemini(config, systemPrompt, turns, signal);
   }
 
-  const isLocal = isLocalEndpoint(config.baseUrl);
   const isOllama = isOllamaEndpoint(config.baseUrl);
 
   if (isStreamingEnabled && onChunk) {
     if (isOllama) {
-      return callOllamaStream(config, systemPrompt, turns, onChunk);
+      return callOllamaStream(config, systemPrompt, turns, onChunk, signal);
     }
-    return callOpenAICompatibleStream(config, systemPrompt, turns, onChunk);
+    return callOpenAICompatibleStream(config, systemPrompt, turns, onChunk, signal);
   }
 
-  return callOpenAICompatible(config, systemPrompt, turns);
+  return callOpenAICompatible(config, systemPrompt, turns, signal);
 }
 
 async function callOpenAICompatible(
   config: ApiConfig,
   systemPrompt: string,
-  turns: ChatTurn[]
+  turns: ChatTurn[],
+  signal?: AbortSignal
 ): Promise<string> {
   const { isOllama, primaryUrl, fallbackUrl } = resolveEndpoints(config.baseUrl);
   const isDeepSeek = isDeepSeekEndpoint(config);
@@ -726,6 +927,7 @@ async function callOpenAICompatible(
       method: "POST",
       headers,
       body: JSON.stringify(bodyPayload),
+      signal,
     }, allowProxy);
 
     if (!res.ok && res.status === 404 && fallbackUrl) {
@@ -733,6 +935,7 @@ async function callOpenAICompatible(
         method: "POST",
         headers,
         body: JSON.stringify(bodyPayload),
+        signal,
       }, allowProxy);
     }
   } catch (netErr) {
@@ -744,7 +947,7 @@ async function callOpenAICompatible(
     throw new Error(formatApiError(null, res.status, errText, config.baseUrl, config.model));
   }
 
-  const data = await res.json();
+  const data = await readJsonResponse(res);
   const choice = data?.choices?.[0]?.message;
   let content = extractResponseContent(data);
 
@@ -760,7 +963,8 @@ async function callOpenAICompatible(
 async function callGemini(
   config: ApiConfig,
   systemPrompt: string,
-  turns: ChatTurn[]
+  turns: ChatTurn[],
+  signal?: AbortSignal
 ): Promise<string> {
   const model = cleanGeminiModel(config.model);
   const apiKey = (config.apiKey || "").trim();
@@ -769,7 +973,7 @@ async function callGemini(
     throw new Error("Укажите API-ключ Gemini в настройках.");
   }
 
-  const url = `[https://generativelanguage.googleapis.com/v1beta/models/$](https://generativelanguage.googleapis.com/v1beta/models/$){model}:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const contents = sanitizeGeminiContents(turns);
   const thinkingConfig = buildGeminiThinkingConfig(model, config.thinkingMode);
 
@@ -798,6 +1002,7 @@ async function callGemini(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(bodyPayload),
+      signal,
     });
   } catch (netErr) {
     throw new Error(formatApiError(netErr));
@@ -808,7 +1013,7 @@ async function callGemini(
     throw new Error(formatApiError(null, res.status, errText));
   }
 
-  const data = await res.json();
+  const data = await readJsonResponse(res, url);
   const candidate = data?.candidates?.[0];
   const finishReason = candidate?.finishReason;
   const blockReason = data?.promptFeedback?.blockReason;
@@ -840,10 +1045,95 @@ export async function requestRoleplayReply(
   systemPrompt: string,
   turns: ChatTurn[],
   onChunk?: (streamedText: string) => void,
-  baseStats?: import("../types").RelationshipStats
+  baseStats?: import("../types").RelationshipStats,
+  signal?: AbortSignal
 ): Promise<ParsedResponse> {
-  const raw = await callLLM(config, systemPrompt, turns, onChunk);
+  const raw = await callLLM(config, systemPrompt, turns, onChunk, signal);
   return parseMetaBlock(raw, baseStats);
+}
+
+export interface ConnectionTestResult {
+  /** Соединение и ключ в порядке, модель ответила. */
+  ok: boolean;
+  /** Короткий ответ модели либо понятное объяснение ошибки. */
+  message: string;
+  /** Сколько миллисекунд занял запрос — видно, насколько провайдер близко. */
+  ms: number;
+  /** Модель, к которой обращались (из настроек). */
+  model: string;
+  /** Тест отменён игроком, а не провалился. */
+  cancelled?: boolean;
+}
+
+/** Насколько длинный ответ модели показываем в отчёте. */
+const CONNECTION_TEST_ANSWER_LIMIT = 200;
+
+const CONNECTION_TEST_PROMPT =
+  "Ты — служебная проверка соединения. Ответь одной короткой фразой, что связь есть. Без мета-блоков, тегов и пояснений.";
+
+/**
+ * Короткий запрос к модели, чтобы игрок сразу видел: соединение, ключ и
+ * выбранная модель рабочие. Идёт ровно тем же путём, что и обычная генерация
+ * (включая резервный прокси), но без стриминга и без истории.
+ */
+export async function testConnection(
+  config: ApiConfig,
+  signal?: AbortSignal
+): Promise<ConnectionTestResult> {
+  const startedAt = Date.now();
+  const model = (config.model || "").trim();
+
+  const finish = (
+    ok: boolean,
+    message: string,
+    extra: { cancelled?: boolean } = {}
+  ): ConnectionTestResult => ({
+    ok,
+    message,
+    ms: Date.now() - startedAt,
+    model: model || "—",
+    ...extra,
+  });
+
+  try {
+    const answer = await callLLM(
+      { ...config, streamEnabled: false },
+      CONNECTION_TEST_PROMPT,
+      [{ role: "user", content: "Проверка связи. Ответь одной короткой фразой." }],
+      undefined,
+      signal
+    );
+
+    const clean = answer
+      .replace(/<think>[\s\S]*?<\/think>/gi, "")
+      .replace(/<thought>[\s\S]*?<\/thought>/gi, "")
+      .replace(/```[\s\S]*?```/g, "")
+      .trim()
+      .slice(0, CONNECTION_TEST_ANSWER_LIMIT);
+
+    if (!clean) {
+      return finish(true, "Провайдер ответил, но текст ответа пустой.");
+    }
+
+    return finish(true, clean);
+  } catch (cause) {
+    if (signal?.aborted || (cause instanceof Error && cause.name === "AbortError")) {
+      return finish(false, "Проверка отменена.", { cancelled: true });
+    }
+
+    // Провайдер ответил, но модель промолчала: сам канал рабочий, и это важно
+    // не путать с обрывом связи — иначе игрок пойдёт чинить настройки.
+    if (cause instanceof Error && /пустой ответ/i.test(cause.message)) {
+      return finish(true, "Провайдер ответил, но модель вернула пустой текст.");
+    }
+
+    return finish(
+      false,
+      cause instanceof Error && cause.message
+        ? cause.message
+        : "Не удалось получить ответ от модели."
+    );
+  }
 }
 
 export async function requestSummary(
@@ -895,7 +1185,7 @@ ${transcript}
     if (apiConfig.mode === "gemini") {
       const model = cleanGeminiModel(apiConfig.model);
       const apiKey = (apiConfig.apiKey || "").trim();
-      const url = `[https://generativelanguage.googleapis.com/v1beta/models/$](https://generativelanguage.googleapis.com/v1beta/models/$){model}:generateContent?key=${apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -906,7 +1196,7 @@ ${transcript}
         }),
       });
       if (!res.ok) return [];
-      const data = await res.json();
+      const data = await readJsonResponse(res, url);
       raw = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     } else {
       const { isOllama, primaryUrl, fallbackUrl } = resolveEndpoints(apiConfig.baseUrl);
@@ -946,7 +1236,7 @@ ${transcript}
       }
 
       if (!res.ok) return [];
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       raw = extractResponseContent(data);
     }
 
@@ -1010,7 +1300,7 @@ OUTPUT ONLY THE RAW PROMPT STRING.`;
     if (apiConfig.mode === "gemini") {
       const model = cleanGeminiModel(apiConfig.model);
       const apiKey = (apiConfig.apiKey || "").trim();
-      const url = `[https://generativelanguage.googleapis.com/v1beta/models/$](https://generativelanguage.googleapis.com/v1beta/models/$){model}:generateContent?key=${apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1021,7 +1311,7 @@ OUTPUT ONLY THE RAW PROMPT STRING.`;
         }),
       });
       if (!res.ok) throw new Error("Gemini Prompt Error");
-      const data = await res.json();
+      const data = await readJsonResponse(res, url);
       raw = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     } else {
       const { isOllama, primaryUrl, fallbackUrl } = resolveEndpoints(apiConfig.baseUrl);
@@ -1062,7 +1352,7 @@ OUTPUT ONLY THE RAW PROMPT STRING.`;
       }
 
       if (!res.ok) throw new Error("API Prompt Error");
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       raw = extractResponseContent(data);
     }
   } catch (err) {
@@ -1077,20 +1367,20 @@ export async function fetchAvailableModels(apiConfig: ApiConfig): Promise<string
     if (apiConfig.mode === "gemini") {
       const apiKey = (apiConfig.apiKey || "").trim();
       if (!apiKey) throw new Error("Сначала укажите API-ключ Gemini в настройках.");
-      const url = `[https://generativelanguage.googleapis.com/v1beta/models?key=$](https://generativelanguage.googleapis.com/v1beta/models?key=$){apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
       const res = await fetch(url);
       if (!res.ok) {
         const errText = await res.text().catch(() => "");
         throw new Error(formatApiError(null, res.status, errText));
       }
-      const data = await res.json();
+      const data = await readJsonResponse(res, url);
       const models: string[] = (data.models || [])
         .map((m: { name?: string }) => (m.name ? m.name.replace(/^models\//, "") : ""))
         .filter((name: string) => name.includes("gemini") || name.includes("flash") || name.includes("pro"));
       return models.length > 0 ? models : ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"];
     } else {
       if (!apiConfig.baseUrl) throw new Error("Сначала укажите Base URL в настройках.");
-      const cleanUrl = apiConfig.baseUrl.trim().replace(/\/+$/, "");
+      const cleanUrl = normalizeRuOpenRouterUrl(apiConfig.baseUrl).replace(/\/+$/, "");
 
       const headers: Record<string, string> = {};
       if (apiConfig.apiKey && apiConfig.apiKey.trim().length > 0) {
@@ -1105,7 +1395,7 @@ export async function fetchAvailableModels(apiConfig: ApiConfig): Promise<string
         const reqHeaders = Object.keys(headers).length > 0 ? headers : undefined;
         const ollamaRes = await resilientFetch(`${rootUrl}/api/tags`, { headers: reqHeaders }, allowProxy);
         if (ollamaRes.ok) {
-          const ollamaData = await ollamaRes.json();
+          const ollamaData = await readJsonResponse(ollamaRes);
           if (Array.isArray(ollamaData.models) && ollamaData.models.length > 0) {
             return ollamaData.models
               .map((m: { name?: string; model?: string }) => m.name || m.model)
@@ -1126,7 +1416,7 @@ export async function fetchAvailableModels(apiConfig: ApiConfig): Promise<string
         const reqHeaders = Object.keys(headers).length > 0 ? headers : undefined;
         const res = await resilientFetch(standardModelsUrl, { headers: reqHeaders }, allowProxy);
         if (res.ok) {
-          const data = await res.json();
+          const data = await readJsonResponse(res);
           if (Array.isArray(data.data) && data.data.length > 0) {
             return data.data
               .map((m: { id?: string }) => m.id)

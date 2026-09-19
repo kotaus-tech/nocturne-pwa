@@ -1,3 +1,21 @@
+# Сборка: обычный Vite-пайплайн, публикуем каталог dist.
+# Эти же значения Netlify подставит в поля формы при импорте проекта из GitHub.
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  # Vite 7 требует Node 20+, в CI используется 22 — держим версии одинаковыми.
+  NODE_VERSION = "22"
+
+# Резервный канал для провайдеров, которых браузер не пускает напрямую (CORS):
+# RU OpenRouter, частично OpenRouter и др. Клиент обращается к тому же пути
+# /api/llm-proxy, что и dev-сервер (см. vite.config.ts).
+#
+# Проверка после деплоя: откройте https://<ваш-сайт>/api/llm-proxy — должно
+# вернуться {"error":"Missing target parameter"} с кодом 400. Если вместо этого
+# приходит HTML-страница 404, значит edge-функция не загрузилась (частая причина:
+# на хостинг вылили только каталог dist без этого netlify.toml).
 [[edge_functions]]
   path = "/api/llm-proxy"
   function = "llm-proxy"

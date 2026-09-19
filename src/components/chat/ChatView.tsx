@@ -15,9 +15,10 @@ import {
   RotateCcw,
   Loader2,
   AlertCircle,
+  Users,
   X,
 } from "lucide-react";
-import { db, getApiConfig, getUserProfile } from "../../db";
+import { db, getApiConfig, getPersonaState, resolvePersonaForChat } from "../../db";
 import { newId } from "../../utils/id";
 import type {
   ApiConfig,
@@ -29,6 +30,21 @@ import type {
   ThoughtMode,
 } from "../../types";
 import { buildSystemPrompt } from "../../services/promptBuilder";
+import {
+  buildAssistantLabeler,
+  buildCharacterIndex,
+  matchLeftCharacters,
+  mergeSceneRelations,
+  matchReturnedCharacters,
+  nextSpeaker,
+  pendingSpeakers,
+  resolveParticipants,
+  resolvePresence,
+  resolveSpeaker,
+  resolveSpeakerName,
+  statsForCharacter,
+} from "../../services/groupScene";
+import { chooseSpeaker } from "../../services/groupRouter";
 import {
   isLocalEndpoint,
   messagesToTurns,
@@ -46,6 +62,9 @@ import { InputBar } from "./InputBar";
 import { MessageBubble } from "./MessageBubble";
 import { NovelReader } from "./NovelReader";
 import { CharacterProfileModal } from "./CharacterProfileModal";
+import { ConfirmDialog } from "../common/ConfirmDialog";
+import { ScenePresenceBar } from "./ScenePresenceBar";
+import { PromptDialog } from "../common/PromptDialog";
 import { PromptInspectorModal } from "./PromptInspectorModal";
 import {
   RelationshipToast,
@@ -59,7 +78,10 @@ import {
 import { renderRoleplayText } from "../../utils/textRenderer";
 import { cn } from "../../utils/cn";
 
-const MEMORY_EXTRACT_INTERVAL = 12;
+/** Реплик в ветке, после которых фоновый экстрактор памяти делает запись. */
+const MEMORY_EXTRACT_INTERVAL = 8;
+/** Сколько новых реплик должно накопиться, чтобы дожать память при выходе. */
+const MEMORY_FLUSH_MIN_MESSAGES = 4;
 const INITIAL_PAGE_SIZE = 35;
 const PAGE_STEP = 25;
 
@@ -245,8 +267,72 @@ export function ChatView({
     [sessionId]
   );
 
+  // Групповая сцена: индекс персонажей нужен, чтобы находить автора реплики
+  // по message.characterId и собирать список участников по session.characterIds.
+  const charactersIndex = useLiveQuery(() => db.characters.toArray(), []);
+  const charactersById = useMemo(
+    () => buildCharacterIndex(charactersIndex),
+    [charactersIndex]
+  );
+
+  const sessionCharacterIdsKey = (session?.characterIds ?? []).join(",");
+
+  /** Участники сцены: основной персонаж ветки всегда первый. */
+  const participants = useMemo(
+    () => resolveParticipants(session, character, charactersById),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [character, sessionCharacterIdsKey, charactersById]
+  );
+
+  const isGroupScene = participants.length > 1;
+
+  /** Кто физически в сцене, а кто за кадром (с причиной). */
+  const presence = useMemo(
+    () => resolvePresence(session, participants),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      participants,
+      session?.activeCharacterIds?.join(","),
+      session?.absentReasons ? Object.values(session.absentReasons).join("|") : "",
+    ]
+  );
+
+  /**
+   * Имена остальных героев сцены: память ведётся от лица основного персонажа,
+   * но групповой контекст ей тоже нужен.
+   */
+  const othersInScene = useMemo(
+    () =>
+      participants
+        .filter((item) => item.id !== character?.id)
+        .map((item) => item.name),
+    [participants, character?.id]
+  );
+
+  const presentCharacters = presence.present;
+  const absentCharacters = presence.absent;
+
   const [visibleLimit, setVisibleLimit] = useState(INITIAL_PAGE_SIZE);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  // Личность игрока: ветка → персонаж → активная персона. Живой запрос, чтобы
+  // смена активной персоны подхватывалась без перезахода в чат.
+  const personaState = useLiveQuery(() => getPersonaState(), []);
+
+  const userProfile: UserProfile | null = useMemo(() => {
+    if (!personaState) return null;
+
+    const persona = resolvePersonaForChat(personaState, [
+      session?.personaId,
+      character?.defaultPersonaId,
+    ]);
+
+    if (!persona) return null;
+
+    return {
+      name: persona.name,
+      avatarUrl: persona.avatarUrl,
+      personaDescription: persona.personaDescription,
+    };
+  }, [personaState, session?.personaId, character?.defaultPersonaId]);
   const [apiConfig, setApiConfig] = useState<ApiConfig | null>(null);
 
   const [statsOpen, setStatsOpen] = useState(false);
@@ -255,10 +341,20 @@ export function ChatView({
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [novelMode, setNovelMode] = useState(false);
   const [thoughtMessage, setThoughtMessage] = useState<Message | null>(null);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
   const [sending, setSending] = useState(false);
   const [liveStreamedText, setLiveStreamedText] = useState("");
+  const [streamingCharacterId, setStreamingCharacterId] = useState<string | null>(
+    null
+  );
+  /** Выбранный адресат: его реплику ждём следующей (подсказка «Отвечает: …»). */
+  const [targetCharacterId, setTargetCharacterId] = useState<string | null>(null);
+  /** Кого уводим из сцены: спрашиваем причину («ушёл в гараж»). */
+  const [presencePrompt, setPresencePrompt] = useState<Character | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [metaNotice, setMetaNotice] = useState<string | null>(null);
+  const metaNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [initializationError, setInitializationError] = useState<string | null>(null);
 
   const [showScrollBottom, setShowScrollBottom] = useState(false);
@@ -267,8 +363,12 @@ export function ChatView({
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastMsgIdRef = useRef<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const lastToastMsgCount = useRef(0);
   const lastExtractedMsgCountRef = useRef(0);
+  /** Сколько реплик ещё не попало в память — нужно для дозаписи при выходе. */
+  const unsavedMessagesRef = useRef(0);
+  const memoryCompressRef = useRef<(() => Promise<void>) | null>(null);
   const lastStatusRef = useRef("");
 
   const isNearBottomRef = useRef(true);
@@ -297,17 +397,6 @@ export function ChatView({
 
   useEffect(() => {
     let active = true;
-
-    getUserProfile()
-      .then((profile) => {
-        if (active) setUserProfile(profile);
-      })
-      .catch((cause) => {
-        if (!active) return;
-        setInitializationError(
-          cause instanceof Error ? cause.message : "Не удалось прочитать профиль."
-        );
-      });
 
     getApiConfig()
       .then((config) => {
@@ -341,17 +430,48 @@ export function ChatView({
 
     lastToastMsgCount.current = 0;
     lastMsgIdRef.current = null;
-    lastExtractedMsgCountRef.current = 0;
     isNearBottomRef.current = true;
 
     savedChatPositionRef.current = null;
     pendingReadingPositionRef.current = null;
   }, [sessionId]);
 
+  // Где остановился фоновый экстрактор памяти: ветка помнит это между заходами,
+  // иначе память дожималась бы заново при каждом открытии чата.
+  useEffect(() => {
+    if (!session) return;
+    lastExtractedMsgCountRef.current = session.memoryExtractedCount ?? 0;
+  }, [session?.id]);
+
+  // Память дожимается при выходе из ветки: если накопились новые реплики,
+  // а авто-экстрактор до них ещё не дошёл, записываем без ожидания.
+  useEffect(() => {
+    memoryCompressRef.current = compressMemory;
+  });
+
+  useEffect(() => {
+    unsavedMessagesRef.current = Math.max(
+      0,
+      (allMessages?.length ?? 0) - lastExtractedMsgCountRef.current
+    );
+  }, [allMessages?.length]);
+
   useEffect(() => {
     return () => {
       if (toastTimerRef.current) {
         clearTimeout(toastTimerRef.current);
+      }
+      if (metaNoticeTimerRef.current) {
+        clearTimeout(metaNoticeTimerRef.current);
+      }
+      // Не оставляем «висящую» генерацию после закрытия ветки.
+      abortRef.current?.abort();
+      abortRef.current = null;
+
+      // Уходим из ветки — не теряем память: дожимаем её, если накопились
+      // реплики, до которых фоновый экстрактор не успел дойти.
+      if (unsavedMessagesRef.current >= MEMORY_FLUSH_MIN_MESSAGES) {
+        void memoryCompressRef.current?.();
       }
     };
   }, []);
@@ -529,6 +649,13 @@ export function ChatView({
     }
   }, [liveStreamedText, sending, novelMode]);
 
+  /** Короткое служебное уведомление (например, о неразобранном мета-блоке). */
+  const showMetaNotice = (message: string) => {
+    if (metaNoticeTimerRef.current) clearTimeout(metaNoticeTimerRef.current);
+    setMetaNotice(message);
+    metaNoticeTimerRef.current = setTimeout(() => setMetaNotice(null), 8000);
+  };
+
   const showToast = (data: ToastData) => {
     if (toastTimerRef.current) {
       clearTimeout(toastTimerRef.current);
@@ -623,6 +750,19 @@ export function ChatView({
     }
   };
 
+  const isAbortError = (cause: unknown): boolean =>
+    cause instanceof DOMException
+      ? cause.name === "AbortError"
+      : cause instanceof Error && cause.name === "AbortError";
+
+  /** Прерывает текущую генерацию: частичный ответ не сохраняется. */
+  const handleStop = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setSending(false);
+    setLiveStreamedText("");
+  };
+
   const handleGetSuggestions = async (): Promise<string[]> => {
     if (!apiConfig || !character || !userProfile || !messages || !session) {
       return [];
@@ -632,7 +772,7 @@ export function ChatView({
     const transcript = recent
       .map(
         (message) =>
-          `${message.sender === "user" ? userProfile.name : character.name}: ${message.swipes[message.currentSwipeIndex]}`
+          `${speakerName(message)}: ${message.swipes[message.currentSwipeIndex]}`
       )
       .join("\n");
 
@@ -695,6 +835,61 @@ export function ChatView({
     );
   }
 
+  // -------------------- Групповая сцена: помощники --------------------
+
+  /** Автор реплики: для групповых сцен — по message.characterId, иначе основной персонаж. */
+  const speakerFor = (message: Message): Character =>
+    resolveSpeaker(message, character, charactersById);
+
+  /** Имя автора реплики (снимок имени переживает удаление персонажа). */
+  const speakerName = (message: Message): string =>
+    resolveSpeakerName(message, character, charactersById, userProfile.name);
+
+  /** Шкалы отношений конкретного персонажа сцены. */
+  const statsFor = (characterId: string): RelationshipStats =>
+    statsForCharacter(session, characterId, charactersById);
+
+  /** Текст последней реплики игрока — нужен роутеру говорящего. */
+  const lastUserTextIn = (list: Message[]): string => {
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      const message = list[index];
+      if (message.sender === "user") {
+        return message.swipes[message.currentSwipeIndex] ?? "";
+      }
+    }
+    return "";
+  };
+
+  /** Кто отвечал последним — его ход роутер старается не повторять. */
+  const lastAssistantSpeakerId = (list: Message[]): string => {
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      const message = list[index];
+      if (message.sender === "assistant") {
+        return message.characterId ?? character.id;
+      }
+    }
+    return character.id;
+  };
+
+  /** Другие присутствующие для промпта: отсутствующих описывает блок присутствия. */
+  const othersFor = (characterId: string): Character[] =>
+    presentCharacters.filter((item) => item.id !== characterId);
+
+  /** Подпись чужих реплик в контексте запроса. */
+  const turnLabelFor = (speakerId: string) =>
+    buildAssistantLabeler(speakerId, character.id, (message) =>
+      speakerName(message)
+    );
+
+  /** Адресат следующей реплики, если он всё ещё в сцене. */
+  const activeTarget = targetCharacterId
+    ? presentCharacters.find((item) => item.id === targetCharacterId)
+    : undefined;
+
+  const typingCharacter =
+    (streamingCharacterId ? charactersById.get(streamingCharacterId) : undefined) ||
+    character;
+
   const lastAssistantId = [...allMessages]
     .reverse()
     .find((message) => message.sender === "assistant")?.id;
@@ -711,7 +906,9 @@ export function ChatView({
 
   async function callModelAndAppend(
     contextMessages: Message[],
-    isInitiative = false
+    isInitiative = false,
+    onlySpeakers?: Character[],
+    targetName?: string
   ) {
     if (!apiConfig || !character || !session || !userProfile) return;
 
@@ -731,83 +928,193 @@ export function ChatView({
     setErrorMsg(null);
     isNearBottomRef.current = true;
 
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
       const isSteppedWindow = apiConfig.steppedContextEnabled !== false;
-      const recent = getSliceForContext(
-        contextMessages,
-        apiConfig.contextWindow,
-        isSteppedWindow
-      );
-
-      const systemPrompt = buildSystemPrompt(
-        character,
-        session,
-        userProfile,
-        recent,
-        isLocal
-      );
-      const turns = messagesToTurns(recent);
-
-      if (isInitiative) {
-        turns.push({
-          role: "user",
-          content: `[${userProfile.name} молчит или выжидает. ${character.name}, прояви собственную инициативу: продолжи мысль, соверши физическое действие, измени положение, начни новую реплику или нарушь паузу. НЕ говори и НЕ действуй за ${userProfile.name}!]`,
-        });
-      }
-
-      const parsed = await requestRoleplayReply(
-        apiConfig,
-        systemPrompt,
-        turns,
-        (chunk) => {
-          setLiveStreamedText(chunk);
-        },
-        session.currentStats
-      );
-
-      const oldStats = session.currentStats;
-      const newStats = parsed.stats ?? session.currentStats;
-
-      const assistantMessage: Message = {
-        id: newId(),
-        sessionId: session.id,
-        sender: "assistant",
-        swipes: [parsed.text || "..."],
-        currentSwipeIndex: 0,
-        innerThought: parsed.innerThought,
-        statsSnapshot: newStats,
-        timestamp: Date.now(),
-      };
-
-      await db.messages.add(assistantMessage);
-      await db.sessions.update(session.id, {
-        currentStats: newStats,
-        updatedAt: Date.now(),
-      });
-
-      const total = (allMessages?.length ?? 0) + 1;
       const toastsEnabled = session.showRelationshipToasts !== false;
 
-      if (toastsEnabled && parsed.feelingHint && parsed.feelingHint.trim()) {
-        showToast({
-          title: parsed.feelingHint.trim(),
-          type: "feeling",
-        });
-      } else if (parsed.stats) {
-        checkMilestone(oldStats, newStats, total);
+      // Групповая сцена: каждый участник отвечает своим ходом, по порядку списка.
+      // Каждый следующий видит уже готовые реплики предыдущих.
+      // Групповая сцена: за ход отвечает один персонаж. Либо его выбрал игрок
+      // (адресат), либо решает лёгкий запрос роутера, а при сбое — упоминание
+      // по имени и ротация. Одиночные ветки идут прежним путём.
+      let speakers: Character[];
+
+      if (onlySpeakers && onlySpeakers.length > 0) {
+        speakers = onlySpeakers;
+      } else if (isGroupScene) {
+        const pool =
+          presentCharacters.length > 0 ? presentCharacters : participants;
+
+        const lastSpeakerId = lastAssistantSpeakerId(contextMessages);
+
+        const lastUserText = lastUserTextIn(contextMessages);
+
+        const chosen = await chooseSpeaker(
+          apiConfig,
+          {
+            present: pool,
+            relations: session.relations,
+            userName: userProfile.name,
+            lastUserText,
+            lastSpeakerId,
+            directorNotes: session.directorNotes,
+          },
+          controller.signal
+        );
+
+        speakers = [chosen];
+      } else {
+        speakers = [character];
+      }
+      let workingContext = contextMessages;
+      let appended = 0;
+      const participantStats = { ...(session.participantStats ?? {}) };
+
+      for (const speaker of speakers) {
+        if (controller.signal.aborted) break;
+
+        const recent = getSliceForContext(
+          workingContext,
+          apiConfig.contextWindow,
+          isSteppedWindow
+        );
+
+        const speakerStats = statsFor(speaker.id);
+
+        const systemPrompt = buildSystemPrompt(
+          speaker,
+          session,
+          userProfile,
+          recent,
+          isLocal,
+          isGroupScene
+            ? {
+                others: othersFor(speaker.id),
+                currentStats: speakerStats,
+                absent: absentCharacters,
+                relations: session.relations,
+              }
+            : undefined
+        );
+
+        const turns = isGroupScene
+          ? messagesToTurns(recent, turnLabelFor(speaker.id))
+          : messagesToTurns(recent);
+
+        if (isInitiative) {
+          turns.push({
+            role: "user",
+            content: `[${userProfile.name} молчит или выжидает. ${speaker.name}, прояви собственную инициативу: продолжи мысль, соверши физическое действие, измени положение, начни новую реплику или нарушь паузу. НЕ говори и НЕ действуй за ${userProfile.name}!]`,
+          });
+        } else if (targetName && speaker.id === speakers[0].id) {
+          // Игрок выбрал адресата аватаром: подсказка уходит только в запрос,
+          // в истории сообщения её нет.
+          turns.push({
+            role: "user",
+            content: `[Отвечает: ${speaker.name}. Игрок обратился к нему в первую очередь — отвечай за ${speaker.name}, остальные остаются в сцене.]`,
+          });
+        }
+
+        setStreamingCharacterId(speaker.id);
+        setLiveStreamedText("");
+
+        const parsed = await requestRoleplayReply(
+          apiConfig,
+          systemPrompt,
+          turns,
+          (chunk) => {
+            setLiveStreamedText(chunk);
+          },
+          speakerStats,
+          controller.signal
+        );
+
+        if (parsed.metaWarning) showMetaNotice(parsed.metaWarning);
+
+        // Сцена двигается сама: кто-то мог вернуться, а кто-то — уйти.
+        if (parsed.returnedNames?.length || parsed.left?.length) {
+          await applySceneChanges({
+            returning: matchReturnedCharacters(
+              parsed.returnedNames ?? [],
+              absentCharacters.map((item) => item.character)
+            ),
+            leaving: matchLeftCharacters(parsed.left ?? [], presentCharacters),
+          });
+        }
+
+        await applyRelationUpdates(parsed.relations);
+
+        const newStats = parsed.stats ?? speakerStats;
+
+        const assistantMessage: Message = {
+          id: newId(),
+          sessionId: session.id,
+          sender: "assistant",
+          characterId: isGroupScene ? speaker.id : undefined,
+          characterName: isGroupScene ? speaker.name : undefined,
+          swipes: [parsed.text || "..."],
+          currentSwipeIndex: 0,
+          innerThought: parsed.innerThought,
+          statsSnapshot: newStats,
+          timestamp: Date.now(),
+        };
+
+        await db.messages.add(assistantMessage);
+        appended += 1;
+
+        if (speaker.id === character.id) {
+          await db.sessions.update(session.id, {
+            currentStats: newStats,
+            updatedAt: Date.now(),
+          });
+        } else {
+          participantStats[speaker.id] = newStats;
+          await db.sessions.update(session.id, {
+            participantStats: { ...participantStats },
+            updatedAt: Date.now(),
+          });
+        }
+
+        const total = (allMessages?.length ?? 0) + appended;
+
+        if (toastsEnabled && parsed.feelingHint && parsed.feelingHint.trim()) {
+          showToast({
+            title:
+              speaker.id === character.id
+                ? parsed.feelingHint.trim()
+                : `${speaker.name}: ${parsed.feelingHint.trim()}`,
+            type: "feeling",
+          });
+        } else if (parsed.stats && speaker.id === character.id) {
+          checkMilestone(speakerStats, newStats, total);
+        }
+
+        workingContext = [...workingContext, assistantMessage];
       }
 
-      if (total - lastExtractedMsgCountRef.current >= MEMORY_EXTRACT_INTERVAL) {
-        lastExtractedMsgCountRef.current = total;
+      const totalAfter = (allMessages?.length ?? 0) + appended;
+
+      if (totalAfter - lastExtractedMsgCountRef.current >= MEMORY_EXTRACT_INTERVAL) {
+        lastExtractedMsgCountRef.current = totalAfter;
+        unsavedMessagesRef.current = 0;
         compressMemory().catch(() => {});
       }
     } catch (cause) {
-      setErrorMsg(
-        cause instanceof Error ? cause.message : "Ошибка при получении ответа."
-      );
+      // Отмена пользователем — не ошибка, просто снимаем индикаторы.
+      if (!isAbortError(cause)) {
+        setErrorMsg(
+          cause instanceof Error ? cause.message : "Ошибка при получении ответа."
+        );
+      }
     } finally {
+      if (abortRef.current === controller) abortRef.current = null;
       setSending(false);
       setLiveStreamedText("");
+      setStreamingCharacterId(null);
     }
   }
 
@@ -824,11 +1131,196 @@ export function ChatView({
 
     if (last && last.sender === "user") {
       await callModelAndAppend(full, false);
+      return;
     }
+
+    // Групповая сцена: если ход прервался на середине, дожимаем тех,
+    // кто ещё не ответил на последнюю реплику игрока.
+    if (!isGroupScene) return;
+
+    const pending = pendingSpeakers(full, participants, character?.id ?? "");
+    if (pending.length === 0) return;
+
+    await callModelAndAppend(full, false, pending);
+  }
+
+  /** Ввести персонажа в сцену или убрать его за кадр. */
+  async function applyPresence(
+    target: Character,
+    isPresent: boolean,
+    reason?: string
+  ) {
+    if (!session) return;
+
+    const presentIds = new Set(presentCharacters.map((item) => item.id));
+
+    // Порядок присутствующих всегда повторяет порядок состава.
+    const nextIds = participants
+      .map((item) => item.id)
+      .filter((id) =>
+        id === target.id ? isPresent : presentIds.has(id)
+      );
+
+    const nextReasons = { ...(session.absentReasons ?? {}) };
+
+    if (isPresent) {
+      delete nextReasons[target.id];
+    } else if (reason?.trim()) {
+      nextReasons[target.id] = reason.trim().slice(0, 120);
+    }
+
+    await db.sessions.update(session.id, {
+      activeCharacterIds: nextIds,
+      absentReasons: nextReasons,
+      updatedAt: Date.now(),
+    });
+
+    if (!isPresent && targetCharacterId === target.id) {
+      setTargetCharacterId(null);
+    }
+  }
+
+  /**
+   * Сцена живёт сама: модель может вернуть героя из-за кадра (мета-поле
+   * `returned`) или, наоборот, увести его по сюжету (`left`). Оба изменения
+   * применяем одним обновлением ветки и показываем игроку тостом.
+   */
+  async function applySceneChanges(input: {
+    returning?: Character[];
+    leaving?: { character: Character; reason?: string }[];
+  }) {
+    if (!session) return;
+
+    const returning = input.returning ?? [];
+    const leaving = input.leaving ?? [];
+
+    if (returning.length === 0 && leaving.length === 0) return;
+
+    const presentIds = new Set(presentCharacters.map((item) => item.id));
+    const returningIds = new Set(returning.map((item) => item.id));
+    const leavingIds = new Set(leaving.map((item) => item.character.id));
+
+    // Порядок остаётся порядком состава: вернувшиеся встают на своё место.
+    let nextIds = participants
+      .map((item) => item.id)
+      .filter(
+        (id) => (presentIds.has(id) || returningIds.has(id)) && !leavingIds.has(id)
+      );
+
+    // Сцена не должна опустеть: последнего героя за кадр не уводим.
+    if (nextIds.length === 0) nextIds = presentIds.size > 0 ? [...presentIds] : nextIds;
+    if (nextIds.length === 0) return;
+
+    const nextReasons = { ...(session.absentReasons ?? {}) };
+    for (const id of returningIds) delete nextReasons[id];
+    for (const item of leaving) {
+      const reason = item.reason?.trim().slice(0, 120);
+      if (reason) nextReasons[item.character.id] = reason;
+      else delete nextReasons[item.character.id];
+    }
+
+    await db.sessions.update(session.id, {
+      activeCharacterIds: nextIds,
+      absentReasons: nextReasons,
+      updatedAt: Date.now(),
+    });
+
+    if (session.showRelationshipToasts === false) return;
+
+    if (returning.length > 0) {
+      showToast({
+        title:
+          returning.length === 1
+            ? `${returning[0].name} снова в сцене`
+            : `В сцену вернулись: ${returning.map((item) => item.name).join(", ")}`,
+        type: "status",
+      });
+      return;
+    }
+
+    const [first] = leaving;
+    showToast({
+      title:
+        leaving.length === 1
+          ? `${first.character.name} выходит из сцены${
+              first.reason ? ` (${first.reason})` : ""
+            }`
+          : `За кадром: ${leaving.map((item) => item.character.name).join(", ")}`,
+      type: "status",
+    });
+  }
+
+  /**
+   * Живые связи: модель пишет в мета-блоке только то, что изменилось, а мы
+   * обновляем пару в ветке и показываем игроку тост.
+   */
+  async function applyRelationUpdates(
+    incoming: { from: string; to?: string; text: string }[] | undefined
+  ) {
+    if (!session || !incoming || incoming.length === 0) return;
+
+    const result = mergeSceneRelations(session.relations ?? [], incoming, participants);
+    if (result.changed.length === 0) return;
+
+    await db.sessions.update(session.id, {
+      relations: result.relations,
+      updatedAt: Date.now(),
+    });
+
+    if (session.showRelationshipToasts === false) return;
+
+    const [first] = result.changed;
+    if (result.changed.length === 1) {
+      showToast({
+        title: first.to
+          ? `Связи обновились: ${first.from} → ${first.to}`
+          : `Связи обновились: ${first.from}`,
+        type: "status",
+      });
+      return;
+    }
+
+    showToast({
+      title: `Связи обновились: ${result.changed.length} пары`,
+      type: "status",
+    });
+  }
+
+  function handleTogglePresence(target: Character, isPresent: boolean) {
+    if (isPresent) {
+      void applyPresence(target, true);
+      return;
+    }
+
+    // Убираем из сцены: спросим причину — она уходит в промпт сцены.
+    if (presentCharacters.length <= 1) return;
+    setPresencePrompt(target);
+  }
+
+  /** Дать ход одному участнику сцены (кнопка у его имени). */
+  async function handleRequestTurn(characterId: string) {
+    if (!session || sending) return;
+
+    const speaker =
+      presentCharacters.find((item) => item.id === characterId) ??
+      participants.find(
+        (item) => item.id === characterId && presence.present.includes(item)
+      );
+    if (!speaker) return;
+
+    const full = await db.messages
+      .where("sessionId")
+      .equals(session.id)
+      .sortBy("timestamp");
+
+    setDirectorOpen(false);
+    await callModelAndAppend(full, true, [speaker]);
   }
 
   async function handleSend(text: string) {
     if (!session) return;
+
+    const target = activeTarget;
 
     const userMessage: Message = {
       id: newId(),
@@ -849,7 +1341,8 @@ export function ChatView({
       .equals(session.id)
       .sortBy("timestamp");
 
-    await callModelAndAppend(full, false);
+    setTargetCharacterId(null);
+    await callModelAndAppend(full, false, target ? [target] : undefined, target?.name);
   }
 
   async function handleContinue() {
@@ -860,6 +1353,20 @@ export function ChatView({
       .equals(session.id)
       .sortBy("timestamp");
 
+    // Группа: «Продолжить» передаёт ход следующему, чтобы он среагировал
+    // на услышанное, а не повторял предыдущего.
+    if (isGroupScene) {
+      const next = nextSpeaker(
+        presentCharacters.length > 0 ? presentCharacters : participants,
+        lastAssistantSpeakerId(full)
+      );
+
+      if (!next) return;
+
+      await callModelAndAppend(full, true, [next]);
+      return;
+    }
+
     await callModelAndAppend(full, true);
   }
 
@@ -869,11 +1376,18 @@ export function ChatView({
     const index = allMessages.findIndex((item) => item.id === message.id);
     const context = allMessages.slice(0, index);
     const isLocal = isLocalEndpoint(apiConfig!.baseUrl);
+    // Групповая сцена: переписываем реплику того же персонажа, что её написал.
+    const speaker = speakerFor(message);
+    const speakerStats = statsFor(speaker.id);
 
     setSending(true);
     setLiveStreamedText("");
     setErrorMsg(null);
     isNearBottomRef.current = true;
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     try {
       const isSteppedWindow = apiConfig!.steppedContextEnabled !== false;
@@ -884,13 +1398,26 @@ export function ChatView({
       );
 
       const systemPrompt = buildSystemPrompt(
-        character!,
+        speaker,
         session,
         userProfile!,
         recent,
-        isLocal
+        isLocal,
+        isGroupScene
+          ? {
+              others: othersFor(speaker.id),
+              currentStats: speakerStats,
+              absent: absentCharacters,
+              relations: session.relations,
+            }
+          : undefined
       );
-      const turns = messagesToTurns(recent);
+      const turns = isGroupScene
+        ? messagesToTurns(recent, turnLabelFor(speaker.id))
+        : messagesToTurns(recent);
+
+      setStreamingCharacterId(speaker.id);
+      setLiveStreamedText("");
 
       const parsed = await requestRoleplayReply(
         apiConfig!,
@@ -899,10 +1426,26 @@ export function ChatView({
         (chunk) => {
           setLiveStreamedText(chunk);
         },
-        session.currentStats
+        speakerStats,
+        controller.signal
       );
 
-      const newStats = parsed.stats ?? session.currentStats;
+      if (parsed.metaWarning) showMetaNotice(parsed.metaWarning);
+
+      // Перегенерация тоже двигает сцену: возвращает и уводит героев.
+      if (parsed.returnedNames?.length || parsed.left?.length) {
+        await applySceneChanges({
+          returning: matchReturnedCharacters(
+            parsed.returnedNames ?? [],
+            absentCharacters.map((item) => item.character)
+          ),
+          leaving: matchLeftCharacters(parsed.left ?? [], presentCharacters),
+        });
+      }
+
+      await applyRelationUpdates(parsed.relations);
+
+      const newStats = parsed.stats ?? speakerStats;
       const newSwipes = [...message.swipes, parsed.text || "..."];
 
       await db.messages.update(message.id, {
@@ -913,26 +1456,43 @@ export function ChatView({
         timestamp: Date.now(),
       });
 
-      await db.sessions.update(session.id, {
-        currentStats: newStats,
-        updatedAt: Date.now(),
-      });
+      if (speaker.id === character!.id) {
+        await db.sessions.update(session.id, {
+          currentStats: newStats,
+          updatedAt: Date.now(),
+        });
+      } else {
+        await db.sessions.update(session.id, {
+          participantStats: {
+            ...(session.participantStats ?? {}),
+            [speaker.id]: newStats,
+          },
+          updatedAt: Date.now(),
+        });
+      }
 
       const toastsEnabled = session.showRelationshipToasts !== false;
 
       if (toastsEnabled && parsed.feelingHint && parsed.feelingHint.trim()) {
         showToast({
-          title: parsed.feelingHint.trim(),
+          title:
+            speaker.id === character!.id
+              ? parsed.feelingHint.trim()
+              : `${speaker.name}: ${parsed.feelingHint.trim()}`,
           type: "feeling",
         });
       }
     } catch (cause) {
-      setErrorMsg(
-        cause instanceof Error ? cause.message : "Ошибка регенерации."
-      );
+      if (!isAbortError(cause)) {
+        setErrorMsg(
+          cause instanceof Error ? cause.message : "Ошибка регенерации."
+        );
+      }
     } finally {
+      if (abortRef.current === controller) abortRef.current = null;
       setSending(false);
       setLiveStreamedText("");
+      setStreamingCharacterId(null);
     }
   }
 
@@ -949,7 +1509,7 @@ export function ChatView({
     const transcript = targetMessages
       .map(
         (message) =>
-          `${message.sender === "user" ? userProfile.name : character.name}: ${message.swipes[message.currentSwipeIndex]}`
+          `${speakerName(message)}: ${message.swipes[message.currentSwipeIndex]}`
       )
       .join("\n");
 
@@ -965,7 +1525,8 @@ export function ChatView({
         character.name,
         userProfile.name,
         transcript,
-        existingFacts
+        existingFacts,
+        othersInScene
       );
 
       const existingDiary = session.diary || [];
@@ -1011,8 +1572,20 @@ export function ChatView({
         storyLog: currentStoryLog,
         diary: [...existingDiary, newDiaryEntry],
         extractedFacts: updatedFacts,
+        memoryExtractedCount: allMessages.length,
         updatedAt: Date.now(),
       });
+
+      lastExtractedMsgCountRef.current = allMessages.length;
+      unsavedMessagesRef.current = 0;
+
+      // Видно, что память действительно пишется (и сколько записей ушло).
+      if (session.showRelationshipToasts !== false) {
+        showToast({
+          title: `Память обновлена: ${updatedFacts.length} якорей, дневник и синопсис`,
+          type: "status",
+        });
+      }
     } catch (cause) {
       console.error("Memory extract error:", cause);
       throw cause;
@@ -1034,7 +1607,8 @@ export function ChatView({
         apiConfig,
         character.name,
         userProfile.name,
-        sourceText
+        sourceText,
+        othersInScene
       );
 
       if (freshSummary && freshSummary.trim().length > 0) {
@@ -1059,7 +1633,7 @@ export function ChatView({
     const transcript = allMessages
       .map(
         (message, index) =>
-          `[#${index + 1}] ${message.sender === "user" ? userProfile.name : character.name}: ${message.swipes[message.currentSwipeIndex]}`
+          `[#${index + 1}] ${speakerName(message)}: ${message.swipes[message.currentSwipeIndex]}`
       )
       .join("\n");
 
@@ -1068,7 +1642,8 @@ export function ChatView({
         apiConfig,
         character.name,
         userProfile.name,
-        transcript
+        transcript,
+        othersInScene
       );
 
       if (rawEpisodes.length > 0) {
@@ -1202,14 +1777,43 @@ export function ChatView({
                 className="ring-2 ring-white/[0.12] transition-all group-hover:ring-accent/60"
               />
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-bold text-zinc-100 group-hover:text-accent sm:text-base">
-                  {character.name}
+                <p className="flex items-center gap-1.5 text-sm font-bold text-zinc-100 group-hover:text-accent sm:text-base">
+                  <span className="truncate">{character.name}</span>
+                  {isGroupScene && (
+                    <span
+                      title={`Групповая сцена. В комнате: ${presentCharacters
+                        .map((item) => item.name)
+                        .join(", ")}${
+                        absentCharacters.length > 0
+                          ? `. За кадром: ${absentCharacters
+                              .map(
+                                (item) =>
+                                  `${item.character.name}${
+                                    item.reason ? ` (${item.reason})` : ""
+                                  }`
+                              )
+                              .join(", ")}`
+                          : ""
+                      }`}
+                      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-accent/35 bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent"
+                    >
+                      <Users size={11} strokeWidth={2.2} />
+                      {absentCharacters.length > 0
+                        ? `${presentCharacters.length}/${participants.length}`
+                        : participants.length}
+                    </span>
+                  )}
                 </p>
-                {characterTagline && (
-                  <p className="truncate text-xs text-content-muted">
-                    {characterTagline}
-                  </p>
-                )}
+                <p className="truncate text-xs text-content-muted">
+                  {isGroupScene
+                    ? `в сцене: ${
+                        presentCharacters
+                          .filter((item) => item.id !== character.id)
+                          .map((item) => item.name)
+                          .join(", ") || "только вы двое"
+                      }`
+                    : characterTagline}
+                </p>
               </div>
             </button>
           </div>
@@ -1234,6 +1838,15 @@ export function ChatView({
           </div>
         </div>
 
+        {isGroupScene && (
+          <ScenePresenceBar
+            cast={participants}
+            present={presentCharacters}
+            disabled={sending}
+            onToggle={handleTogglePresence}
+          />
+        )}
+
         <RelationshipToast toast={toast} className="absolute top-full mt-3" />
       </header>
 
@@ -1251,11 +1864,15 @@ export function ChatView({
             messages={allMessages}
             character={character}
             userProfile={userProfile}
+            resolveSpeakerName={speakerName}
           />
         ) : (
           <div className="mx-auto flex w-full max-w-4xl flex-col-reverse gap-4 px-3 py-6 sm:px-6">
             {sending && (
-              <TypingBubble character={character} streamedText={liveStreamedText} />
+              <TypingBubble
+                character={typingCharacter}
+                streamedText={liveStreamedText}
+              />
             )}
 
             {errorMsg && (
@@ -1278,7 +1895,7 @@ export function ChatView({
                 <React.Fragment key={message.id}>
                   <MessageBubble
                     message={message}
-                    character={character}
+                    character={speakerFor(message)}
                     userProfile={userProfile}
                     isLastAssistant={message.id === lastAssistantId}
                     isLastUser={
@@ -1292,15 +1909,7 @@ export function ChatView({
                       swipes[message.currentSwipeIndex] = text;
                       await db.messages.update(message.id, { swipes });
                     }}
-                    onDelete={async () => {
-                      if (confirm("Удалить это и все последующие сообщения?")) {
-                        await rewindToMessage(session.id, message.id, false);
-                        lastExtractedMsgCountRef.current = Math.min(
-                          lastExtractedMsgCountRef.current,
-                          allMessages.length - 1
-                        );
-                      }
-                    }}
+                    onDelete={() => setPendingDeleteId(message.id)}
                     onSwipe={async (direction) => {
                       const next = message.currentSwipeIndex + direction;
                       if (next < 0 || next >= message.swipes.length) return;
@@ -1370,19 +1979,69 @@ export function ChatView({
             </div>
           )}
 
+          {metaNotice && (
+            <div
+              role="status"
+              className="mx-3 mb-2 flex items-start gap-2 rounded-2xl border border-warning/25 bg-warning/[0.08] px-3 py-2 text-[11px] leading-relaxed text-warning"
+            >
+              <AlertCircle size={14} className="mt-0.5 shrink-0" />
+              <span className="flex-1">{metaNotice}</span>
+              <button
+                type="button"
+                onClick={() => setMetaNotice(null)}
+                aria-label="Скрыть уведомление"
+                className="shrink-0 rounded-lg px-1.5 text-warning/70 hover:text-warning"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          )}
+
           <InputBar
             onSend={handleSend}
             onOpenDirector={() => setDirectorOpen(true)}
             onRequestSuggestions={handleGetSuggestions}
             onContinue={handleContinue}
+            onStop={handleStop}
             sending={sending}
             characterName={character.name}
             modelName={apiConfig?.model || "AI Model"}
+            groupScene={isGroupScene}
+            participants={
+              isGroupScene
+                ? presentCharacters.map((item) => ({
+                    id: item.id,
+                    name: item.name,
+                    avatarUrl: item.avatarUrl,
+                  }))
+                : undefined
+            }
+            targetId={activeTarget?.id ?? null}
+            onSelectTarget={(characterId) =>
+              setTargetCharacterId((prev) =>
+                prev === characterId ? null : characterId
+              )
+            }
           />
         </div>
       </div>
 
-      <StatsPanel open={statsOpen} onClose={() => setStatsOpen(false)} stats={stats} />
+      <StatsPanel
+        open={statsOpen}
+        onClose={() => setStatsOpen(false)}
+        stats={stats}
+        participants={
+          isGroupScene
+            ? participants.map((item) => ({
+                id: item.id,
+                name: item.name,
+                avatarUrl: item.avatarUrl,
+                stats: statsFor(item.id),
+              }))
+            : undefined
+        }
+        activeParticipantId={character.id}
+      />
 
       <DirectorPanel
         open={directorOpen}
@@ -1426,9 +2085,61 @@ export function ChatView({
           db.sessions.update(session.id, { realisticPacing: enabled })
         }
         onUpdateThoughtMode={handleUpdateThoughtMode}
+        onRequestTurn={(characterId) => void handleRequestTurn(characterId)}
+        onTogglePresence={(characterId, isPresent, reason) => {
+          const target = participants.find((item) => item.id === characterId);
+          if (!target) return;
+          void applyPresence(target, isPresent, reason);
+        }}
+        onToggleLiveScene={(enabled) => {
+          void db.sessions.update(session.id, {
+            liveScene: enabled,
+            updatedAt: Date.now(),
+          });
+        }}
+        presentIds={presentCharacters.map((item) => item.id)}
+        sending={sending}
         onOpenInspector={() => setInspectorOpen(true)}
         onCompressMemory={compressMemory}
         onRefreshSummary={handleRefreshSummary}
+      />
+
+      <ConfirmDialog
+        open={pendingDeleteId !== null}
+        tone="danger"
+        title="Удалить эту и все последующие реплики?"
+        description="История ветки будет откатана до выбранного сообщения. Восстановить удалённое нельзя."
+        confirmLabel="Удалить"
+        onClose={() => setPendingDeleteId(null)}
+        onConfirm={async () => {
+          if (!pendingDeleteId) return;
+          await rewindToMessage(session.id, pendingDeleteId, false);
+          lastExtractedMsgCountRef.current = Math.min(
+            lastExtractedMsgCountRef.current,
+            Math.max(0, allMessages.length - 1)
+          );
+          setPendingDeleteId(null);
+        }}
+      />
+
+      <PromptDialog
+        open={presencePrompt !== null}
+        title={`Убрать ${presencePrompt?.name ?? "персонажа"} из сцены?`}
+        description="Персонаж уходит за кадр: он не сможет отвечать, и модель не будет говорить за него. Причину можно указать — она попадёт в контекст сцены."
+        label="Где он сейчас"
+        placeholder="ушёл в гараж, спит, уехал…"
+        initialValue={
+          presencePrompt
+            ? session.absentReasons?.[presencePrompt.id] ?? ""
+            : ""
+        }
+        confirmLabel="Убрать из сцены"
+        onClose={() => setPresencePrompt(null)}
+        onConfirm={async (reason) => {
+          const target = presencePrompt;
+          setPresencePrompt(null);
+          if (target) await applyPresence(target, false, reason);
+        }}
       />
 
       <ThoughtModal
@@ -1501,6 +2212,9 @@ export function ChatView({
           apiConfig={apiConfig}
           contextMessages={currentContextSlice}
           lastAssistantMessage={lastAssistantMessage}
+          participants={participants}
+          absent={absentCharacters}
+          speakerId={lastAssistantMessage?.characterId ?? character.id}
         />
       )}
     </div>

@@ -21,12 +21,15 @@ import {
   Check,
   Palette,
 } from "lucide-react";
+import { useLiveQuery } from "dexie-react-hooks";
+import { getPersonaState } from "../../db";
 import { Modal } from "../common/Modal";
 import { Avatar } from "../common/Avatar";
 import { ImageCropperModal } from "../common/ImageCropperModal";
 import { CharacterGeneratorModal } from "./CharacterGeneratorModal";
 import { TAG_CATEGORIES } from "../../services/characterGenerator";
 import { WALLPAPER_PRESETS } from "../../utils/wallpaperPresets";
+import { prepareImageFile, WALLPAPER_OPTIONS, MAX_SOURCE_MB } from "../../utils/image";
 import type {
   Character,
   LorebookEntry,
@@ -333,6 +336,10 @@ export function CharacterEditor({
   const [error, setError] = useState<string | null>(null);
   const [failedWallpaper, setFailedWallpaper] = useState<string | null>(null);
 
+  // Список персон для выбора «от чьего лица» идёт диалог с этим персонажем.
+  const personaState = useLiveQuery(() => getPersonaState(), []);
+  const personas = personaState?.personas ?? [];
+
   const [showPresetsPicker, setShowPresetsPicker] = useState(false);
 
   const avatarInputRef = useRef<HTMLInputElement>(null);
@@ -405,10 +412,20 @@ export function CharacterEditor({
     if (!file) return;
 
     try {
+      if (file.size > MAX_SOURCE_MB * 1024 * 1024) {
+        throw new Error(
+          `Файл слишком большой (${Math.round(file.size / 1024 / 1024)} МБ). Максимум — ${MAX_SOURCE_MB} МБ.`
+        );
+      }
+
       const raw = await fileToDataUrl(file);
       setCropImage(raw);
-    } catch {
-      setError("Не удалось прочитать изображение аватара.");
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Не удалось прочитать изображение аватара."
+      );
     } finally {
       e.currentTarget.value = "";
     }
@@ -419,16 +436,26 @@ export function CharacterEditor({
     if (!file) return;
 
     try {
-      const raw = await fileToDataUrl(file);
+      // Обои персонажа тоже ужимаем: они хранятся в базе и копируются в бэкап.
+      const raw = await prepareImageFile(file, WALLPAPER_OPTIONS);
       update("wallpaperUrl", raw);
-    } catch {
-      setError("Не удалось прочитать фоновое изображение.");
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Не удалось прочитать фоновое изображение."
+      );
     } finally {
       e.currentTarget.value = "";
     }
   };
 
   const canSave = Boolean(draft.name.trim() && draft.firstMessage.trim());
+  const saveHint = draft.name.trim()
+    ? draft.firstMessage.trim()
+      ? ""
+      : "Для сохранения нужно первое приветственное сообщение — оно на вкладке «Основное»."
+    : "Для сохранения нужно имя персонажа.";
 
   const handleSave = async () => {
     if (!canSave || saving) return;
@@ -710,6 +737,35 @@ export function CharacterEditor({
                   multiline
                   rows={4}
                 />
+
+                <div>
+                  <label
+                    htmlFor={`${editorId}-persona`}
+                    className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-content-secondary"
+                  >
+                    Кем играете в этой истории
+                  </label>
+                  <select
+                    id={`${editorId}-persona`}
+                    value={draft.defaultPersonaId ?? ""}
+                    onChange={(event) =>
+                      update("defaultPersonaId", event.target.value || undefined)
+                    }
+                    className="input-field text-sm"
+                  >
+                    <option value="">Активная персона (как в разделе «Мои персоны»)</option>
+                    {personas.map((persona) => (
+                      <option key={persona.id} value={persona.id}>
+                        {persona.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-content-muted">
+                    Истории с этим персонажем будут вестись от выбранной личности,
+                    даже если активная персона другая. Отдельную ветку можно
+                    переопределить в «Режиссёре» чата.
+                  </p>
+                </div>
               </div>
             )}
 
@@ -852,14 +908,21 @@ export function CharacterEditor({
             )}
 
             <div className="flex items-center justify-between">
-              <span className="text-[11px] sm:text-xs text-content-muted">
-                Имя и приветствие обязательны
+              <span
+                className={
+                  saveHint
+                    ? "pr-3 text-[11px] sm:text-xs text-warning"
+                    : "pr-3 text-[11px] sm:text-xs text-content-muted"
+                }
+              >
+                {saveHint || "Имя и приветствие обязательны"}
               </span>
 
               <button
                 type="button"
                 disabled={!canSave || saving}
                 onClick={() => void handleSave()}
+                title={saveHint || undefined}
                 className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2 sm:px-5 sm:py-2.5 text-xs sm:text-sm font-semibold text-on-accent shadow-[0_0_20px_rgba(139,92,246,0.25)] hover:bg-accent-hover disabled:opacity-40"
               >
                 {saving ? (

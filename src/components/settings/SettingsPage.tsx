@@ -1,4 +1,32 @@
 import {
+  AlertCircle,
+  AlertTriangle,
+  Bookmark,
+  BookmarkPlus,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  Cpu,
+  DatabaseBackup,
+  DownloadCloud,
+  HardDrive,
+  Layers,
+  Loader2,
+  PlugZap,
+  Radio,
+  RefreshCw,
+  RotateCcw,
+  Save,
+  Search,
+  Server,
+  ShieldCheck,
+  Sliders,
+  Trash2,
+  UploadCloud,
+  X,
+  XCircle,
+} from "lucide-react";
+import {
   useEffect,
   useId,
   useMemo,
@@ -6,30 +34,10 @@ import {
   useState,
 } from "react";
 import {
-  Cpu,
-  DatabaseBackup,
-  DownloadCloud,
-  UploadCloud,
-  Trash2,
-  CheckCircle2,
-  XCircle,
-  AlertTriangle,
-  RefreshCw,
-  Loader2,
-  AlertCircle,
-  Check,
-  Save,
-  Server,
-  Sliders,
-  Radio,
-  Bookmark,
-  BookmarkPlus,
-  X,
-  Search,
-  ChevronDown,
-  Layers,
-  RotateCcw,
-} from "lucide-react";
+  sanitizeBaseUrl,
+  testConnection,
+  type ConnectionTestResult,
+} from "../../services/apiClient";
 import {
   getApiConfig,
   setApiConfig,
@@ -47,6 +55,14 @@ import type {
   ThinkingMode,
 } from "../../types";
 import { fetchAvailableModels, isLocalEndpoint } from "../../services/apiClient";
+import {
+  formatBytes,
+  getStorageStatus,
+  requestPersistentStorage,
+  type StorageStatus,
+} from "../../services/storage";
+import { APP_CODENAME, APP_VERSION } from "../../appInfo";
+import { ConfirmDialog } from "../common/ConfirmDialog";
 import { cn } from "../../utils/cn";
 
 interface SettingsPageProps {
@@ -70,12 +86,19 @@ const TEMPLATE_PRESETS: {
   },
   {
     label: "OpenRouter",
-    baseUrl: "[https://openrouter.ai/api/v1](https://openrouter.ai/api/v1)",
+    baseUrl: "https://openrouter.ai/api/v1",
+    mode: "openai",
+  },
+  {
+    // Работает из России без VPN; при CORS запрос идёт через прокси
+    // /api/llm-proxy (edge-функция Netlify или dev-мидлвара).
+    label: "RU OpenRouter",
+    baseUrl: "https://api.ru-openrouter.ru/v1",
     mode: "openai",
   },
   {
     label: "DeepSeek",
-    baseUrl: "[https://api.deepseek.com](https://api.deepseek.com)",
+    baseUrl: "https://api.deepseek.com",
     mode: "openai",
   },
   {
@@ -274,12 +297,21 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
   const [presetToast, setPresetToast] = useState<string | null>(null);
 
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [connectionTest, setConnectionTest] = useState<ConnectionTestResult | null>(null);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const connectionTestAbortRef = useRef<AbortController | null>(null);
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
 
   const fileRef = useRef<HTMLInputElement>(null);
   const [backupBusy, setBackupBusy] = useState<"export" | "import" | "wipe" | null>(null);
   const [backupStatus, setBackupStatus] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  const [pendingPreset, setPendingPreset] = useState<ApiPreset | null>(null);
+  const [pendingImport, setPendingImport] = useState<BackupBundle | null>(null);
+  const [wipeOpen, setWipeOpen] = useState(false);
+  const [storage, setStorage] = useState<StorageStatus | null>(null);
+  const [storageBusy, setStorageBusy] = useState(false);
 
   const id = useId();
   const mountedRef = useRef(false);
@@ -294,7 +326,17 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
     Promise.all([getApiConfig(), getApiPresets()])
       .then(([loadedApi, loadedPresets]) => {
         if (!active) return;
-        setApi(loadedApi);
+
+        // Раньше адрес мог сохраниться с markdown-обёрткой: чиним на месте,
+        // чтобы в поле настроек не висел мусорный адрес.
+        const cleanBaseUrl = sanitizeBaseUrl(loadedApi.baseUrl);
+        const normalized =
+          cleanBaseUrl === loadedApi.baseUrl
+            ? loadedApi
+            : { ...loadedApi, baseUrl: cleanBaseUrl };
+
+        setApi(normalized);
+        if (normalized !== loadedApi) void setApiConfig(normalized).catch(() => {});
         setPresets(loadedPresets);
       })
       .catch((cause) => {
@@ -311,6 +353,37 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (activeTab !== "backup") return;
+
+    let active = true;
+
+    getStorageStatus()
+      .then((status) => {
+        if (active) setStorage(status);
+      })
+      .catch(() => {
+        if (active) setStorage(null);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [activeTab, backupBusy]);
+
+  const handleProtectStorage = async () => {
+    if (storageBusy) return;
+    setStorageBusy(true);
+
+    try {
+      await requestPersistentStorage();
+      const status = await getStorageStatus();
+      if (mountedRef.current) setStorage(status);
+    } finally {
+      if (mountedRef.current) setStorageBusy(false);
+    }
+  };
 
   const triggerPresetToast = (msg: string) => {
     setPresetToast(msg);
@@ -364,8 +437,7 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
     triggerPresetToast(`Загружен пресет: «${preset.name}»`);
   };
 
-  const handleDeletePreset = async (presetId: string, name: string) => {
-    if (!confirm(`Удалить пресет «${name}»?`)) return;
+  const handleDeletePreset = async (presetId: string) => {
     try {
       await deleteApiPreset(presetId);
       setPresets((prev) => prev.filter((p) => p.id !== presetId));
@@ -404,6 +476,33 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
     } finally {
       if (mountedRef.current) setLoadingModels(false);
     }
+  };
+
+  /**
+   * Проверка соединения: короткий запрос к модели. Пока запрос идёт, кнопка
+   * превращается в «Отменить» — на медленных провайдерах это важнее, чем
+   * таймаут, который мог бы обрывать долгие размышления.
+   */
+  const handleTestConnection = async () => {
+    if (!api) return;
+
+    if (testingConnection) {
+      connectionTestAbortRef.current?.abort();
+      return;
+    }
+
+    const controller = new AbortController();
+    connectionTestAbortRef.current = controller;
+    setTestingConnection(true);
+    setConnectionTest(null);
+
+    const result = await testConnection(api, controller.signal);
+
+    if (!mountedRef.current) return;
+
+    connectionTestAbortRef.current = null;
+    setTestingConnection(false);
+    setConnectionTest(result);
   };
 
   const saveApi = async () => {
@@ -463,53 +562,58 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
     }
   };
 
+  /** Читает файл бэкапа и передаёт его в диалог подтверждения. */
   const handleImport = async (file: File) => {
     if (backupBusy) return;
     setBackupBusy("import");
     setBackupStatus(null);
-    let reloadScheduled = false;
 
     try {
       const text = await file.text();
       const bundle = JSON.parse(text) as BackupBundle;
+
       if (!bundle || typeof bundle !== "object") {
         throw new Error("Файл не является корректным JSON-документом.");
       }
 
-      const confirmed = confirm(
-        "Импорт полностью перезапишет текущих персонажей, ветки чатов и настройки. Продолжить?"
-      );
-      if (!confirmed) {
-        setBackupBusy(null);
-        return;
-      }
-
-      await importBackup(bundle);
-      setBackupStatus({
-        type: "success",
-        text: "Данные успешно восстановлены. Перезагрузка приложения…",
-      });
-
-      reloadScheduled = true;
-      setTimeout(() => {
-        window.location.reload();
-      }, 1000);
+      setPendingImport(bundle);
     } catch (cause) {
       setBackupStatus({
         type: "error",
         text: cause instanceof Error ? cause.message : "Не удалось прочитать файл бэкапа.",
       });
     } finally {
-      if (!reloadScheduled) setBackupBusy(null);
+      setBackupBusy(null);
+    }
+  };
+
+  /** Применяет подтверждённый импорт: база перезаписывается целиком. */
+  const applyImport = async (bundle: BackupBundle) => {
+    setBackupBusy("import");
+    setBackupStatus(null);
+
+    try {
+      await importBackup(bundle);
+      setBackupStatus({
+        type: "success",
+        text: "Данные успешно восстановлены. Перезагрузка приложения…",
+      });
+
+      // Даём статусу отрисоваться и перезапускаем приложение.
+      window.setTimeout(() => {
+        window.location.reload();
+      }, 1000);
+    } catch (cause) {
+      setBackupStatus({
+        type: "error",
+        text: cause instanceof Error ? cause.message : "Не удалось восстановить базу.",
+      });
+      setBackupBusy(null);
     }
   };
 
   const handleWipe = async () => {
     if (backupBusy) return;
-    const confirmed = confirm(
-      "Точно удалить ВСЕ локальные данные приложения без возможности восстановления?"
-    );
-    if (!confirmed) return;
 
     setBackupBusy("wipe");
     try {
@@ -667,7 +771,7 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
 
                           <button
                             type="button"
-                            onClick={() => void handleDeletePreset(p.id, p.name)}
+                            onClick={() => setPendingPreset(p)}
                             title="Удалить пресет"
                             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-content-muted transition-colors hover:bg-danger/10 hover:text-danger"
                           >
@@ -874,6 +978,76 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
                       <p className="mt-2 whitespace-pre-wrap text-xs text-danger leading-relaxed">
                         {modelError}
                       </p>
+                    )}
+                  </div>
+
+                  {/* Проверка соединения: короткий запрос прямо из настроек */}
+                  <div className="rounded-2xl border border-white/[0.08] bg-surface-2 p-3.5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="flex items-center gap-2 text-xs font-bold text-zinc-100">
+                          <PlugZap
+                            size={14}
+                            className={connectionTest?.ok ? "text-success" : "text-accent"}
+                          />
+                          <span>Проверка соединения</span>
+                        </p>
+                        <p className="mt-0.5 text-[11px] leading-relaxed text-content-muted">
+                          Короткий запрос к модели: сразу видно, отвечают ли
+                          провайдер, ключ и резервный прокси. Проверяются текущие
+                          значения полей — сохранять настройки не обязательно.
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => void handleTestConnection()}
+                        className={cn(
+                          "flex shrink-0 items-center gap-1.5 rounded-xl border px-3.5 py-1.5 text-xs font-semibold transition-all",
+                          testingConnection
+                            ? "border-danger/50 bg-danger/10 text-danger"
+                            : "border-accent/50 bg-accent/15 text-accent hover:border-accent"
+                        )}
+                      >
+                        {testingConnection ? (
+                          <Loader2 size={13} className="animate-spin" />
+                        ) : (
+                          <PlugZap size={13} />
+                        )}
+                        <span>{testingConnection ? "Отменить" : "Проверить"}</span>
+                      </button>
+                    </div>
+
+                    {connectionTest && (
+                      <div
+                        role="status"
+                        className={cn(
+                          "mt-3 flex items-start gap-2 rounded-xl border px-3 py-2 text-xs leading-relaxed",
+                          connectionTest.ok
+                            ? "border-success/30 bg-success/[0.08] text-success"
+                            : connectionTest.cancelled
+                              ? "border-white/[0.08] bg-[#121622] text-content-muted"
+                              : "border-danger/30 bg-danger/[0.06] text-danger"
+                        )}
+                      >
+                        {connectionTest.ok ? (
+                          <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
+                        ) : (
+                          <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                        )}
+                        <span className="min-w-0 flex-1 whitespace-pre-wrap">
+                          {connectionTest.ok
+                            ? `Соединение работает. Модель «${connectionTest.model}» ответила за ${connectionTest.ms} мс:`
+                            : connectionTest.cancelled
+                              ? connectionTest.message
+                              : `Не удалось получить ответ (${connectionTest.ms} мс). Модель «${connectionTest.model}»:`}
+                          {!connectionTest.cancelled && (
+                            <span className="mt-1 block font-medium">
+                              {connectionTest.message}
+                            </span>
+                          )}
+                        </span>
+                      </div>
                     )}
                   </div>
 
@@ -1324,6 +1498,117 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
             </div>
           )}
 
+          <section className="rounded-3xl border border-white/[0.07] bg-[#121620]/90 p-6 backdrop-blur-xl">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <HardDrive size={22} className="mt-0.5 shrink-0 text-accent" />
+                <div>
+                  <h3 className="text-sm font-bold text-zinc-100">
+                    Данные и хранилище
+                  </h3>
+                  <p className="mt-1 max-w-xl text-xs leading-relaxed text-content-secondary">
+                    Вся библиотека хранится только в этом браузере. Постоянное
+                    хранилище защищает её от автоматической очистки системой.
+                  </p>
+                </div>
+              </div>
+
+              <span className="rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-1.5 text-[11px] font-medium text-content-muted">
+                NOCTURNE v{APP_VERSION} · {APP_CODENAME}
+              </span>
+            </div>
+
+            {storage && !storage.supported && (
+              <p className="mt-4 rounded-xl border border-warning/30 bg-warning/5 p-3 text-[11px] leading-relaxed text-warning">
+                Браузер не отдаёт сведения о хранилище. Следите за регулярными
+                экспортами бэкапа.
+              </p>
+            )}
+
+            {storage?.supported && (
+              <div className="mt-5 space-y-4">
+                <div>
+                  <div className="mb-1.5 flex items-center justify-between text-[11px]">
+                    <span className="font-semibold uppercase tracking-wider text-content-secondary">
+                      Занято
+                    </span>
+                    <span className="tabular-nums text-content-muted">
+                      {formatBytes(storage.usage)}
+                      {storage.quota > 0 ? ` из ${formatBytes(storage.quota)}` : ""}
+                    </span>
+                  </div>
+
+                  <div
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.round(storage.usageRatio * 100)}
+                    aria-label="Использование локального хранилища"
+                    className="h-1.5 w-full overflow-hidden rounded-full bg-white/[0.08]"
+                  >
+                    <div
+                      className={cn(
+                        "h-full rounded-full transition-all duration-300",
+                        storage.usageRatio > 0.9
+                          ? "bg-danger"
+                          : storage.usageRatio > 0.7
+                            ? "bg-warning"
+                            : "bg-accent"
+                      )}
+                      style={{ width: `${Math.max(2, storage.usageRatio * 100)}%` }}
+                    />
+                  </div>
+
+                  {storage.usageRatio > 0.85 && (
+                    <p className="mt-2 text-[11px] leading-relaxed text-warning">
+                      Хранилище почти заполнено. Удалите старые ветки или уменьшите
+                      размер обоев, чтобы избежать ошибок записи.
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-white/[0.06] bg-surface-2/60 p-3.5">
+                  <ShieldCheck
+                    size={18}
+                    className={cn(
+                      "shrink-0",
+                      storage.persisted ? "text-success" : "text-warning"
+                    )}
+                  />
+
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold text-zinc-100">
+                      {storage.persisted
+                        ? "Постоянное хранилище включено"
+                        : "Данные могут быть очищены браузером"}
+                    </p>
+                    <p className="mt-0.5 text-[11px] leading-relaxed text-content-muted">
+                      {storage.persisted
+                        ? "Браузер не удалит истории даже при долгом простое."
+                        : "Особенно актуально для Safari на iOS: без флага данные могут исчезнуть примерно через неделю без визитов."}
+                    </p>
+                  </div>
+
+                  {!storage.persisted && (
+                    <button
+                      type="button"
+                      onClick={() => void handleProtectStorage()}
+                      disabled={storageBusy}
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-accent/40 bg-accent/15 px-3 py-1.5 text-xs font-semibold text-accent transition-colors hover:bg-accent/25 disabled:opacity-50"
+                    >
+                      {storageBusy ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <ShieldCheck size={14} />
+                      )}
+                      <span>Защитить данные</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+          </section>
+
           <section className="rounded-3xl border border-danger/25 bg-danger/5 p-6 backdrop-blur-xl">
             <div className="flex items-start gap-4">
               <AlertTriangle size={24} className="shrink-0 text-danger" />
@@ -1335,7 +1620,7 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
                 <button
                   type="button"
                   disabled={backupBusy !== null}
-                  onClick={() => void handleWipe()}
+                  onClick={() => setWipeOpen(true)}
                   className="mt-4 inline-flex items-center gap-2 rounded-xl border border-danger/40 bg-danger/10 px-4 py-2 text-xs font-semibold text-danger hover:bg-danger/20 disabled:opacity-50"
                 >
                   <Trash2 size={14} />
@@ -1346,6 +1631,51 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
           </section>
         </div>
       )}
+
+      <ConfirmDialog
+        open={pendingPreset !== null}
+        tone="danger"
+        title="Удалить пресет подключения?"
+        description={
+          pendingPreset
+            ? `Пресет «${pendingPreset.name}» будет удалён. Текущие настройки подключения не изменятся.`
+            : undefined
+        }
+        confirmLabel="Удалить пресет"
+        onClose={() => setPendingPreset(null)}
+        onConfirm={async () => {
+          if (!pendingPreset) return;
+          await handleDeletePreset(pendingPreset.id);
+          setPendingPreset(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={pendingImport !== null}
+        title="Заменить текущие данные?"
+        description="Импорт полностью перезапишет персонажей, ветки диалогов, память и настройки. Текущая библиотека будет потеряна — при необходимости сначала сделайте экспорт."
+        confirmLabel="Импортировать"
+        onClose={() => setPendingImport(null)}
+        onConfirm={async () => {
+          if (!pendingImport) return;
+          const bundle = pendingImport;
+          setPendingImport(null);
+          await applyImport(bundle);
+        }}
+      />
+
+      <ConfirmDialog
+        open={wipeOpen}
+        tone="danger"
+        title="Стереть все локальные данные?"
+        description="Будут удалены все персонажи, истории, дневники, память и настройки. Восстановить их можно только из заранее сохранённого бэкапа."
+        confirmLabel="Стереть навсегда"
+        onClose={() => setWipeOpen(false)}
+        onConfirm={async () => {
+          setWipeOpen(false);
+          await handleWipe();
+        }}
+      />
     </div>
   );
 }

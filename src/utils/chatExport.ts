@@ -14,6 +14,8 @@ export interface ChatExportBundle {
   exportedAt: number;
   session: ChatSession;
   character?: Character;
+  /** Групповая сцена: остальные участники ветки. */
+  participants?: Character[];
   messages: Message[];
 }
 
@@ -25,6 +27,8 @@ export interface ParsedChatPreview {
   messagesCount: number;
   lastMessagePreview: string;
   character?: Character;
+  /** Групповая сцена: остальные участники ветки. */
+  participants: Character[];
   rawSession: Partial<ChatSession>;
   rawMessages: any[];
 }
@@ -48,12 +52,23 @@ export async function exportChatSession(sessionId: string): Promise<void> {
     db.messages.where("sessionId").equals(sessionId).sortBy("timestamp"),
   ]);
 
+  const participantIds = (session.characterIds ?? []).filter(
+    (id) => id !== session.characterId
+  );
+
+  const participantCharacters = participantIds.length
+    ? (await db.characters.bulkGet(participantIds)).filter(
+        (item): item is Character => Boolean(item)
+      )
+    : [];
+
   const bundle: ChatExportBundle = {
     version: 2,
     appName: "NOCTURNE",
     exportedAt: Date.now(),
     session,
     character,
+    participants: participantCharacters,
     messages,
   };
 
@@ -132,6 +147,12 @@ export async function parseChatBundle(file: File): Promise<ParsedChatPreview> {
     character = sanitizeCharacter(rawCharacter);
   }
 
+  const participants: Character[] = Array.isArray(raw.participants)
+    ? raw.participants
+        .filter((item: any) => item && typeof item === "object" && item.name)
+        .map((item: any) => sanitizeCharacter(item))
+    : [];
+
   return {
     title,
     createdAt: typeof rawSession.createdAt === "number" ? rawSession.createdAt : Date.now(),
@@ -140,6 +161,7 @@ export async function parseChatBundle(file: File): Promise<ParsedChatPreview> {
     messagesCount: rawMessages.length,
     lastMessagePreview,
     character,
+    participants,
     rawSession,
     rawMessages,
   };
@@ -190,12 +212,32 @@ export async function saveImportedSession({
     }
   }
 
+  // Участники групповой сцены: чужие ветки не перезаписываем, недостающих создаём.
+  const participantIds: string[] = [];
+  for (const participant of preview.participants ?? []) {
+    if (!participant?.id || participant.id === finalCharacterId) continue;
+
+    const existing = await db.characters.get(participant.id);
+    if (!existing) {
+      await db.characters.put({ ...participant, id: participant.id });
+    }
+    participantIds.push(participant.id);
+  }
+
+  const originalMainId =
+    typeof preview.rawSession.characterId === "string"
+      ? preview.rawSession.characterId
+      : undefined;
+
   const newSessionId = newId();
   const sessionToSave = sanitizeSession({
     ...preview.rawSession,
     id: newSessionId,
     characterId: finalCharacterId,
     title: customTitle?.trim() || preview.title,
+    characterIds: participantIds.length > 0 ? participantIds : undefined,
+    participantStats:
+      participantIds.length > 0 ? preview.rawSession.participantStats : undefined,
     updatedAt: Date.now(),
   });
 
@@ -203,6 +245,10 @@ export async function saveImportedSession({
     const clean = sanitizeMessage(m);
     return {
       ...clean,
+      characterId:
+        clean.characterId && originalMainId && clean.characterId === originalMainId
+          ? finalCharacterId
+          : clean.characterId,
       id: newId(),
       sessionId: newSessionId,
     };

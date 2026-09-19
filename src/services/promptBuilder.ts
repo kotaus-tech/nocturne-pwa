@@ -1,13 +1,45 @@
-import type { Character, ChatSession, Message, UserProfile } from "../types";
+import type {
+  Character,
+  ChatSession,
+  Message,
+  RelationshipStats,
+  SceneRelation,
+  UserProfile,
+} from "../types";
 import { activateLorebook } from "./lorebookEngine";
 import { META_PROTOCOL_INSTRUCTION } from "./metaParser";
+
+/** Контекст групповой сцены: другие персонажи, которые находятся рядом. */
+export interface GroupSceneContext {
+  /** Остальные присутствующие — они уже в истории, но отвечает сейчас только один. */
+  others: Character[];
+  /** Шкалы отношений именно этого персонажа (в группе они у каждого свои). */
+  currentStats?: RelationshipStats;
+  /** Кто в сцене, а кто за кадром (с причиной). */
+  absent?: { character: Character; reason?: string }[];
+  /** Микро-связи внутри группы: кто как относится к кому. */
+  relations?: SceneRelation[];
+}
+
+/** Короткая выжимка о персонаже для списка участников сцены. */
+function briefCharacter(character: Character): string {
+  const source =
+    character.personality?.trim() ||
+    character.description?.trim() ||
+    character.tagline?.trim() ||
+    "";
+
+  if (!source) return "без дополнительных деталей";
+  return source.length > 160 ? `${source.slice(0, 160).trim()}…` : source;
+}
 
 export function buildSystemPrompt(
   character: Character,
   session: ChatSession,
   userProfile: UserProfile,
   recentMessages: Message[],
-  isLocal: boolean = false
+  isLocal: boolean = false,
+  group?: GroupSceneContext
 ): string {
   const parts: string[] = [];
 
@@ -26,7 +58,12 @@ export function buildSystemPrompt(
         `1. В <thought> пиши только настоящие внутренние мысли персонажа от первого лица согласно активному вектору мышления.\n` +
         `2. В <stats> укажи дельту изменений параметров (+1, +2, -1 или 0), краткое ощущение в hint (1-3 слова) и название актуального статуса в status.\n` +
         `3. Сразу после закрытия тега <stats .../> пиши прямую речь и действия персонажа.\n` +
-        `4. В самом конце реплики НИКАКИХ блоков и технического кода писать НЕ нужно — только чистый текст отыгрыша!`
+        `4. В самом конце реплики НИКАКИХ блоков и технического кода писать НЕ нужно — только чистый текст отыгрыша!` +
+        (group?.absent && group.absent.length > 0
+          ? `\n5. Если в этой реплике персонаж, который был за кадром, возвращается в сцену — добавь рядом с <stats .../> тег <returned names="Имя" />.` +
+            `\n6. Если герой сам уходит из сцены по ходу ответа — добавь тег <left names="Имя" reason="короткая причина" />. Всех сразу не уводи.` +
+            `\n7. Если отношение между героями изменилось — добавь тег <relation from="Имя" to="Имя" text="как теперь относится" />.`
+          : "")
     );
   } else {
     parts.push(META_PROTOCOL_INSTRUCTION);
@@ -79,6 +116,86 @@ export function buildSystemPrompt(
   parts.push(
     `### ДАННЫЕ СОБЕСЕДНИКА (ИГРОКА): ${userProfile.name}\n${userProfile.personaDescription}`
   );
+
+  const liveScene =
+    session.liveScene !== false && (group?.others?.length ?? 0) > 0;
+
+  // 8.1 Групповая сцена: несколько персонажей в одной истории
+  const others = (group?.others || []).filter(
+    (item) => item && item.id !== character.id
+  );
+
+  if (others.length > 0) {
+    const roster = others
+      .map((item) => `- ${item.name}: ${briefCharacter(item)}`)
+      .join("\n");
+
+    parts.push(
+      `### ГРУППОВАЯ СЦЕНА: НЕСКОЛЬКО ПЕРСОНАЖЕЙ\n` +
+        `Сейчас в сцене несколько персонажей. Ты отыгрываешь ТОЛЬКО ${character.name}.\n` +
+        `Кто ещё здесь (их реплики приходят отдельными сообщениями истории):\n${roster}\n` +
+        `Правила групповой сцены:\n` +
+        `1. Реагируй на других персонажей как на живых людей: услышь их, смотри, перебивай, соглашайся, спорь, подмечай их реакцию — но НИКОГДА не пиши за них и не придумывай им реплики, мысли или действия.\n` +
+        `2. Не отвечай за ${userProfile.name}: ход игрока приходит отдельным сообщением.\n` +
+        `3. Не подписывай свою реплику именем и не добавляй заголовков вида «${character.name}:» — пиши сразу текст отыгрыша.\n` +
+        `4. Не пересказывай чужие реплики и не подводи итоги диалога: веди только свой ход и свою часть сцены.\n` +
+        `5. ПРАВИЛО ТРЕУГОЛЬНИКА (анти-вытеснение игрока): между персонажами кипит своё — спор, подколки, взгляды, старые обиды. Но ${userProfile.name} всегда якорь сцены: обращайся к нему за мнением, лови его реакцию, апеллируй к нему как к свидетелю или судье спора. ${userProfile.name} не должен оставаться пассивным зрителем чужого разговора.` +
+        (liveScene
+          ? `\n6. ЖИВАЯ СЦЕНА: если реплика задела кого-то ещё, ты можешь добавить в КОНЦЕ своего ответа 1–2 короткие реакции других присутствующих — каждую с новой строки, в формате «— **Имя:** реплика» (можно с одним коротким действием в *звёздочках*). Это единственное исключение из правила 1: реакции короткие, по одной-двум фразам, и только от тех, кто сейчас в сцене. Если реагировать некому или момент не тот — не добавляй никого.`
+          : "")
+    );
+  }
+
+  // 8.2 Кто в сцене, а кто за кадром
+  const absent = (group?.absent || []).filter(
+    (item) => item?.character && item.character.id !== character.id
+  );
+
+  if (absent.length > 0) {
+    const absentList = absent
+      .map(
+        (item) =>
+          `- ${item.character.name}${item.reason ? ` — ${item.reason}` : ""}`
+      )
+      .join("\n");
+
+    parts.push(
+      `### СЦЕНИЧЕСКОЕ ПРИСУТСТВИЕ\n` +
+        `В сцене сейчас: ${[character.name, ...others.map((item) => item.name)].join(", ")}.\n` +
+        `За кадром (их сейчас нет в локации) — не говори за них и не действуй от их имени, даже если история помнит их реплики:\n${absentList}\n` +
+        `ВОЗВРАЩЕНИЕ В СЦЕНУ: если по времени и сюжету кто-то из них возвращается — опиши его появление (шаги, голос, короткая реплика) и добавь в мета-блок поле "returned": ["Имя"]. Это вернёт персонажа в сцену, и дальше он снова сможет говорить.\n` +
+        `Персонаж возвращается сам, когда это уместно по сюжету, — не жди игрока: если он ушёл в магазин, рано или поздно он вернётся. Но если он вышел только что — не торопи возвращение.\n` +
+        `УХОД ИЗ СЦЕНЫ: если по ходу ответа герой сам уходит (по делам, позвонили, вышел покурить, уехал) — опиши уход и добавь в мета-блок поле "left": {"Имя": "короткая причина"}. Уходит только тот, у кого есть причина: не уводи героев просто так и никогда не уводи всех сразу — сцена не должна опустеть.`
+    );
+  }
+
+  // 8.3 Взаимоотношения внутри группы
+  const relations = (group?.relations || []).filter(
+    (relation) => relation?.from && relation?.text?.trim()
+  );
+
+  if (relations.length > 0) {
+    const names = new Map<string, string>([
+      [character.id, character.name],
+      ...others.map((item) => [item.id, item.name] as [string, string]),
+    ]);
+
+    const relationsText = relations
+      .map((relation) => {
+        const from = names.get(relation.from) || "Кто-то";
+        const to = relation.to
+          ? names.get(relation.to) || "кто-то из группы"
+          : "вся группа";
+        return `- ${from} → ${to}: ${relation.text.trim()}`;
+      })
+      .join("\n");
+
+    parts.push(
+      `### ВЗАИМООТНОШЕНИЯ ВНУТРИ ГРУППЫ (КАТАЛИЗАТОР СЦЕНЫ)\n${relationsText}\n` +
+        `Отыгрывай эти отношения через подтекст, интонации, взгляды и мелкие детали: не пересказывай их словами, показывай в поведении.\n` +
+        `Если по ходу ответа отношение кого-то из героев к другому правда изменилось (обиделся, потеплел, начал ревновать) — добавь в мета-блок поле "relations": [{"from": "Имя", "to": "Имя", "text": "как теперь относится"}]. Обновляй только то, что действительно поменялось: если всё как было — поля не пиши.`
+    );
+  }
 
   // ============================================================
   // СЛОЙ 3: ПОВЕДЕНЧЕСКИЕ МОДУЛИ
@@ -183,8 +300,8 @@ export function buildSystemPrompt(
     }
   }
 
-  // 15. Текущее состояние отношений
-  const s = session.currentStats;
+  // 15. Текущее состояние отношений (в групповой сцене — шкалы говорящего)
+  const s = group?.currentStats ?? session.currentStats;
   parts.push(
     `### ТЕКУЩЕЕ СОСТОЯНИЕ ОТНОШЕНИЙ:\n` +
       `Доверие: ${s.trust}/100 | Привязанность: ${s.affection}/100 | Близость: ${s.closeness}/100 | Напряжение: ${s.tension}/100 | Конфликт: ${s.conflict}/100.\n` +

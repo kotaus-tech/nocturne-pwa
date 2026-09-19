@@ -4,10 +4,6 @@ import {
   NotebookPen,
   Search,
   Trash2,
-  Loader2,
-  Heart,
-  Smile,
-  Sparkles,
 } from "lucide-react";
 import { db } from "../../db";
 import { Avatar } from "../common/Avatar";

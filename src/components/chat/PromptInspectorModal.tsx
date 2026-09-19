@@ -1,21 +1,21 @@
 import { useState, useMemo } from "react";
 import {
-  FileText,
   Copy,
   Check,
   MessagesSquare,
   Cpu,
-  Layers,
-  Sparkles,
   Terminal,
   Activity,
-  Maximize2,
   Info,
 } from "lucide-react";
 import { Modal } from "../common/Modal";
 import type { Character, ChatSession, Message, UserProfile, ApiConfig } from "../../types";
 import { buildSystemPrompt } from "../../services/promptBuilder";
 import { isLocalEndpoint, messagesToTurns } from "../../services/apiClient";
+import {
+  buildCharacterIndex,
+  statsForCharacter,
+} from "../../services/groupScene";
 import { copyTextToClipboard } from "../../utils/clipboard";
 import { cn } from "../../utils/cn";
 
@@ -28,6 +28,12 @@ interface PromptInspectorModalProps {
   apiConfig: ApiConfig;
   contextMessages: Message[];
   lastAssistantMessage?: Message;
+  /** Групповая сцена: все участники (первый — основной персонаж ветки). */
+  participants?: Character[];
+  /** Групповая сцена: кто сейчас за кадром — блок присутствия в промпте. */
+  absent?: { character: Character; reason?: string }[];
+  /** Кто отвечал в последнем запросе — для него и показывается промпт. */
+  speakerId?: string;
 }
 
 type TabKey = "overview" | "system" | "turns" | "raw";
@@ -49,27 +55,83 @@ export function PromptInspectorModal({
   apiConfig,
   contextMessages,
   lastAssistantMessage,
+  participants,
+  absent,
+  speakerId,
 }: PromptInspectorModalProps) {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const isLocal = isLocalEndpoint(apiConfig.baseUrl);
 
+  const roster = participants && participants.length > 1 ? participants : null;
+  const activeSpeaker =
+    (roster && speakerId && roster.find((item) => item.id === speakerId)) ||
+    (roster && roster.find((item) => item.id === character.id)) ||
+    character;
+  const othersKey = roster
+    ? roster
+        .filter((item) => item.id !== activeSpeaker.id)
+        .map((item) => item.id)
+        .join(",")
+    : "";
+
+  const others = useMemo(
+    () => roster?.filter((item) => item.id !== activeSpeaker.id) ?? [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [othersKey, roster]
+  );
+
+  const speakerStats = useMemo(() => {
+    if (!roster) return undefined;
+
+    return statsForCharacter(
+      session,
+      activeSpeaker.id,
+      buildCharacterIndex(roster)
+    );
+  }, [roster, session, activeSpeaker.id]);
+
   // Сборка полного системного промпта, идентичного запросу к API
   const systemPrompt = useMemo(() => {
     return buildSystemPrompt(
-      character,
+      activeSpeaker,
       session,
       userProfile,
       contextMessages,
-      isLocal
+      isLocal,
+      others.length > 0
+        ? {
+            others,
+            currentStats: speakerStats,
+            absent,
+            relations: session.relations,
+          }
+        : undefined
     );
-  }, [character, session, userProfile, contextMessages, isLocal]);
+  }, [
+    activeSpeaker,
+    session,
+    userProfile,
+    contextMessages,
+    isLocal,
+    others,
+    absent,
+    speakerStats,
+  ]);
 
   // Сборка массива реплик turns
   const turns = useMemo(() => {
-    return messagesToTurns(contextMessages);
-  }, [contextMessages]);
+    if (!roster) return messagesToTurns(contextMessages);
+
+    const namesById = new Map(roster.map((item) => [item.id, item.name]));
+
+    return messagesToTurns(contextMessages, (message) => {
+      const authorId = message.characterId ?? character.id;
+      if (authorId === activeSpeaker.id) return undefined;
+      return namesById.get(authorId) || message.characterName;
+    });
+  }, [contextMessages, roster, activeSpeaker.id, character.id]);
 
   // Расчёт метрик токенов
   const systemTokens = useMemo(() => estimateTokens(systemPrompt), [systemPrompt]);
@@ -272,7 +334,7 @@ export function PromptInspectorModal({
                 • При включённом <strong>ступенчатом окне</strong> системный промпт и первые сообщения диалога сохраняют фиксированное положение в KV-памяти сервера. Ru-OpenRouter и DeepSeek считывают до 90% этого текста из кэша по тарифу со скидкой.
               </p>
               <p>
-                • Каждые 12 сообщений автоматически запускается фоновый экстрактор памяти, сохраняя важные события в синопсис и дневник персонажа.
+                • Каждые 8 сообщений автоматически запускается фоновый экстрактор памяти, сохраняя важные события в синопсис и дневник персонажа.
               </p>
             </div>
           </div>

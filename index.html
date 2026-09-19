@@ -14,23 +14,52 @@
       name="description"
       content="NOCTURNE — личное пространство для ролевых историй с AI. Персонажи, диалоги, память и инструменты управления сценой."
     />
+    <meta name="color-scheme" content="dark" />
 
     <meta name="theme-color" content="#090b10" />
 
     <link rel="manifest" href="/manifest.json" />
-    <link rel="icon" href="/icons/icon-512.png" />
-    <link rel="apple-touch-icon" href="/icons/icon-512.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
 
+    <meta name="application-name" content="NOCTURNE" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta
       name="apple-mobile-web-app-status-bar-style"
       content="black-translucent"
     />
+    <meta name="apple-mobile-web-app-title" content="NOCTURNE" />
     <meta name="mobile-web-app-capable" content="yes" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="NOCTURNE" />
+    <meta property="og:locale" content="ru_RU" />
+    <meta property="og:title" content="NOCTURNE — Личные миры. Живые истории." />
+    <meta
+      property="og:description"
+      content="Личное пространство для ролевых историй с AI: персонажи, диалоги, память и инструменты управления сценой."
+    />
+    <meta property="og:image" content="/images/og-cover.png" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="NOCTURNE — Личные миры. Живые истории." />
+    <meta
+      name="twitter:description"
+      content="Личное пространство для ролевых историй с AI: персонажи, диалоги, память и инструменты управления сценой."
+    />
+    <meta name="twitter:image" content="/images/og-cover.png" />
   </head>
 
   <body>
     <div id="root"></div>
+    <noscript>
+      <div style="padding: 24px; color: #f2f3f8; background: #090b10; font-family: system-ui, sans-serif">
+        <h1 style="margin: 0 0 8px; font-size: 20px">NOCTURNE</h1>
+        <p style="margin: 0; color: #9da6b9; font-size: 14px">
+          Для работы приложения нужен включённый JavaScript.
+        </p>
+      </div>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

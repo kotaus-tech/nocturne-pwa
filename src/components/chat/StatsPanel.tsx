@@ -7,14 +7,26 @@ import {
   Swords,
   SlidersHorizontal,
 } from "lucide-react";
+import { useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { Modal } from "../common/Modal";
+import { Avatar } from "../common/Avatar";
 import type { RelationshipStats } from "../../types";
+
+interface StatsParticipant {
+  id: string;
+  name: string;
+  avatarUrl?: string;
+  stats: RelationshipStats;
+}
 
 interface StatsPanelProps {
   open: boolean;
   onClose: () => void;
   stats: RelationshipStats;
+  /** Групповая сцена: шкалы отношений с каждым участником. */
+  participants?: StatsParticipant[];
+  activeParticipantId?: string;
 }
 
 interface StatConfig {
@@ -69,9 +81,23 @@ const STAT_CONFIGS: StatConfig[] = [
   },
 ];
 
-export function StatsPanel({ open, onClose, stats }: StatsPanelProps) {
+export function StatsPanel({
+  open,
+  onClose,
+  stats,
+  participants,
+  activeParticipantId,
+}: StatsPanelProps) {
   const reducedMotion = useReducedMotion();
-  const customStats = Object.entries(stats.customStats ?? {});
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const roster = participants && participants.length > 1 ? participants : null;
+  const selected =
+    (roster && roster.find((item) => item.id === selectedId)) ||
+    roster?.find((item) => item.id === activeParticipantId) ||
+    roster?.[0];
+  const shownStats = selected ? selected.stats : stats;
+  const customStats = Object.entries(shownStats.customStats ?? {});
 
   return (
     <Modal
@@ -82,6 +108,35 @@ export function StatsPanel({ open, onClose, stats }: StatsPanelProps) {
       title="Аналитика отношений"
     >
       <div className="space-y-4">
+        {roster && (
+          <div
+            role="group"
+            aria-label="Участники сцены"
+            className="flex gap-2 overflow-x-auto overscroll-contain pb-1"
+          >
+            {roster.map((item) => {
+              const isActive = selected?.id === item.id;
+
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setSelectedId(item.id)}
+                  aria-pressed={isActive}
+                  className={`flex min-w-0 shrink-0 items-center gap-2 rounded-2xl border px-2.5 py-1.5 text-xs font-medium transition-all ${
+                    isActive
+                      ? "border-accent/50 bg-accent/15 text-accent"
+                      : "border-white/[0.08] bg-[#121622]/80 text-content-secondary hover:border-white/[0.16] hover:text-content"
+                  }`}
+                >
+                  <Avatar src={item.avatarUrl} name={item.name} size={22} />
+                  <span className="max-w-[9rem] truncate">{item.name}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         {/* Карточка текущего статуса с корректным переносом слов */}
         <div className="flex items-start gap-3.5 rounded-2xl border border-white/[0.08] bg-[#121622]/90 p-3.5 backdrop-blur-xl shadow-lg">
           <div
@@ -96,15 +151,20 @@ export function StatsPanel({ open, onClose, stats }: StatsPanelProps) {
               Динамика вашей истории
             </p>
             <h2 className="novel-font mt-0.5 text-base sm:text-lg font-bold tracking-tight text-zinc-100 leading-snug break-words whitespace-normal">
-              {stats.statusTitle || "Осторожное знакомство"}
+              {shownStats.statusTitle || "Осторожное знакомство"}
             </h2>
+            {selected && (
+              <p className="mt-0.5 truncate text-[11px] text-content-muted">
+                Отношения с {selected.name}
+              </p>
+            )}
           </div>
         </div>
 
         {/* Список всех 5 шкал отношений */}
         <div className="space-y-3.5">
           {STAT_CONFIGS.map((cfg, index) => {
-            const rawValue = stats[cfg.key];
+            const rawValue = shownStats[cfg.key];
             const value = typeof rawValue === "number" ? rawValue : 0;
             const percentage = Math.min(100, Math.max(0, value));
             const Icon = cfg.icon;

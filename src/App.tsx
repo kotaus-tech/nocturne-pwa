@@ -18,6 +18,7 @@ import {
   ChevronRight,
   Moon,
   Settings,
+  Wand2,
 } from "lucide-react";
 import { BottomNav, type TabKey } from "./components/layout/BottomNav";
 import { HomePage } from "./components/home/HomePage";
@@ -28,12 +29,17 @@ import { PersonaPage } from "./components/profile/PersonaPage";
 import { MemoryPage } from "./components/knowledge/MemoryPage";
 import { DiaryPage } from "./components/knowledge/DiaryPage";
 import { LorePage } from "./components/knowledge/LorePage";
+import { PromptStudioPage } from "./components/prompt/PromptStudioPage";
 import { ChatView } from "./components/chat/ChatView";
 import { AmbientPlayer } from "./components/chat/AmbientPlayer";
 import { Avatar } from "./components/common/Avatar";
-import { db, getUserProfile } from "./db";
+import { PwaBanners } from "./components/common/PwaBanners";
+import { PersonaSwitcher } from "./components/common/PersonaSwitcher";
+import { GlobalSearchModal } from "./components/common/GlobalSearchModal";
+import { db, ensurePersonas, getUserProfile } from "./db";
 import { ensureSeedData } from "./seed";
-import type { UserProfile } from "./types";
+import { initPwa } from "./services/pwa";
+import { requestPersistentStorage } from "./services/storage";
 import { cn } from "./utils/cn";
 
 export default function App() {
@@ -41,9 +47,12 @@ export default function App() {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [createSignal, setCreateSignal] = useState(0);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [ready, setReady] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  // Персона для сайдбара: liveQuery, чтобы имя и аватар менялись сразу
+  // после переключения в «Моих персонах».
+  const userProfile = useLiveQuery(() => getUserProfile(), []);
 
   // Статистика базы для бейджей сайдбара
   const charactersCount = useLiveQuery(() => db.characters.count(), []);
@@ -79,9 +88,9 @@ export default function App() {
 
   useEffect(() => {
     ensureSeedData()
-      .then(() => getUserProfile())
-      .then((profile) => {
-        setUserProfile(profile);
+      // Одиночный профиль прошлых версий превращается в первую персону.
+      .then(() => ensurePersonas())
+      .then(() => {
         setReady(true);
       })
       .catch((err) => {
@@ -90,9 +99,25 @@ export default function App() {
         setReady(true);
       });
 
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(() => {});
-    }
+    // Просим браузер пометить хранилище постоянным: иначе Safari на iOS
+    // может вычистить библиотеку историй после долгого простоя.
+    void requestPersistentStorage().catch(() => {});
+
+    const disposePwa = initPwa();
+    return disposePwa;
+  }, []);
+
+  // ⌘K / Ctrl+K открывает поиск по всему миру из любого раздела.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
   const handleNavigate = (newTab: TabKey) => {
@@ -259,6 +284,22 @@ export default function App() {
 
               <button
                 type="button"
+                onClick={() => handleNavigate("studio")}
+                className={cn(
+                  "flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150",
+                  tab === "studio"
+                    ? "bg-accent/15 text-accent shadow-sm"
+                    : "text-content-secondary hover:bg-white/[0.04] hover:text-content"
+                )}
+              >
+                <div className="flex items-center gap-3">
+                  <Wand2 size={18} strokeWidth={1.7} />
+                  <span>Промпт-студия</span>
+                </div>
+              </button>
+
+              <button
+                type="button"
                 onClick={handleNavigateFavorites}
                 className={cn(
                   "flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150",
@@ -398,31 +439,26 @@ export default function App() {
             <span>Настройки системы</span>
           </button>
 
-          {/* Плашка персоны */}
-          <button
-            type="button"
-            onClick={() => handleNavigate("persona")}
-            className={cn(
-              "group flex w-full items-center gap-3 rounded-xl border border-white/[0.06] bg-surface-2/60 p-2 text-left transition-all hover:border-white/[0.12] hover:bg-surface-2",
-              tab === "persona" && "border-accent/40 bg-surface-2"
-            )}
-          >
-            <Avatar
-              src={userProfile?.avatarUrl}
-              name={userProfile?.name || "Игрок"}
-              size={36}
+          {/* Плашка персоны: сразу и переключатель, и вход в управление */}
+          <div className="flex items-center gap-2">
+            <PersonaSwitcher
+              align="top"
+              className="min-w-0 flex-1"
+              onOpenManager={() => handleNavigate("persona")}
             />
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-semibold text-content group-hover:text-accent">
-                {userProfile?.name || "Странник"}
-              </p>
-              <p className="truncate text-[11px] text-content-muted">Ваша персона</p>
-            </div>
-            <ChevronRight
-              size={15}
-              className="shrink-0 text-content-muted transition-transform group-hover:translate-x-0.5 group-hover:text-content"
-            />
-          </button>
+            <button
+              type="button"
+              onClick={() => handleNavigate("persona")}
+              title="Управлять персонами"
+              aria-label="Управлять персонами"
+              className={cn(
+                "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-white/[0.07] bg-surface-2/70 text-content-muted transition-colors hover:bg-surface-2 hover:text-content",
+                tab === "persona" && "border-accent/40 text-accent"
+              )}
+            >
+              <ChevronRight size={16} />
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -447,13 +483,14 @@ export default function App() {
                 {tab === "memory" && "Хранилище памяти и фактов"}
                 {tab === "diary" && "Тайные дневники персонажей"}
                 {tab === "lore" && "Миры и база знаний"}
+                {tab === "studio" && "Промпты для генерации изображений"}
               </span>
             </div>
 
             <div className="flex items-center gap-2.5 sm:gap-3">
               <button
                 type="button"
-                onClick={() => handleNavigate("characters")}
+                onClick={() => setSearchOpen(true)}
                 className="hidden sm:flex items-center gap-2 rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-1.5 text-xs text-content-muted transition-colors hover:border-white/[0.15] hover:text-content"
               >
                 <Search size={14} />
@@ -509,9 +546,9 @@ export default function App() {
 
           {tab === "characters" && (
             <CharactersPage
+              onRevealCreated={() => setFavoritesOnly(false)}
               onOpenSession={setActiveSessionId}
               favoritesOnly={favoritesOnly}
-              onFavoritesOnlyChange={setFavoritesOnly}
               createSignal={createSignal}
             />
           )}
@@ -522,6 +559,7 @@ export default function App() {
           {tab === "memory" && <MemoryPage />}
           {tab === "diary" && <DiaryPage />}
           {tab === "lore" && <LorePage />}
+          {tab === "studio" && <PromptStudioPage />}
         </main>
       </div>
 
@@ -535,6 +573,21 @@ export default function App() {
           onBack={() => setActiveSessionId(null)}
         />
       )}
+
+      <GlobalSearchModal
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onOpenSession={(sessionId) => {
+          setSearchOpen(false);
+          setActiveSessionId(sessionId);
+        }}
+        onNavigate={(nextTab) => {
+          setSearchOpen(false);
+          handleNavigate(nextTab);
+        }}
+      />
+
+      <PwaBanners />
     </div>
   );
 }

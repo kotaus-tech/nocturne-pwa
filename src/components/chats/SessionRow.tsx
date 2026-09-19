@@ -15,6 +15,7 @@ import {
   Loader2,
   Pin,
   GripVertical,
+  Users,
 } from "lucide-react";
 import { db, toggleSessionPin } from "../../db";
 import { Avatar } from "../common/Avatar";
@@ -25,6 +26,8 @@ import {
   renameSession,
 } from "../../utils/sessionActions";
 import { exportChatSession } from "../../utils/chatExport";
+import { ConfirmDialog } from "../common/ConfirmDialog";
+import { PromptDialog } from "../common/PromptDialog";
 import { cn } from "../../utils/cn";
 
 interface Props {
@@ -46,6 +49,8 @@ export function SessionRow({
   const [openUpward, setOpenUpward] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const menuId = useId();
   const menuAreaRef = useRef<HTMLDivElement>(null);
@@ -198,6 +203,15 @@ export function SessionRow({
                 <span className="truncate text-sm sm:text-base font-bold text-zinc-100">
                   {characterName}
                 </span>
+                {(session.characterIds?.length ?? 0) > 0 && (
+                  <span
+                    title="Групповая сцена"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-accent/30 bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent"
+                  >
+                    <Users size={10} strokeWidth={2.4} />
+                    {(session.characterIds?.length ?? 0) + 1}
+                  </span>
+                )}
               </div>
 
               <time
@@ -290,10 +304,7 @@ export function SessionRow({
                 className={actionClass}
                 onClick={() => {
                   closeMenu(true);
-                  const title = prompt("Новое название ветки:", session.title);
-                  if (title) {
-                    void runAction(() => renameSession(session.id, title));
-                  }
+                  setRenameOpen(true);
                 }}
               >
                 <Pencil size={14} />
@@ -325,9 +336,7 @@ export function SessionRow({
                 className="flex min-h-10 w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-semibold text-danger hover:bg-danger/10 active:bg-danger/15"
                 onClick={() => {
                   closeMenu(true);
-                  if (confirm("Удалить эту ветку диалога безвозвратно?")) {
-                    void runAction(() => deleteSessionCascade(session.id));
-                  }
+                  setDeleteOpen(true);
                 }}
               >
                 <Trash2 size={14} />
@@ -347,6 +356,28 @@ export function SessionRow({
           <p className="min-w-0 [overflow-wrap:anywhere]">{actionError}</p>
         </div>
       )}
+
+      <PromptDialog
+        open={renameOpen}
+        title="Переименовать ветку"
+        label="Название"
+        initialValue={session.title}
+        placeholder="Например: «Ночь в замке»"
+        maxLength={120}
+        required
+        onClose={() => setRenameOpen(false)}
+        onConfirm={(title) => runAction(() => renameSession(session.id, title))}
+      />
+
+      <ConfirmDialog
+        open={deleteOpen}
+        tone="danger"
+        title="Удалить ветку диалога?"
+        description={`Ветка «${session.title}» и все её сообщения будут удалены без возможности восстановления.`}
+        confirmLabel="Удалить"
+        onClose={() => setDeleteOpen(false)}
+        onConfirm={() => runAction(() => deleteSessionCascade(session.id))}
+      />
     </div>
   );
 }

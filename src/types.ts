@@ -8,6 +8,12 @@ export interface UserProfile {
   personaDescription: string;
 }
 
+/** Своя личность (альтер-эго), от лица которой игрок ведёт диалоги. */
+export interface Persona extends UserProfile {
+  id: string;
+  createdAt: number;
+}
+
 export interface RelationshipStats {
   trust: number;        // 0–100 (Доверие)
   affection: number;    // 0–100 (Привязанность)
@@ -37,6 +43,8 @@ export interface LorebookEntry {
 export interface Character {
   id: string;
   name: string;
+  /** Персона игрока по умолчанию для диалогов с этим персонажем. */
+  defaultPersonaId?: string;
   avatarUrl: string;
   wallpaperUrl?: string;
   tagline: string;
@@ -66,6 +74,10 @@ export interface Message {
   id: string;
   sessionId: string;
   sender: "user" | "assistant" | "system";
+  /** Групповая сцена: какой персонаж написал реплику. Не задано — основной персонаж ветки. */
+  characterId?: string;
+  /** Снимок имени автора на момент ответа (переживает удаление/переименование персонажа). */
+  characterName?: string;
   swipes: string[];
   currentSwipeIndex: number;
   innerThought?: string;
@@ -103,9 +115,43 @@ export type ThoughtMode =
   | "tactical"
   | "instinct";
 
+/** Микро-связь внутри группы: кто как относится к кому. */
+export interface SceneRelation {
+  id: string;
+  /** Кто так думает. */
+  from: string;
+  /** О ком — не задано, значит о группе в целом. */
+  to?: string;
+  text: string;
+  /** Когда связь обновили по ходу игры (моделью) — для пометки в панели. */
+  updatedAt?: number;
+}
+
 export interface ChatSession {
   id: string;
+  /** Лидер сцены: в групповых ветках — первый из состава. */
   characterId: string;
+  /** Групповая ветка: несколько персонажей в одном сюжете. */
+  isGroup?: boolean;
+  /** Состав сюжета (2–4 героя). */
+  characterIds?: string[];
+  /** Кто физически в сцене. Не задано — присутствуют все из состава. */
+  activeCharacterIds?: string[];
+  /** Почему персонаж за кадром: «ушёл в гараж», «спит». */
+  absentReasons?: Record<string, string>;
+  /** Взаимоотношения между персонажами группы. */
+  relations?: SceneRelation[];
+  /** Шкалы отношений дополнительных участников, по их id. */
+  participantStats?: Record<string, RelationshipStats>;
+  /**
+   * «Живая сцена»: другие герои могут коротко отреагировать в той же реплике.
+   * По умолчанию включено, выключается тумблером в панели режиссёра.
+   */
+  liveScene?: boolean;
+  /** Своя личность для этой ветки; не задана — берётся персона персонажа или активная. */
+  personaId?: string;
+  /** Сколько реплик ветки уже обработал фоновый экстрактор памяти. */
+  memoryExtractedCount?: number;
   title: string;
   summary?: string;
   storyLog?: StoryLogEntry[];

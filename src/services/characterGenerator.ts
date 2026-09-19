@@ -1,7 +1,8 @@
 import { newId } from "../utils/id";
 import type { ApiConfig, Character } from "../types";
 import { DEFAULT_STATS } from "../types";
-import { resolveEndpoints } from "./apiClient";
+import { readJsonResponse, resolveEndpoints } from "./apiClient";
+import { extractJsonBlock } from "./jsonRepair";
 
 export interface TagOption {
   id: string;
@@ -152,33 +153,102 @@ export const TAG_CATEGORIES: TagCategory[] = [
   },
 ];
 
-function safeParseJson(raw: string): any {
-  let text = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
-  const firstBrace = text.indexOf("{");
-  if (firstBrace === -1) {
-    throw new Error("Ответ модели не содержит JSON-структуры.");
+/** Ответ модели, который не удалось превратить в JSON. */
+export class ModelJsonError extends Error {}
+
+
+/**
+ * Разбирает ответ модели в JSON. Терпим к markdown-обёртке, пояснениям вокруг
+ * и оборванному на середине ответу, а если JSON нет вовсе — говорим об этом
+ * понятным текстом.
+ */
+export function parseModelJson(raw: string): any {
+  const text = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+  const extracted = extractJsonBlock(text);
+
+  if (!extracted) {
+    throw new ModelJsonError(
+      text
+        ? `Модель ответила текстом вместо JSON: «${text.slice(0, 160)}». Попробуйте ещё раз.`
+        : "Модель вернула пустой ответ. Попробуйте ещё раз или выберите другую модель."
+    );
   }
-  text = text.slice(firstBrace);
 
   try {
-    return JSON.parse(text);
+    return JSON.parse(extracted.block);
   } catch {
-    let repaired = text;
-    const quoteCount = (repaired.match(/"/g) || []).length;
-    if (quoteCount % 2 !== 0) repaired += '"';
+    // Ничего страшного: дописываем то, чего не хватило оборванному ответу.
+    if (extracted.closers) {
+      try {
+        return JSON.parse(extracted.block + extracted.closers);
+      } catch {
+        // ниже отдадим понятную ошибку
+      }
+    }
 
-    const openBrackets = (repaired.match(/\[/g) || []).length - (repaired.match(/\]/g) || []).length;
-    for (let i = 0; i < openBrackets; i++) repaired += "]";
+    throw new ModelJsonError(
+      "Модель вернула некорректный JSON. Попробуйте ещё раз или выберите модель попроще."
+    );
+  }
+}
 
-    const openBraces = (repaired.match(/\{/g) || []).length - (repaired.match(/\}/g) || []).length;
-    for (let i = 0; i < openBraces; i++) repaired += "}";
+/**
+ * Достаёт текст ответа из разных форматов провайдеров: Gemini отдаёт его
+ * частями, OpenAI-совместимые — в `choices[0].message.content`, а некоторые
+ * модели ещё и в поле размышлений.
+ */
+function extractModelText(data: any): string {
+  if (!data || typeof data !== "object") return "";
 
-    try {
-      return JSON.parse(repaired);
-    } catch {
-      throw new Error("Модель вернула некорректный JSON. Попробуйте еще раз.");
+  const geminiParts = data.candidates?.[0]?.content?.parts;
+  if (Array.isArray(geminiParts)) {
+    const textOf = (onlyAnswer: boolean) =>
+      geminiParts
+        .filter((part: any) => (onlyAnswer ? !part?.thought : true))
+        .map((part: any) => (typeof part?.text === "string" ? part.text : ""))
+        .join("")
+        .trim();
+
+    // У «думающих» моделей Gemini ответ приходит несколькими частями, и первая
+    // может быть размышлением — берём только текст ответа, а если его нет, всё.
+    const answer = textOf(true);
+    if (answer) return answer;
+
+    const everything = textOf(false);
+    if (everything) return everything;
+  }
+
+  const candidates = [
+    data.choices?.[0]?.message?.content,
+    data.choices?.[0]?.text,
+    data.message?.content,
+    data.response,
+    data.output_text,
+  ];
+
+  for (const value of candidates) {
+    if (typeof value === "string" && value.trim()) return value;
+    if (Array.isArray(value)) {
+      const joined = value
+        .map((part: any) =>
+          typeof part === "string"
+            ? part
+            : typeof part?.text === "string"
+            ? part.text
+            : ""
+        )
+        .join("")
+        .trim();
+      if (joined) return joined;
     }
   }
+
+  const reasoning =
+    data.choices?.[0]?.message?.reasoning_content ??
+    data.choices?.[0]?.message?.reasoning;
+  if (typeof reasoning === "string" && reasoning.includes("{")) return reasoning;
+
+  return "";
 }
 
 export async function generateAiCharacter(
@@ -243,6 +313,331 @@ ${customIdea.trim() ? `- Особая авторская задумка: "${cust
   ]
 }`;
 
+  const parsed = await requestModelJson(apiConfig, systemInstruction);
+
+  return normalizeGeneratedCharacter(parsed, selectedTags);
+}
+
+/** Приводит ответ модели к полям персонажа, подставляя безопасные значения. */
+export function normalizeGeneratedCharacter(
+  parsed: any,
+  selectedTags: string[]
+): Partial<Character> {
+  const source = parsed && typeof parsed === "object" ? parsed : {};
+
+  const settingTags =
+    TAG_CATEGORIES.find((c) => c.id === "setting")?.tags.map((t) => t.name) ?? [];
+  const detectedGenre = selectedTags.find((tag) => settingTags.includes(tag)) || "";
+
+  return {
+    name: typeof source.name === "string" && source.name.trim() ? source.name.trim() : "Безымянный",
+    tagline: source.tagline || "",
+    description: source.description || "",
+    personality: source.personality || "",
+    scenario: source.scenario || "",
+    systemPrompt: source.systemPrompt || "",
+    firstMessage: source.firstMessage || "*Смотрит на тебя в тишине...*",
+    tags: selectedTags,
+    genre: detectedGenre,
+    originTag: "ОРИГИНАЛЬНЫЙ ПЕРСОНАЖ",
+    initialStats: {
+      ...DEFAULT_STATS,
+      ...(source.initialStats || {}),
+    },
+    lorebook: Array.isArray(source.lorebook)
+      ? source.lorebook.map((entry: any) => ({
+          id: newId(),
+          keys: Array.isArray(entry?.keys) ? entry.keys : ["память"],
+          content: entry?.content || "",
+          isActive: true,
+        }))
+      : [],
+  };
+}
+
+// ------------------------------------------------------------------
+// Групповой генератор: 2–4 героя одной сцены + общий опенинг
+// ------------------------------------------------------------------
+
+export const GROUP_SIZE_MIN = 2;
+export const GROUP_SIZE_MAX = 4;
+
+export interface GeneratedGroup {
+  /** Готовые к сохранению карточки персонажей (2–4). */
+  characters: Partial<Character>[];
+  /** Общий опенинг: как все они оказались в одной сцене. */
+  opening: string;
+}
+
+/** Ограничивает размер группы допустимым диапазоном. */
+export function clampGroupSize(size: number): number {
+  if (!Number.isFinite(size)) return GROUP_SIZE_MIN;
+  return Math.min(GROUP_SIZE_MAX, Math.max(GROUP_SIZE_MIN, Math.round(size)));
+}
+
+/** Инструкция для модели: собрать группу героев и общий опенинг сцены. */
+export function buildGroupInstruction(
+  gender: "female" | "male" | "any",
+  selectedTags: string[],
+  customIdea: string,
+  size: number
+): string {
+  const count = clampGroupSize(size);
+
+  const genderPrompt =
+    gender === "female"
+      ? "Все персонажи — девушки (женский пол)."
+      : gender === "male"
+      ? "Все персонажи — парни (мужской пол)."
+      : "Пол каждого персонажа — на усмотрение модели.";
+
+  const tagsList =
+    selectedTags.length > 0
+      ? selectedTags.join(", ")
+      : "Повседневность, Разговорный / Бытовой";
+
+  return `Ты — ведущий нарративный дизайнер и специалист по живому диалоговому AI RolePlay.
+Твоя задача — собрать СЦЕНУ из ${count} персонажей для ролевой игры на русском языке: у каждого свой характер и голос, но всех связывает одна завязка.
+
+ВХОДНЫЕ ПАРАМЕТРЫ:
+- ${genderPrompt}
+- Выбранные теги, стиль речи и сеттинг: ${tagsList}
+${customIdea.trim() ? `- Особая авторская задумка: "${customIdea.trim()}"` : ""}
+
+ПРАВИЛА ГРУППЫ (КРИТИЧЕСКИ ВАЖНО):
+1. Персонажи должны звучать РАЗНО: разный темперамент, манера речи, отношение к игроку. Никаких близнецов по характеру.
+2. Между ними есть живые связи: дружба, соперничество, тайная симпатия, долг, старая обида. Взаимные чувства и конфликты важнее внешности.
+3. ПИШИ ЁМКО И КОНЦЕНТРАЦИРОВАННО, без воды и высокопарных клише XIX века.
+4. Опенинг — общая сцена: где все ${count} героя вместе с игроком, что происходит, кто что делает. Он должен дать игроку повод вмешаться, а не закрыть сцену.
+
+ТРЕБОВАНИЯ К ПОЛЯМ КАЖДОГО ПЕРСОНАЖА (ОБЪЁМ СТРОГО, БЕЗ ВОДЫ):
+- name: звучное, естественное имя или прозвище.
+- tagline: 1-3 слова сути («Дерзкая соседка», «Циничный напарник»).
+- description: 1-2 плотных предложения (внешность, одежда, примета).
+- personality: 2-3 предложения (психотип, привычки, слабости, триггеры).
+- scenario: 1-2 предложения (как он оказался вместе с остальными).
+- systemPrompt: 2 строгие директивы для ИИ (манера речи, реакции на эмоции).
+- firstMessage: 1 предложение — первая реплика героя в этой сцене (*действия в звёздочках*, речь через тире).
+- lorebook: 1-2 коротких ключевых факта (по 1 предложению).
+
+ОТВЕТ ДОЛЖЕН БЫТЬ СТРОГО В ФОРМАТЕ ВАЛИДНОГО JSON:
+{
+  "opening": "Общий опенинг сцены: 3-5 предложений, где все герои вместе с игроком (*действия в звёздочках*, речь через тире).",
+  "characters": [
+    {
+      "name": "Имя",
+      "tagline": "Краткий статус",
+      "description": "Внешность (2-3 предложения)",
+      "personality": "Характер и психотип (3-4 предложения)",
+      "scenario": "Как оказался в сцене (2-3 предложения)",
+      "systemPrompt": "Инструкции стиля общения (2-3 директивы)",
+      "firstMessage": "*Действие...* — Первая реплика в сцене.",
+      "initialStats": {
+        "trust": 30,
+        "affection": 20,
+        "closeness": 15,
+        "tension": 25,
+        "conflict": 0,
+        "statusTitle": "Первая встреча"
+      },
+      "lorebook": [
+        { "keys": ["ключ1", "ключ2"], "content": "Короткий факт или тайна персонажа", "isActive": true },
+        { "keys": ["ключ3", "ключ4"], "content": "Второй ключевой факт", "isActive": true }
+      ]
+    }
+  ]
+}`;
+}
+
+/** Разбирает ответ модели в группу: карточки + общий опенинг. */
+export function parseGeneratedGroup(parsed: any, selectedTags: string[]): GeneratedGroup {
+  // Модели называют список по-разному и иногда отдают одного героя объектом.
+  const listCandidate =
+    parsed?.characters ?? parsed?.heroes ?? parsed?.cast ?? parsed?.group;
+
+  const dictValues =
+    listCandidate && typeof listCandidate === "object" && !Array.isArray(listCandidate)
+      ? Object.values(listCandidate as Record<string, any>).filter(
+          (item) => item && typeof item === "object"
+        )
+      : [];
+
+  const rawList = Array.isArray(listCandidate)
+    ? listCandidate
+    : dictValues.some((item: any) => item.name || item.personality)
+    ? dictValues
+    : listCandidate && typeof listCandidate === "object"
+    ? [listCandidate]
+    : Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === "object" && (parsed.name || parsed.firstMessage)
+    ? [parsed]
+    : [];
+
+  const characters = rawList
+    .filter((item: any) => item && typeof item === "object")
+    .slice(0, GROUP_SIZE_MAX)
+    .map((item: any) => normalizeGeneratedCharacter(item, selectedTags));
+
+  const opening =
+    typeof parsed?.opening === "string" && parsed.opening.trim()
+      ? parsed.opening.trim()
+      : characters[0]?.firstMessage || "*Сцена начинается с тишины…*";
+
+  return { characters, opening };
+}
+
+/**
+ * Запасной путь: модель не умеет отдать группу одним JSON — собираем её по
+ * одному герою, передавая каждому уже придуманных соседей по сцене.
+ */
+async function generateGroupOneByOne(
+  apiConfig: ApiConfig,
+  gender: "female" | "male" | "any",
+  selectedTags: string[],
+  customIdea: string,
+  count: number
+): Promise<GeneratedGroup> {
+  const characters: Partial<Character>[] = [];
+
+  for (let index = 0; index < count; index += 1) {
+    const neighbours = characters
+      .map((item) => `${item.name} — ${item.tagline || item.personality || "без подробностей"}`)
+      .join("; ");
+
+    const idea = [
+      customIdea.trim(),
+      `Это участник №${index + 1} из ${count} в одной общей сцене.`,
+      neighbours
+        ? `Он уже в сцене с: ${neighbours.slice(0, 300)}. Придумай живые отношения с ними.`
+        : "",
+      "Характер и манера речи должны отличаться от остальных участников сцены.",
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    characters.push(
+      await generateAiCharacter(apiConfig, gender, selectedTags, idea)
+    );
+  }
+
+  const opening = await requestGroupOpening(apiConfig, characters);
+
+  return { characters, opening };
+}
+
+/** Просит у модели общий опенинг уже придуманной группы. */
+async function requestGroupOpening(
+  apiConfig: ApiConfig,
+  characters: Partial<Character>[]
+): Promise<string> {
+  const roster = characters
+    .map((item) => `- ${item.name}: ${item.tagline || item.personality || ""}`)
+    .join("\n");
+
+  try {
+    const parsed = await requestModelJson(
+      apiConfig,
+      `Ты — ведущий нарративный дизайнер ролевой сцены на русском языке.
+Герои уже придуманы:
+${roster}
+
+Напиши ОБЩИЙ ОПЕНИНГ сцены: 3-5 предложений, где все они вместе с игроком (*действия в звёздочках*, прямая речь через тире). Опиши место, момент и то, что заставляет игрока вмешаться.
+
+ОТВЕТ СТРОГО В ФОРМАТЕ JSON: { "opening": "текст опенинга" }`,
+      900
+    );
+
+    if (typeof parsed?.opening === "string" && parsed.opening.trim()) {
+      return parsed.opening.trim();
+    }
+  } catch {
+    // Не страшно: сцену откроем простой ремаркой ниже.
+  }
+
+  const names = characters
+    .map((item) => item.name || "герой")
+    .join(", ");
+
+  return `*${names} — все здесь, в одной сцене. Разговор начинается с тишины, которую каждый готов нарушить по-своему.*`;
+}
+
+/** Генерирует группу из 2–4 героев вместе с общим опенингом сцены. */
+export async function generateAiGroup(
+  apiConfig: ApiConfig,
+  gender: "female" | "male" | "any",
+  selectedTags: string[],
+  customIdea: string,
+  size: number
+): Promise<GeneratedGroup> {
+  const count = clampGroupSize(size);
+  const instruction = buildGroupInstruction(gender, selectedTags, customIdea, count);
+  // Потолок под ответ: карточки длинные, но провайдеры не любят огромных лимитов.
+  const maxTokens = Math.min(6000, 2200 + count * 700);
+
+  // Второй заход на случай, когда модель ушла в рассуждения или отдала
+  // одного героя вместо группы.
+  const strictInstruction = `${instruction}
+
+ВАЖНО: отвечай ОДНИМ JSON-объектом и ничем больше. Не рассуждай, не пиши пояснений и markdown — начни ответ с { и закончи }. В массиве "characters" должно быть ровно ${count} персонажа.`;
+
+  async function requestGroup(): Promise<GeneratedGroup> {
+    try {
+      return parseGeneratedGroup(
+        await requestModelJson(apiConfig, instruction, maxTokens),
+        selectedTags
+      );
+    } catch (cause) {
+      if (!(cause instanceof ModelJsonError)) throw cause;
+    }
+
+    return parseGeneratedGroup(
+      await requestModelJson(apiConfig, strictInstruction, maxTokens),
+      selectedTags
+    );
+  }
+
+  let group: GeneratedGroup;
+
+  try {
+    group = await requestGroup();
+
+    if (group.characters.length < GROUP_SIZE_MIN) {
+      group = parseGeneratedGroup(
+        await requestModelJson(apiConfig, strictInstruction, maxTokens),
+        selectedTags
+      );
+    }
+
+    if (group.characters.length >= GROUP_SIZE_MIN) return group;
+  } catch (cause) {
+    if (!(cause instanceof ModelJsonError)) throw cause;
+  }
+
+  // Модель так и не отдала группу одним ответом — собираем её по одному герою.
+  const fallback = await generateGroupOneByOne(
+    apiConfig,
+    gender,
+    selectedTags,
+    customIdea,
+    count
+  );
+
+  if (fallback.characters.length < GROUP_SIZE_MIN) {
+    throw new Error(
+      `Не удалось собрать группу из ${count} героев. Попробуйте ещё раз или уменьшите размер группы.`
+    );
+  }
+
+  return fallback;
+}
+
+/** Запрос к модели в JSON-режиме: Gemini или OpenAI-совместимый эндпоинт. */
+async function requestModelJson(
+  apiConfig: ApiConfig,
+  systemInstruction: string,
+  maxTokens = 2500
+): Promise<any> {
   let rawJson = "";
 
   if (apiConfig.mode === "gemini") {
@@ -254,7 +649,7 @@ ${customIdea.trim() ? `- Особая авторская задумка: "${cust
         contents: [{ role: "user", parts: [{ text: systemInstruction }] }],
         generationConfig: {
           temperature: 0.85,
-          maxOutputTokens: 2500,
+          maxOutputTokens: maxTokens,
           responseMimeType: "application/json",
         },
       }),
@@ -263,8 +658,8 @@ ${customIdea.trim() ? `- Особая авторская задумка: "${cust
       const err = await res.text();
       throw new Error(`Gemini API Error: ${err}`);
     }
-    const data = await res.json();
-    rawJson = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+    const data = await readJsonResponse(res);
+    rawJson = extractModelText(data);
   } else {
     const { isOllama, primaryUrl, fallbackUrl } = resolveEndpoints(apiConfig.baseUrl);
 
@@ -290,7 +685,7 @@ ${customIdea.trim() ? `- Особая авторская задумка: "${cust
         num_ctx: apiConfig.localNumCtx ?? 8192,
       };
     } else {
-      bodyPayload.max_tokens = 2500;
+      bodyPayload.max_tokens = maxTokens;
       bodyPayload.response_format = { type: "json_object" };
     }
 
@@ -313,37 +708,9 @@ ${customIdea.trim() ? `- Особая авторская задумка: "${cust
       const err = await res.text();
       throw new Error(`API Error: ${err}`);
     }
-    const data = await res.json();
-    rawJson = data.choices?.[0]?.message?.content ?? data.message?.content ?? "";
+    const data = await readJsonResponse(res);
+    rawJson = extractModelText(data);
   }
 
-  const parsed = safeParseJson(rawJson);
-
-  const settingTags = TAG_CATEGORIES.find((c) => c.id === "setting")?.tags.map((t) => t.name) ?? [];
-  const detectedGenre = selectedTags.find((tag) => settingTags.includes(tag)) || "";
-
-  return {
-    name: parsed.name || "Безымянный",
-    tagline: parsed.tagline || "",
-    description: parsed.description || "",
-    personality: parsed.personality || "",
-    scenario: parsed.scenario || "",
-    systemPrompt: parsed.systemPrompt || "",
-    firstMessage: parsed.firstMessage || "*Смотрит на тебя в тишине...*",
-    tags: selectedTags,
-    genre: detectedGenre,
-    originTag: "ОРИГИНАЛЬНЫЙ ПЕРСОНАЖ",
-    initialStats: {
-      ...DEFAULT_STATS,
-      ...(parsed.initialStats || {}),
-    },
-    lorebook: Array.isArray(parsed.lorebook)
-      ? parsed.lorebook.map((l: any) => ({
-          id: newId(),
-          keys: Array.isArray(l.keys) ? l.keys : ["память"],
-          content: l.content || "",
-          isActive: true,
-        }))
-      : [],
-  };
+  return parseModelJson(rawJson);
 }

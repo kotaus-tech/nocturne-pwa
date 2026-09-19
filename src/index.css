@@ -29,9 +29,10 @@
   /* Typography Colors */
   --text-primary: #f2f3f8;
   --text-secondary: #9da6b9;
-  --text-muted: #677186;
+  /* #7b869c и #6e788c подобраны под порог WCAG AA 4.5:1 на фоне #090b10 */
+  --text-muted: #7b869c;
   --text-disabled: #474f60;
-  --text-placeholder: #5d677c;
+  --text-placeholder: #6e788c;
 
   /* Primary Accent (Лунный аметист / Индиго) */
   --accent-primary: #8b5cf6;
@@ -271,6 +272,25 @@ input[type="radio"] {
     border-color var(--duration-fast) var(--ease-standard),
     background-color var(--duration-fast) var(--ease-standard),
     box-shadow var(--duration-fast) var(--ease-standard);
+}
+
+/* Поля с иконкой внутри: padding задаём отдельным классом, потому что
+   utilities Tailwind проигрывают правилам вне слоёв (см. .input-field). */
+.input-field--icon-left {
+  padding-left: 38px;
+}
+
+.input-field--icon-right {
+  padding-right: 38px;
+}
+
+/* Компактное поле для тесных строк (связи в панели режиссёра): свой padding и
+   кегль, иначе фиксированная высота обрезает текст по вертикали. */
+.input-field--compact {
+  min-height: 36px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .input-field::placeholder {

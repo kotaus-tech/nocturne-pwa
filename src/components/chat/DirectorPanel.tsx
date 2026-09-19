@@ -26,12 +26,27 @@ import {
   ShieldAlert,
   Coffee,
   Crosshair,
+  Users,
+  X,
+  GripVertical,
+  Play,
+  ChevronUp,
+  ChevronDown,
+  ArrowRight,
+  Plus,
 } from "lucide-react";
+import { useLiveQuery } from "dexie-react-hooks";
+import { Reorder, useDragControls } from "framer-motion";
 import { Modal } from "../common/Modal";
+import { Avatar } from "../common/Avatar";
 import { AmbientPlayer } from "./AmbientPlayer";
 import { db } from "../../db";
-import type { ChatSession, ThoughtMode } from "../../types";
+import type { Character, ChatSession, ThoughtMode } from "../../types";
+import { moveItem } from "../../services/groupScene";
+import { newId } from "../../utils/id";
 import { WALLPAPER_PRESETS } from "../../utils/wallpaperPresets";
+import { prepareImageFile, WALLPAPER_OPTIONS } from "../../utils/image";
+import { PromptDialog } from "../common/PromptDialog";
 import { cn } from "../../utils/cn";
 
 interface Props {
@@ -52,6 +67,16 @@ interface Props {
   onTogglePacing?: (enabled: boolean) => void;
   onUpdateThoughtMode?: (mode: ThoughtMode) => void;
   onOpenInspector?: () => void;
+  /** Дать ход одному конкретному персонажу сцены. */
+  onRequestTurn?: (characterId: string) => void;
+  /** Ввести персонажа в сцену или убрать за кадр (причина — в промпт). */
+  onTogglePresence?: (characterId: string, isPresent: boolean, reason?: string) => void;
+  /** «Живая сцена»: короткие реакции других героев в той же реплике. */
+  onToggleLiveScene?: (enabled: boolean) => void;
+  /** Кто из состава сейчас в сцене. */
+  presentIds?: string[];
+  /** Идёт генерация — кнопки хода заблокированы. */
+  sending?: boolean;
   messageCount: number;
 }
 
@@ -188,6 +213,141 @@ function SettingSwitch({
   );
 }
 
+/** Строка участника сцены: перетаскивание за ручку, стрелки и «дать ход». */
+function ParticipantRow({
+  item,
+  index,
+  total,
+  disabled,
+  isPresent,
+  onRemove,
+  onMove,
+  onRequestTurn,
+  onTogglePresence,
+}: {
+  item: Character;
+  index: number;
+  total: number;
+  disabled?: boolean;
+  isPresent: boolean;
+  onRemove: () => void;
+  onMove: (direction: -1 | 1) => void;
+  onRequestTurn?: () => void;
+  onTogglePresence?: (isPresent: boolean) => void;
+}) {
+  const dragControls = useDragControls();
+
+  const rowButtonClass =
+    "flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-content-muted transition-colors hover:bg-white/[0.06] hover:text-content disabled:opacity-30 disabled:hover:bg-transparent";
+
+  return (
+    <Reorder.Item
+      value={item}
+      dragListener={false}
+      dragControls={dragControls}
+      className="flex items-center gap-2 rounded-2xl border border-white/[0.08] bg-[#121622]/80 p-2"
+    >
+      <span
+        role="button"
+        tabIndex={-1}
+        aria-label={`Перетащить ${item.name}`}
+        title="Зажмите и перетащите, чтобы изменить порядок"
+        onPointerDown={(event) => dragControls.start(event)}
+        className="flex h-8 w-5 shrink-0 cursor-grab touch-none items-center justify-center text-content-muted hover:text-content active:cursor-grabbing"
+      >
+        <GripVertical size={15} />
+      </span>
+
+      <span className="w-3 text-center text-[11px] font-semibold tabular-nums text-content-muted">
+        {index + 2}
+      </span>
+
+      <Avatar src={item.avatarUrl} name={item.name} size={30} />
+
+      <span className="min-w-0 flex-1 truncate text-xs font-medium text-zinc-200">
+        {item.name}
+      </span>
+
+      <div className="flex shrink-0 items-center gap-0.5">
+        {onTogglePresence && (
+          <button
+            type="button"
+            onClick={() => onTogglePresence(!isPresent)}
+            disabled={disabled}
+            aria-pressed={isPresent}
+            aria-label={
+              isPresent
+                ? `Убрать ${item.name} из сцены`
+                : `Ввести ${item.name} в сцену`
+            }
+            title={isPresent ? "В сцене — убрать за кадр" : "За кадром — ввести в сцену"}
+            className={cn(
+              "flex h-7 shrink-0 items-center gap-1 rounded-lg px-1.5 text-[10px] font-semibold transition-colors disabled:opacity-30",
+              isPresent
+                ? "text-success hover:bg-success/10"
+                : "text-content-muted hover:bg-white/[0.06] hover:text-content"
+            )}
+          >
+            <span
+              aria-hidden="true"
+              className={cn(
+                "h-2 w-2 rounded-full",
+                isPresent ? "bg-success" : "bg-content-muted"
+              )}
+            />
+            {isPresent ? "в сцене" : "за кадром"}
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={() => onMove(-1)}
+          disabled={index === 0}
+          aria-label={`Поднять ${item.name} выше`}
+          title="Выше"
+          className={rowButtonClass}
+        >
+          <ChevronUp size={14} />
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onMove(1)}
+          disabled={index === total - 1}
+          aria-label={`Опустить ${item.name} ниже`}
+          title="Ниже"
+          className={rowButtonClass}
+        >
+          <ChevronDown size={14} />
+        </button>
+
+        {onRequestTurn && isPresent && (
+          <button
+            type="button"
+            onClick={onRequestTurn}
+            disabled={disabled}
+            aria-label={`Дать ход: ${item.name}`}
+            title={`Дать ход: ${item.name}`}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-accent transition-colors hover:bg-accent/15 disabled:opacity-30 disabled:hover:bg-transparent"
+          >
+            <Play size={13} fill="currentColor" />
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={`Убрать ${item.name} из сцены`}
+          title="Убрать из сцены"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-content-muted transition-colors hover:bg-white/[0.06] hover:text-danger"
+        >
+          <X size={14} />
+        </button>
+      </div>
+    </Reorder.Item>
+  );
+}
+
 export function DirectorPanel({
   open,
   onClose,
@@ -206,6 +366,11 @@ export function DirectorPanel({
   onTogglePacing,
   onUpdateThoughtMode,
   onOpenInspector,
+  onRequestTurn,
+  onTogglePresence,
+  onToggleLiveScene,
+  presentIds,
+  sending = false,
 }: Props) {
   const [notes, setNotes] = useState(session.directorNotes || "");
   const [summaryText, setSummaryText] = useState(session.summary || "");
@@ -225,6 +390,107 @@ export function DirectorPanel({
   const [dim, setDim] = useState(session.wallpaperDim ?? 0.55);
   const [blur, setBlur] = useState(session.wallpaperBlur ?? 0);
   const [wallpaperError, setWallpaperError] = useState<string | null>(null);
+  const [wallpaperBusy, setWallpaperBusy] = useState(false);
+
+  const character = useLiveQuery(
+    () => db.characters.get(session.characterId),
+    [session.characterId]
+  );
+
+  // Групповая сцена: дополнительные участники.
+  const allCharacters = useLiveQuery(() => db.characters.toArray(), []);
+  const [characterToAdd, setCharacterToAdd] = useState("");
+  const participantIds = session.characterIds ?? [];
+  const participantCharacters = participantIds
+    .map((id) => allCharacters?.find((item) => item.id === id))
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const availableCharacters = (allCharacters ?? [])
+    .filter(
+      (item) =>
+        item.id !== session.characterId && !participantIds.includes(item.id)
+    )
+    .sort((a, b) => a.name.localeCompare(b.name, "ru"));
+
+  /** Присутствие приходит из чата: там же считаются состав и пул говорящих. */
+  const isPresent = (id: string) =>
+    !presentIds || presentIds.length === 0 || presentIds.includes(id);
+
+  const updateParticipants = async (ids: string[]) => {
+    // Состав меняется — синхронизируем и «кто в сцене»: новый участник сразу
+    // входит в комнату, ушедшие из состава пропадают из списка присутствия.
+    let nextActive: string[] | undefined;
+
+    if (session.activeCharacterIds) {
+      const prevCast = new Set(session.characterIds ?? []);
+      const added = ids.filter((id) => !prevCast.has(id));
+      nextActive = ids.filter(
+        (id) => session.activeCharacterIds!.includes(id) || added.includes(id)
+      );
+    }
+
+    await db.sessions.update(session.id, {
+      characterIds: ids,
+      isGroup: ids.length > 0,
+      ...(nextActive ? { activeCharacterIds: nextActive } : {}),
+      updatedAt: Date.now(),
+    });
+  };
+
+  const addParticipant = async () => {
+    if (!characterToAdd) return;
+    await updateParticipants([...participantIds, characterToAdd]);
+    setCharacterToAdd("");
+  };
+
+  const relations = session.relations ?? [];
+  const castOptions = [
+    { id: session.characterId, name: character?.name || "Основной" },
+    ...participantCharacters.map((item) => ({ id: item.id, name: item.name })),
+  ];
+
+  const updateRelations = async (
+    updater: (list: NonNullable<ChatSession["relations"]>) => NonNullable<
+      ChatSession["relations"]
+    >
+  ) => {
+    await db.sessions.update(session.id, {
+      relations: updater(relations),
+      updatedAt: Date.now(),
+    });
+  };
+
+  const favoriteCandidates = availableCharacters.filter(
+    (item) => item.isFavorite
+  );
+
+  const addFavorites = async () => {
+    if (favoriteCandidates.length === 0) return;
+    await updateParticipants([
+      ...participantIds,
+      ...favoriteCandidates.map((item) => item.id),
+    ]);
+  };
+
+  const clearParticipants = async () => {
+    await updateParticipants([]);
+    await db.sessions.update(session.id, {
+      participantStats: {},
+      activeCharacterIds: undefined,
+      absentReasons: {},
+      relations: [],
+      isGroup: false,
+    });
+  };
+
+  const removeParticipant = async (id: string) => {
+    const nextIds = participantIds.filter((item) => item !== id);
+    const nextStats = { ...(session.participantStats ?? {}) };
+    delete nextStats[id];
+
+    await updateParticipants(nextIds);
+    await db.sessions.update(session.id, { participantStats: nextStats });
+  };
+  const [urlDialogOpen, setUrlDialogOpen] = useState(false);
   const [failedWallpaper, setFailedWallpaper] = useState<string | null>(null);
 
   const [presetTab, setPresetTab] = useState<"all" | "gradients" | "vectors">("all");
@@ -296,31 +562,33 @@ export function DirectorPanel({
     return WALLPAPER_PRESETS.filter((p) => p.category === presetTab);
   }, [presetTab]);
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const input = event.currentTarget;
     const file = input.files?.[0];
+    input.value = "";
     if (!file) return;
 
     setWallpaperError(null);
-    const reader = new FileReader();
-    reader.onload = () => {
-      onUpdateWallpaper(reader.result as string);
-    };
-    reader.onerror = () => {
+    setWallpaperBusy(true);
+
+    try {
+      // Обои сжимаются до 1920px: оригинал с телефона раздувает базу и квоту.
+      const dataUrl = await prepareImageFile(file, WALLPAPER_OPTIONS);
+      if (mountedRef.current) onUpdateWallpaper(dataUrl);
+    } catch (cause) {
       if (mountedRef.current) {
-        setWallpaperError("Не удалось прочитать изображение.");
+        setWallpaperError(
+          cause instanceof Error ? cause.message : "Не удалось подготовить изображение."
+        );
       }
-    };
-    reader.readAsDataURL(file);
-    input.value = "";
+    } finally {
+      if (mountedRef.current) setWallpaperBusy(false);
+    }
   };
 
   const handleSetUrl = () => {
-    const url = prompt("Введите ссылку на фоновое изображение:", session.wallpaperUrl || "");
-    if (url !== null) {
-      setWallpaperError(null);
-      onUpdateWallpaper(url.trim() || undefined);
-    }
+    setWallpaperError(null);
+    setUrlDialogOpen(true);
   };
 
   const handleSelectThoughtMode = (mode: ThoughtMode) => {
@@ -467,6 +735,328 @@ export function DirectorPanel({
               }}
               placeholder="Введите режиссёрское указание для сцены..."
             />
+          </section>
+
+          {/* Секция: участники групповой сцены */}
+          <section className="border-t border-white/[0.08] pt-5 sm:pt-6">
+            <h3 className="mb-1.5 flex items-center gap-2 text-sm font-semibold text-content sm:text-base">
+              <Users size={18} className="text-accent" />
+              <span>Групповая сцена</span>
+            </h3>
+            <p className="mb-2.5 text-xs leading-relaxed text-content-secondary">
+              Персонажи рядом с {character?.name || "основным"}. Каждый отвечает
+              своим ходом по порядку списка (отдельный запрос на участника) и
+              видит уже сказанное остальными.
+            </p>
+
+            <ul className="mb-2 space-y-2">
+              <li className="flex items-center gap-2.5 rounded-2xl border border-white/[0.08] bg-[#121622]/60 p-2">
+                <span className="w-5 text-center text-[11px] font-semibold tabular-nums text-content-muted">
+                  1
+                </span>
+                <Avatar
+                  src={character?.avatarUrl}
+                  name={character?.name || "Персонаж"}
+                  size={30}
+                />
+                <span className="min-w-0 flex-1 truncate text-xs font-medium text-zinc-200">
+                  {character?.name || "Основной персонаж"}
+                </span>
+                <span className="shrink-0 pr-1 text-[10px] uppercase tracking-wider text-content-muted">
+                  основной
+                </span>
+                {onRequestTurn && (
+                  <button
+                    type="button"
+                    onClick={() => onRequestTurn(session.characterId)}
+                    disabled={sending}
+                    aria-label={`Дать ход: ${character?.name || "основной персонаж"}`}
+                    title={`Дать ход: ${character?.name || "основной персонаж"}`}
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-accent transition-colors hover:bg-accent/15 disabled:opacity-30"
+                  >
+                    <Play size={13} fill="currentColor" />
+                  </button>
+                )}
+              </li>
+            </ul>
+
+            {participantCharacters.length > 0 && (
+              <Reorder.Group
+                axis="y"
+                values={participantCharacters}
+                onReorder={(order) =>
+                  void updateParticipants(order.map((item) => item.id))
+                }
+                className="mb-2 space-y-2"
+              >
+                {participantCharacters.map((item, index) => (
+                  <ParticipantRow
+                    key={item.id}
+                    item={item}
+                    index={index}
+                    total={participantCharacters.length}
+                    disabled={sending}
+                    isPresent={isPresent(item.id)}
+                    onTogglePresence={
+                      onTogglePresence
+                        ? (nextPresent) =>
+                            onTogglePresence(item.id, nextPresent, undefined)
+                        : undefined
+                    }
+                    onRemove={() => void removeParticipant(item.id)}
+                    onMove={(direction) =>
+                      void updateParticipants(
+                        moveItem(participantCharacters, index, direction).map(
+                          (row) => row.id
+                        )
+                      )
+                    }
+                    onRequestTurn={
+                      onRequestTurn ? () => onRequestTurn(item.id) : undefined
+                    }
+                  />
+                ))}
+              </Reorder.Group>
+            )}
+
+            {participantCharacters.length > 1 && (
+              <p className="mb-2 text-[11px] text-content-muted">
+                Порядок = очередь ходов. Перетаскивайте за ручку или двигайте
+                стрелками.
+              </p>
+            )}
+
+            <div className="flex items-center gap-2">
+              <select
+                value={characterToAdd}
+                onChange={(event) => setCharacterToAdd(event.target.value)}
+                aria-label="Добавить персонажа в сцену"
+                className="input-field min-w-0 flex-1 text-xs sm:text-sm"
+              >
+                <option value="">
+                  {availableCharacters.length > 0
+                    ? "Добавить персонажа…"
+                    : "Все персонажи уже в сцене"}
+                </option>
+                {availableCharacters.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
+
+              <button
+                type="button"
+                onClick={() => void addParticipant()}
+                disabled={!characterToAdd}
+                className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border border-accent/40 bg-accent/15 px-3 text-xs font-semibold text-accent transition-all hover:bg-accent/25 disabled:cursor-not-allowed disabled:border-white/[0.08] disabled:bg-white/[0.03] disabled:text-content-muted"
+              >
+                Добавить
+              </button>
+            </div>
+
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {favoriteCandidates.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void addFavorites()}
+                  title="Добавить всех избранных персонажей в сцену"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.08] bg-[#121622]/80 px-2.5 py-1.5 text-[11px] font-medium text-content-secondary transition-colors hover:border-accent/40 hover:text-accent"
+                >
+                  <Sparkles size={12} className="text-accent" />
+                  Добавить избранных ({favoriteCandidates.length})
+                </button>
+              )}
+
+              {participantCharacters.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void clearParticipants()}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.08] bg-[#121622]/80 px-2.5 py-1.5 text-[11px] font-medium text-content-secondary transition-colors hover:border-danger/40 hover:text-danger"
+                >
+                  <X size={12} />
+                  Очистить сцену
+                </button>
+              )}
+            </div>
+
+            {participantCharacters.length > 1 && onToggleLiveScene && (
+                <label className="mt-3 flex cursor-pointer items-start gap-2.5 rounded-2xl border border-white/[0.08] bg-[#121622]/70 p-2.5">
+                  <input
+                    type="checkbox"
+                    checked={session.liveScene !== false}
+                    onChange={(event) => onToggleLiveScene(event.target.checked)}
+                    className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent)]"
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-xs font-semibold text-content">
+                      Живая сцена
+                    </span>
+                    <span className="mt-0.5 block text-[11px] leading-relaxed text-content-muted">
+                      Отвечает по-прежнему один герой, но в конце реплики он может
+                      дать 1–2 короткие реакции остальных — так сцена звучит живее.
+                    </span>
+                  </span>
+                </label>
+              )}
+
+              {participantCharacters.some((item) => !isPresent(item.id)) && (
+              <p className="mt-2 text-[11px] leading-relaxed text-content-muted">
+                За кадром персонаж не молчит вечно: модель вернёт его сама, когда
+                это будет уместно по сюжету. Вручную — тумблером рядом с именем.
+              </p>
+            )}
+
+            {participantCharacters.length === 0 && (
+              <p className="mt-2 text-[11px] leading-relaxed text-content-muted">
+                Пока сцена обычная: отвечает один персонаж. Добавьте второго —
+                и он подключится к сцене.
+              </p>
+            )}
+
+            {participantCharacters.length > 0 && (
+              <div className="mt-4">
+                <h4 className="mb-1.5 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-content-secondary">
+                  <HeartHandshake size={13} className="text-accent" />
+                  <span>Взаимоотношения в группе</span>
+                </h4>
+                <p className="mb-2 text-[11px] leading-relaxed text-content-muted">
+                  Кто как относится к кому: спор, старая обида, тайная симпатия.
+                  Это топливо для живого полилога — модель играет связи через
+                  подтекст, а не пересказ. Если по ходу сцены кто-то обиделся или
+                  потеплел, связь обновится сама — такую строку можно поправить
+                  руками.
+                </p>
+
+                {relations.length > 0 && (
+                  <div className="mb-2 space-y-2">
+                    {relations.map((relation) => (
+                      <div
+                        key={relation.id}
+                        className="space-y-1.5 rounded-2xl border border-white/[0.08] bg-[#121622]/70 p-2"
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <select
+                            value={relation.from}
+                            onChange={(event) =>
+                              void updateRelations((list) =>
+                                list.map((row) =>
+                                  row.id === relation.id
+                                    ? { ...row, from: event.target.value }
+                                    : row
+                                )
+                              )
+                            }
+                            aria-label="Кто думает"
+                            className="input-field input-field--compact min-w-0 flex-1"
+                          >
+                            {castOptions.map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.name}
+                              </option>
+                            ))}
+                          </select>
+
+                          <ArrowRight
+                            size={12}
+                            className="shrink-0 text-content-muted"
+                            aria-hidden="true"
+                          />
+
+                          <select
+                            value={relation.to ?? ""}
+                            onChange={(event) =>
+                              void updateRelations((list) =>
+                                list.map((row) =>
+                                  row.id === relation.id
+                                    ? {
+                                        ...row,
+                                        to: event.target.value || undefined,
+                                      }
+                                    : row
+                                )
+                              )
+                            }
+                            aria-label="О ком"
+                            className="input-field input-field--compact min-w-0 flex-1"
+                          >
+                            <option value="">вся группа</option>
+                            {castOptions.map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.name}
+                              </option>
+                            ))}
+                          </select>
+
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            value={relation.text}
+                            title={
+                              relation.updatedAt
+                                ? "Обновлено по ходу сцены — можно поправить вручную"
+                                : undefined
+                            }
+                            onChange={(event) =>
+                              void updateRelations((list) =>
+                                list.map((row) =>
+                                  row.id === relation.id
+                                    ? { ...row, text: event.target.value }
+                                    : row
+                                )
+                              )
+                            }
+                            placeholder="считает его баловнем, но тайно переживает"
+                            aria-label="Отношение"
+                            className="input-field input-field--compact min-w-0 flex-1"
+                          />
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void updateRelations((list) =>
+                                list.filter((row) => row.id !== relation.id)
+                              )
+                            }
+                            aria-label="Удалить связь"
+                            title="Удалить связь"
+                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-content-muted transition-colors hover:bg-white/[0.06] hover:text-danger"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+
+                        {relation.updatedAt && (
+                          <p className="text-[10px] text-content-muted">
+                            обновлено по ходу сцены
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    void updateRelations((list) => [
+                      ...list,
+                      {
+                        id: newId(),
+                        from: session.characterId,
+                        to: participantCharacters[0]?.id,
+                        text: "",
+                      },
+                    ])
+                  }
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.08] bg-[#121622]/80 px-2.5 py-1.5 text-[11px] font-medium text-content-secondary transition-colors hover:border-accent/40 hover:text-accent"
+                >
+                  <Plus size={12} />
+                  Добавить связь
+                </button>
+              </div>
+            )}
           </section>
 
           {/* Секция: Вектор скрытых мыслей (innerThought) */}
@@ -681,11 +1271,18 @@ export function DirectorPanel({
               />
               <button
                 type="button"
+                disabled={wallpaperBusy}
                 onClick={() => fileInputRef.current?.click()}
-                className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-2 text-xs font-semibold text-zinc-200 hover:bg-surface-3 truncate"
+                className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-2 text-xs font-semibold text-zinc-200 hover:bg-surface-3 truncate disabled:opacity-50"
               >
-                <Upload size={14} className="shrink-0" />
-                <span className="truncate">Загрузить файл</span>
+                {wallpaperBusy ? (
+                  <Loader2 size={14} className="shrink-0 animate-spin" />
+                ) : (
+                  <Upload size={14} className="shrink-0" />
+                )}
+                <span className="truncate">
+                  {wallpaperBusy ? "Обработка…" : "Загрузить файл"}
+                </span>
               </button>
 
               <button
@@ -926,6 +1523,18 @@ export function DirectorPanel({
           </div>
         </div>
       </Modal>
+
+      <PromptDialog
+        open={urlDialogOpen}
+        title="Фон по ссылке"
+        description="Укажите прямую ссылку на изображение. Для офлайн-доступа надёжнее загрузить файл."
+        label="Адрес изображения"
+        initialValue={session.wallpaperUrl?.startsWith("http") ? session.wallpaperUrl : ""}
+        placeholder="https://…"
+        confirmLabel="Применить"
+        onClose={() => setUrlDialogOpen(false)}
+        onConfirm={(url) => onUpdateWallpaper(url.trim() || undefined)}
+      />
     </>
   );
 }

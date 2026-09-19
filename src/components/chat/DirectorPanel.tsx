@@ -29,13 +29,19 @@ import {
   UserCircle2,
   Users,
   X,
+  GripVertical,
+  Play,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
+import { Reorder, useDragControls } from "framer-motion";
 import { Modal } from "../common/Modal";
 import { Avatar } from "../common/Avatar";
 import { AmbientPlayer } from "./AmbientPlayer";
 import { db, getPersonaState } from "../../db";
-import type { ChatSession, ThoughtMode } from "../../types";
+import type { Character, ChatSession, ThoughtMode } from "../../types";
+import { moveItem } from "../../services/groupScene";
 import { WALLPAPER_PRESETS } from "../../utils/wallpaperPresets";
 import { prepareImageFile, WALLPAPER_OPTIONS } from "../../utils/image";
 import { PromptDialog } from "../common/PromptDialog";
@@ -59,6 +65,10 @@ interface Props {
   onTogglePacing?: (enabled: boolean) => void;
   onUpdateThoughtMode?: (mode: ThoughtMode) => void;
   onOpenInspector?: () => void;
+  /** Дать ход одному конкретному персонажу сцены. */
+  onRequestTurn?: (characterId: string) => void;
+  /** Идёт генерация — кнопки хода заблокированы. */
+  sending?: boolean;
   messageCount: number;
 }
 
@@ -195,6 +205,107 @@ function SettingSwitch({
   );
 }
 
+/** Строка участника сцены: перетаскивание за ручку, стрелки и «дать ход». */
+function ParticipantRow({
+  item,
+  index,
+  total,
+  disabled,
+  onRemove,
+  onMove,
+  onRequestTurn,
+}: {
+  item: Character;
+  index: number;
+  total: number;
+  disabled?: boolean;
+  onRemove: () => void;
+  onMove: (direction: -1 | 1) => void;
+  onRequestTurn?: () => void;
+}) {
+  const dragControls = useDragControls();
+
+  const rowButtonClass =
+    "flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-content-muted transition-colors hover:bg-white/[0.06] hover:text-content disabled:opacity-30 disabled:hover:bg-transparent";
+
+  return (
+    <Reorder.Item
+      value={item}
+      dragListener={false}
+      dragControls={dragControls}
+      className="flex items-center gap-2 rounded-2xl border border-white/[0.08] bg-[#121622]/80 p-2"
+    >
+      <span
+        role="button"
+        tabIndex={-1}
+        aria-label={`Перетащить ${item.name}`}
+        title="Зажмите и перетащите, чтобы изменить порядок"
+        onPointerDown={(event) => dragControls.start(event)}
+        className="flex h-8 w-5 shrink-0 cursor-grab touch-none items-center justify-center text-content-muted hover:text-content active:cursor-grabbing"
+      >
+        <GripVertical size={15} />
+      </span>
+
+      <span className="w-3 text-center text-[11px] font-semibold tabular-nums text-content-muted">
+        {index + 2}
+      </span>
+
+      <Avatar src={item.avatarUrl} name={item.name} size={30} />
+
+      <span className="min-w-0 flex-1 truncate text-xs font-medium text-zinc-200">
+        {item.name}
+      </span>
+
+      <div className="flex shrink-0 items-center gap-0.5">
+        <button
+          type="button"
+          onClick={() => onMove(-1)}
+          disabled={index === 0}
+          aria-label={`Поднять ${item.name} выше`}
+          title="Выше"
+          className={rowButtonClass}
+        >
+          <ChevronUp size={14} />
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onMove(1)}
+          disabled={index === total - 1}
+          aria-label={`Опустить ${item.name} ниже`}
+          title="Ниже"
+          className={rowButtonClass}
+        >
+          <ChevronDown size={14} />
+        </button>
+
+        {onRequestTurn && (
+          <button
+            type="button"
+            onClick={onRequestTurn}
+            disabled={disabled}
+            aria-label={`Дать ход: ${item.name}`}
+            title={`Дать ход: ${item.name}`}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-accent transition-colors hover:bg-accent/15 disabled:opacity-30 disabled:hover:bg-transparent"
+          >
+            <Play size={13} fill="currentColor" />
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={`Убрать ${item.name} из сцены`}
+          title="Убрать из сцены"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-content-muted transition-colors hover:bg-white/[0.06] hover:text-danger"
+        >
+          <X size={14} />
+        </button>
+      </div>
+    </Reorder.Item>
+  );
+}
+
 export function DirectorPanel({
   open,
   onClose,
@@ -213,6 +324,8 @@ export function DirectorPanel({
   onTogglePacing,
   onUpdateThoughtMode,
   onOpenInspector,
+  onRequestTurn,
+  sending = false,
 }: Props) {
   const [notes, setNotes] = useState(session.directorNotes || "");
   const [summaryText, setSummaryText] = useState(session.summary || "");
@@ -265,6 +378,23 @@ export function DirectorPanel({
     if (!characterToAdd) return;
     await updateParticipants([...participantIds, characterToAdd]);
     setCharacterToAdd("");
+  };
+
+  const favoriteCandidates = availableCharacters.filter(
+    (item) => item.isFavorite
+  );
+
+  const addFavorites = async () => {
+    if (favoriteCandidates.length === 0) return;
+    await updateParticipants([
+      ...participantIds,
+      ...favoriteCandidates.map((item) => item.id),
+    ]);
+  };
+
+  const clearParticipants = async () => {
+    await updateParticipants([]);
+    await db.sessions.update(session.id, { participantStats: {} });
   };
 
   const removeParticipant = async (id: string) => {
@@ -573,9 +703,9 @@ export function DirectorPanel({
               видит уже сказанное остальными.
             </p>
 
-            <ul className="mb-2.5 space-y-2">
+            <ul className="mb-2 space-y-2">
               <li className="flex items-center gap-2.5 rounded-2xl border border-white/[0.08] bg-[#121622]/60 p-2">
-                <span className="w-4 text-center text-[11px] font-semibold tabular-nums text-content-muted">
+                <span className="w-5 text-center text-[11px] font-semibold tabular-nums text-content-muted">
                   1
                 </span>
                 <Avatar
@@ -589,32 +719,59 @@ export function DirectorPanel({
                 <span className="shrink-0 pr-1 text-[10px] uppercase tracking-wider text-content-muted">
                   основной
                 </span>
-              </li>
-
-              {participantCharacters.map((item, index) => (
-                <li
-                  key={item.id}
-                  className="flex items-center gap-2.5 rounded-2xl border border-white/[0.08] bg-[#121622]/80 p-2"
-                >
-                  <span className="w-4 text-center text-[11px] font-semibold tabular-nums text-content-muted">
-                    {index + 2}
-                  </span>
-                  <Avatar src={item.avatarUrl} name={item.name} size={30} />
-                  <span className="min-w-0 flex-1 truncate text-xs font-medium text-zinc-200">
-                    {item.name}
-                  </span>
+                {onRequestTurn && (
                   <button
                     type="button"
-                    onClick={() => void removeParticipant(item.id)}
-                    aria-label={`Убрать ${item.name} из сцены`}
-                    title="Убрать из сцены"
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-content-muted transition-colors hover:bg-white/[0.06] hover:text-danger"
+                    onClick={() => onRequestTurn(session.characterId)}
+                    disabled={sending}
+                    aria-label={`Дать ход: ${character?.name || "основной персонаж"}`}
+                    title={`Дать ход: ${character?.name || "основной персонаж"}`}
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-accent transition-colors hover:bg-accent/15 disabled:opacity-30"
                   >
-                    <X size={15} />
+                    <Play size={13} fill="currentColor" />
                   </button>
-                </li>
-              ))}
+                )}
+              </li>
             </ul>
+
+            {participantCharacters.length > 0 && (
+              <Reorder.Group
+                axis="y"
+                values={participantCharacters}
+                onReorder={(order) =>
+                  void updateParticipants(order.map((item) => item.id))
+                }
+                className="mb-2 space-y-2"
+              >
+                {participantCharacters.map((item, index) => (
+                  <ParticipantRow
+                    key={item.id}
+                    item={item}
+                    index={index}
+                    total={participantCharacters.length}
+                    disabled={sending}
+                    onRemove={() => void removeParticipant(item.id)}
+                    onMove={(direction) =>
+                      void updateParticipants(
+                        moveItem(participantCharacters, index, direction).map(
+                          (row) => row.id
+                        )
+                      )
+                    }
+                    onRequestTurn={
+                      onRequestTurn ? () => onRequestTurn(item.id) : undefined
+                    }
+                  />
+                ))}
+              </Reorder.Group>
+            )}
+
+            {participantCharacters.length > 1 && (
+              <p className="mb-2 text-[11px] text-content-muted">
+                Порядок = очередь ходов. Перетаскивайте за ручку или двигайте
+                стрелками.
+              </p>
+            )}
 
             <div className="flex items-center gap-2">
               <select
@@ -643,6 +800,31 @@ export function DirectorPanel({
               >
                 Добавить
               </button>
+            </div>
+
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {favoriteCandidates.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void addFavorites()}
+                  title="Добавить всех избранных персонажей в сцену"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.08] bg-[#121622]/80 px-2.5 py-1.5 text-[11px] font-medium text-content-secondary transition-colors hover:border-accent/40 hover:text-accent"
+                >
+                  <Sparkles size={12} className="text-accent" />
+                  Добавить избранных ({favoriteCandidates.length})
+                </button>
+              )}
+
+              {participantCharacters.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void clearParticipants()}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.08] bg-[#121622]/80 px-2.5 py-1.5 text-[11px] font-medium text-content-secondary transition-colors hover:border-danger/40 hover:text-danger"
+                >
+                  <X size={12} />
+                  Очистить сцену
+                </button>
+              )}
             </div>
 
             {participantCharacters.length === 0 && (

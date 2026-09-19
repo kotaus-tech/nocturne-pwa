@@ -141,3 +141,14 @@ export function pendingSpeakers(
 
   return participants.filter((item) => !answered.has(item.id));
 }
+
+/** Меняет элементы местами: сдвиг на одну позицию вверх/вниз с границами. */
+export function moveItem<T>(items: T[], index: number, direction: -1 | 1): T[] {
+  const target = index + direction;
+  if (index < 0 || index >= items.length) return items;
+  if (target < 0 || target >= items.length) return items;
+
+  const next = [...items];
+  [next[index], next[target]] = [next[target], next[index]];
+  return next;
+}

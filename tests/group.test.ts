@@ -12,6 +12,7 @@ import { messagesToTurns } from "../src/services/apiClient";
 import {
   buildAssistantLabeler,
   buildCharacterIndex,
+  moveItem,
   pendingSpeakers,
   resolveParticipants,
   resolveSpeaker,
@@ -461,5 +462,27 @@ describe("групповая сцена: ход по очереди", () => {
       role: "assistant",
       content: "Ая: — Привет.",
     });
+  });
+});
+
+describe("групповая сцена: порядок участников", () => {
+  it("стрелка меняет соседей местами", () => {
+    expect(moveItem(["a", "b", "c"], 1, -1)).toEqual(["b", "a", "c"]);
+    expect(moveItem(["a", "b", "c"], 1, 1)).toEqual(["a", "c", "b"]);
+  });
+
+  it("за границами списка ничего не двигается", () => {
+    const list = ["a", "b", "c"];
+
+    expect(moveItem(list, 0, -1)).toBe(list);
+    expect(moveItem(list, 2, 1)).toBe(list);
+    expect(moveItem(list, 9, 1)).toBe(list);
+  });
+
+  it("перетаскивание сохраняет весь состав", () => {
+    const moved = moveItem(["c-2", "c-3", "c-4"], 0, 1);
+
+    expect(moved).toEqual(["c-3", "c-2", "c-4"]);
+    expect([...moved].sort()).toEqual(["c-2", "c-3", "c-4"]);
   });
 });

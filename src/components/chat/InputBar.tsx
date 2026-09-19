@@ -16,6 +16,7 @@ import {
   Square,
 } from "lucide-react";
 import { rollFate } from "../../services/dice";
+import { Avatar } from "../common/Avatar";
 import { cn } from "../../utils/cn";
 
 interface Props {
@@ -28,6 +29,9 @@ interface Props {
   sending: boolean;
   characterName?: string;
   modelName?: string;
+  /** Групповая сцена: участники, каждому можно дать ход отдельно. */
+  participants?: { id: string; name: string; avatarUrl?: string }[];
+  onRequestTurn?: (characterId: string) => void;
 }
 
 export function InputBar({
@@ -39,6 +43,8 @@ export function InputBar({
   sending,
   characterName = "персонажу",
   modelName = "AI Model",
+  participants,
+  onRequestTurn,
 }: Props) {
   const [text, setText] = useState("");
   const [ooc, setOoc] = useState(false);
@@ -158,6 +164,36 @@ export function InputBar({
             ))}
           </div>
         </section>
+      )}
+
+      {participants && participants.length > 1 && onRequestTurn && (
+        <div
+          role="group"
+          aria-label="Дать ход участнику сцены"
+          className="mb-2 flex items-center gap-1.5 overflow-x-auto overscroll-contain pb-1"
+        >
+          <span className="shrink-0 pr-0.5 text-[10px] font-bold uppercase tracking-wider text-content-muted">
+            Ход
+          </span>
+
+          {participants.map((participant) => (
+            <button
+              key={participant.id}
+              type="button"
+              onClick={() => onRequestTurn(participant.id)}
+              disabled={sending}
+              title={`Дать ход: ${participant.name}`}
+              className={cn(
+                "flex shrink-0 items-center gap-1.5 rounded-full border border-white/[0.08] bg-[#121622]/80 py-1 pl-1 pr-2.5",
+                "text-[11px] font-medium text-content-secondary transition-all",
+                "hover:border-accent/40 hover:bg-[#161b28] hover:text-accent active:scale-95 disabled:opacity-40"
+              )}
+            >
+              <Avatar src={participant.avatarUrl} name={participant.name} size={20} />
+              <span className="max-w-[7rem] truncate">{participant.name}</span>
+            </button>
+          ))}
+        </div>
       )}
 
       {/* На мобильных: сетка из 5 колонок без скролла. На ПК: flex с текстом */}

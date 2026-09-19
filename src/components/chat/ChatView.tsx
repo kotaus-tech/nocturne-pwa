@@ -994,6 +994,22 @@ export function ChatView({
     await callModelAndAppend(full, false, pending);
   }
 
+  /** Дать ход одному участнику сцены (кнопка у его имени). */
+  async function handleRequestTurn(characterId: string) {
+    if (!session || sending) return;
+
+    const speaker = participants.find((item) => item.id === characterId);
+    if (!speaker) return;
+
+    const full = await db.messages
+      .where("sessionId")
+      .equals(session.id)
+      .sortBy("timestamp");
+
+    setDirectorOpen(false);
+    await callModelAndAppend(full, true, [speaker]);
+  }
+
   async function handleSend(text: string) {
     if (!session) return;
 
@@ -1612,6 +1628,16 @@ export function ChatView({
             sending={sending}
             characterName={character.name}
             modelName={apiConfig?.model || "AI Model"}
+            participants={
+              isGroupScene
+                ? participants.map((item) => ({
+                    id: item.id,
+                    name: item.name,
+                    avatarUrl: item.avatarUrl,
+                  }))
+                : undefined
+            }
+            onRequestTurn={(characterId) => void handleRequestTurn(characterId)}
           />
         </div>
       </div>
@@ -1675,6 +1701,8 @@ export function ChatView({
           db.sessions.update(session.id, { realisticPacing: enabled })
         }
         onUpdateThoughtMode={handleUpdateThoughtMode}
+        onRequestTurn={(characterId) => void handleRequestTurn(characterId)}
+        sending={sending}
         onOpenInspector={() => setInspectorOpen(true)}
         onCompressMemory={compressMemory}
         onRefreshSummary={handleRefreshSummary}

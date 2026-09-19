@@ -46,6 +46,7 @@ import { InputBar } from "./InputBar";
 import { MessageBubble } from "./MessageBubble";
 import { NovelReader } from "./NovelReader";
 import { CharacterProfileModal } from "./CharacterProfileModal";
+import { ConfirmDialog } from "../common/ConfirmDialog";
 import { PromptInspectorModal } from "./PromptInspectorModal";
 import {
   RelationshipToast,
@@ -255,6 +256,7 @@ export function ChatView({
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [novelMode, setNovelMode] = useState(false);
   const [thoughtMessage, setThoughtMessage] = useState<Message | null>(null);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
   const [sending, setSending] = useState(false);
   const [liveStreamedText, setLiveStreamedText] = useState("");
@@ -1292,15 +1294,7 @@ export function ChatView({
                       swipes[message.currentSwipeIndex] = text;
                       await db.messages.update(message.id, { swipes });
                     }}
-                    onDelete={async () => {
-                      if (confirm("Удалить это и все последующие сообщения?")) {
-                        await rewindToMessage(session.id, message.id, false);
-                        lastExtractedMsgCountRef.current = Math.min(
-                          lastExtractedMsgCountRef.current,
-                          allMessages.length - 1
-                        );
-                      }
-                    }}
+                    onDelete={() => setPendingDeleteId(message.id)}
                     onSwipe={async (direction) => {
                       const next = message.currentSwipeIndex + direction;
                       if (next < 0 || next >= message.swipes.length) return;
@@ -1429,6 +1423,24 @@ export function ChatView({
         onOpenInspector={() => setInspectorOpen(true)}
         onCompressMemory={compressMemory}
         onRefreshSummary={handleRefreshSummary}
+      />
+
+      <ConfirmDialog
+        open={pendingDeleteId !== null}
+        tone="danger"
+        title="Удалить эту и все последующие реплики?"
+        description="История ветки будет откатана до выбранного сообщения. Восстановить удалённое нельзя."
+        confirmLabel="Удалить"
+        onClose={() => setPendingDeleteId(null)}
+        onConfirm={async () => {
+          if (!pendingDeleteId) return;
+          await rewindToMessage(session.id, pendingDeleteId, false);
+          lastExtractedMsgCountRef.current = Math.min(
+            lastExtractedMsgCountRef.current,
+            Math.max(0, allMessages.length - 1)
+          );
+          setPendingDeleteId(null);
+        }}
       />
 
       <ThoughtModal

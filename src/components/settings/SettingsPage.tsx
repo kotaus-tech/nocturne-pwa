@@ -56,6 +56,7 @@ import {
   type StorageStatus,
 } from "../../services/storage";
 import { APP_CODENAME, APP_VERSION } from "../../appInfo";
+import { ConfirmDialog } from "../common/ConfirmDialog";
 import { cn } from "../../utils/cn";
 
 interface SettingsPageProps {
@@ -290,6 +291,9 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
   const [backupBusy, setBackupBusy] = useState<"export" | "import" | "wipe" | null>(null);
   const [backupStatus, setBackupStatus] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
+  const [pendingPreset, setPendingPreset] = useState<ApiPreset | null>(null);
+  const [pendingImport, setPendingImport] = useState<BackupBundle | null>(null);
+  const [wipeOpen, setWipeOpen] = useState(false);
   const [storage, setStorage] = useState<StorageStatus | null>(null);
   const [storageBusy, setStorageBusy] = useState(false);
 
@@ -407,8 +411,7 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
     triggerPresetToast(`Загружен пресет: «${preset.name}»`);
   };
 
-  const handleDeletePreset = async (presetId: string, name: string) => {
-    if (!confirm(`Удалить пресет «${name}»?`)) return;
+  const handleDeletePreset = async (presetId: string) => {
     try {
       await deleteApiPreset(presetId);
       setPresets((prev) => prev.filter((p) => p.id !== presetId));
@@ -506,53 +509,58 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
     }
   };
 
+  /** Читает файл бэкапа и передаёт его в диалог подтверждения. */
   const handleImport = async (file: File) => {
     if (backupBusy) return;
     setBackupBusy("import");
     setBackupStatus(null);
-    let reloadScheduled = false;
 
     try {
       const text = await file.text();
       const bundle = JSON.parse(text) as BackupBundle;
+
       if (!bundle || typeof bundle !== "object") {
         throw new Error("Файл не является корректным JSON-документом.");
       }
 
-      const confirmed = confirm(
-        "Импорт полностью перезапишет текущих персонажей, ветки чатов и настройки. Продолжить?"
-      );
-      if (!confirmed) {
-        setBackupBusy(null);
-        return;
-      }
-
-      await importBackup(bundle);
-      setBackupStatus({
-        type: "success",
-        text: "Данные успешно восстановлены. Перезагрузка приложения…",
-      });
-
-      reloadScheduled = true;
-      setTimeout(() => {
-        window.location.reload();
-      }, 1000);
+      setPendingImport(bundle);
     } catch (cause) {
       setBackupStatus({
         type: "error",
         text: cause instanceof Error ? cause.message : "Не удалось прочитать файл бэкапа.",
       });
     } finally {
-      if (!reloadScheduled) setBackupBusy(null);
+      setBackupBusy(null);
+    }
+  };
+
+  /** Применяет подтверждённый импорт: база перезаписывается целиком. */
+  const applyImport = async (bundle: BackupBundle) => {
+    setBackupBusy("import");
+    setBackupStatus(null);
+
+    try {
+      await importBackup(bundle);
+      setBackupStatus({
+        type: "success",
+        text: "Данные успешно восстановлены. Перезагрузка приложения…",
+      });
+
+      // Даём статусу отрисоваться и перезапускаем приложение.
+      window.setTimeout(() => {
+        window.location.reload();
+      }, 1000);
+    } catch (cause) {
+      setBackupStatus({
+        type: "error",
+        text: cause instanceof Error ? cause.message : "Не удалось восстановить базу.",
+      });
+      setBackupBusy(null);
     }
   };
 
   const handleWipe = async () => {
     if (backupBusy) return;
-    const confirmed = confirm(
-      "Точно удалить ВСЕ локальные данные приложения без возможности восстановления?"
-    );
-    if (!confirmed) return;
 
     setBackupBusy("wipe");
     try {
@@ -710,7 +718,7 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
 
                           <button
                             type="button"
-                            onClick={() => void handleDeletePreset(p.id, p.name)}
+                            onClick={() => setPendingPreset(p)}
                             title="Удалить пресет"
                             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-content-muted transition-colors hover:bg-danger/10 hover:text-danger"
                           >
@@ -1489,7 +1497,7 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
                 <button
                   type="button"
                   disabled={backupBusy !== null}
-                  onClick={() => void handleWipe()}
+                  onClick={() => setWipeOpen(true)}
                   className="mt-4 inline-flex items-center gap-2 rounded-xl border border-danger/40 bg-danger/10 px-4 py-2 text-xs font-semibold text-danger hover:bg-danger/20 disabled:opacity-50"
                 >
                   <Trash2 size={14} />
@@ -1500,6 +1508,51 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
           </section>
         </div>
       )}
+
+      <ConfirmDialog
+        open={pendingPreset !== null}
+        tone="danger"
+        title="Удалить пресет подключения?"
+        description={
+          pendingPreset
+            ? `Пресет «${pendingPreset.name}» будет удалён. Текущие настройки подключения не изменятся.`
+            : undefined
+        }
+        confirmLabel="Удалить пресет"
+        onClose={() => setPendingPreset(null)}
+        onConfirm={async () => {
+          if (!pendingPreset) return;
+          await handleDeletePreset(pendingPreset.id);
+          setPendingPreset(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={pendingImport !== null}
+        title="Заменить текущие данные?"
+        description="Импорт полностью перезапишет персонажей, ветки диалогов, память и настройки. Текущая библиотека будет потеряна — при необходимости сначала сделайте экспорт."
+        confirmLabel="Импортировать"
+        onClose={() => setPendingImport(null)}
+        onConfirm={async () => {
+          if (!pendingImport) return;
+          const bundle = pendingImport;
+          setPendingImport(null);
+          await applyImport(bundle);
+        }}
+      />
+
+      <ConfirmDialog
+        open={wipeOpen}
+        tone="danger"
+        title="Стереть все локальные данные?"
+        description="Будут удалены все персонажи, истории, дневники, память и настройки. Восстановить их можно только из заранее сохранённого бэкапа."
+        confirmLabel="Стереть навсегда"
+        onClose={() => setWipeOpen(false)}
+        onConfirm={async () => {
+          setWipeOpen(false);
+          await handleWipe();
+        }}
+      />
     </div>
   );
 }

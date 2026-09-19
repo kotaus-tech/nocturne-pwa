@@ -30,6 +30,33 @@ export function sanitizeBaseUrl(baseUrl?: string): string {
   return match ? match[0] : raw;
 }
 
+/** Хост сервиса RU OpenRouter: его API живёт под путём `/v1`. */
+const RU_OPENROUTER_HOST = "api.ru-openrouter.ru";
+
+/**
+ * RU OpenRouter отвечает 404, если в адресе нет `/v1` (их документация требует
+ * `https://api.ru-openrouter.ru/v1/chat/completions`). Если игрок указал только
+ * хост, дописываем путь сами — иначе ошибка выглядит как «неверный URL».
+ * Корректные адреса возвращаются без изменений.
+ */
+export function normalizeRuOpenRouterUrl(baseUrl?: string): string {
+  const raw = sanitizeBaseUrl(baseUrl);
+  if (!raw) return raw;
+
+  try {
+    const url = new URL(raw);
+    if (url.hostname !== RU_OPENROUTER_HOST) return raw;
+
+    const path = url.pathname.replace(/\/+$/, "");
+    if (path && path !== "/") return raw;
+
+    url.pathname = "/v1";
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return raw;
+  }
+}
+
 export function isLocalEndpoint(baseUrl?: string): boolean {
   if (!baseUrl) return false;
   const lower = baseUrl.toLowerCase();
@@ -81,7 +108,7 @@ export function resolveEndpoints(baseUrl: string): {
   primaryUrl: string;
   fallbackUrl: string | null;
 } {
-  const clean = sanitizeBaseUrl(baseUrl).replace(/\/+$/, "");
+  const clean = normalizeRuOpenRouterUrl(baseUrl).replace(/\/+$/, "");
 
   if (!clean) {
     throw new Error("Base URL не указан в настройках API. Укажите адрес сервера (например, адрес Ollama или провайдера).");
@@ -469,6 +496,55 @@ export async function readJsonResponse(res: Response, url?: string): Promise<any
   }
 }
 
+/** Путь резервного прокси: совпадает с edge-функцией Netlify (netlify.toml). */
+export const LLM_PROXY_PATH = "/api/llm-proxy";
+
+/**
+ * Проблема именно на резервном канале, а не на стороне провайдера: браузер
+ * заблокировал прямой запрос (CORS), а прокси на этом домене нет или он не
+ * смог дойти до API. Раньше такой случай показывался как «Эндпоинт API не
+ * найден (404). Проверьте URL» — и уводил в сторону от настоящей причины.
+ */
+export class ProxyChannelError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProxyChannelError";
+  }
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+function proxyUnavailableMessage(url: string): string {
+  return (
+    `Браузер заблокировал прямой запрос к ${hostOf(url)} (CORS), а резервный прокси ` +
+    `${LLM_PROXY_PATH} на этом домене не отвечает.\n` +
+    "Откройте приложение на Netlify-домене (там работает edge-функция) или запустите " +
+    "локально: npm run dev поднимает прокси вместе с сервером."
+  );
+}
+
+function proxyHostBlockedMessage(url: string): string {
+  return (
+    `Резервный прокси пропускает только api.ru-openrouter.ru, поэтому запрос к ` +
+    `${hostOf(url)} заблокирован. Укажите адрес провайдера напрямую или доработайте ` +
+    "allow-list прокси."
+  );
+}
+
+function proxyUpstreamFailedMessage(url: string, status: number, details?: string): string {
+  const reason = details?.trim() ? details.trim().slice(0, 160) : `код ${status}`;
+  return (
+    `Резервный прокси не смог соединиться с ${hostOf(url)}: ${reason}. ` +
+    "Проверьте соединение и адрес API в Настройках."
+  );
+}
+
 async function resilientFetch(
   url: string,
   options: RequestInit,
@@ -481,9 +557,49 @@ async function resilientFetch(
     if (options.signal?.aborted) throw err;
 
     if (allowProxy && err instanceof TypeError) {
-      const proxied = `/api/llm-proxy?target=${encodeURIComponent(url)}`;
-      return await fetch(proxied, options);
+      const proxied = `${LLM_PROXY_PATH}?target=${encodeURIComponent(url)}`;
+
+      let res: Response;
+      try {
+        res = await fetch(proxied, options);
+      } catch (proxyErr) {
+        if (options.signal?.aborted) throw proxyErr;
+        throw new ProxyChannelError(proxyUnavailableMessage(url));
+      }
+
+      // Прокси есть не на каждом хостинге: вместо функции прилетает страница
+      // 404 самим хостингом, а не ответ провайдера.
+      if (!res.ok) {
+        const contentType = res.headers.get("content-type") ?? "";
+        const body = await res
+          .clone()
+          .text()
+          .catch(() => "");
+
+        if (!contentType.includes("json")) {
+          throw new ProxyChannelError(proxyUnavailableMessage(url));
+        }
+
+        if (body.includes("Host not allowed")) {
+          throw new ProxyChannelError(proxyHostBlockedMessage(url));
+        }
+
+        if (body.includes("Proxy fetch failed") || body.includes("target parameter")) {
+          const details = (() => {
+            try {
+              return JSON.parse(body)?.details as string | undefined;
+            } catch {
+              return undefined;
+            }
+          })();
+
+          throw new ProxyChannelError(proxyUpstreamFailedMessage(url, res.status, details));
+        }
+      }
+
+      return res;
     }
+
     throw err;
   }
 }
@@ -1180,7 +1296,7 @@ export async function fetchAvailableModels(apiConfig: ApiConfig): Promise<string
       return models.length > 0 ? models : ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"];
     } else {
       if (!apiConfig.baseUrl) throw new Error("Сначала укажите Base URL в настройках.");
-      const cleanUrl = apiConfig.baseUrl.trim().replace(/\/+$/, "");
+      const cleanUrl = normalizeRuOpenRouterUrl(apiConfig.baseUrl).replace(/\/+$/, "");
 
       const headers: Record<string, string> = {};
       if (apiConfig.apiKey && apiConfig.apiKey.trim().length > 0) {

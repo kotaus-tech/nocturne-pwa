@@ -85,6 +85,13 @@ const TEMPLATE_PRESETS: {
     mode: "openai",
   },
   {
+    // Работает из России без VPN; при CORS запрос идёт через прокси
+    // /api/llm-proxy (edge-функция Netlify или dev-мидлвара).
+    label: "RU OpenRouter",
+    baseUrl: "https://api.ru-openrouter.ru/v1",
+    mode: "openai",
+  },
+  {
     label: "DeepSeek",
     baseUrl: "https://api.deepseek.com",
     mode: "openai",

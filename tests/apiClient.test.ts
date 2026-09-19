@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  normalizeRuOpenRouterUrl,
   readJsonResponse,
   requestRoleplayReply,
   resolveEndpoints,
@@ -16,7 +17,7 @@ import type { ApiConfig } from "../src/types";
  */
 
 const calls: string[] = [];
-let responder: () => Response;
+let responder: (request: { url: string }) => Response;
 
 const jsonResponse = (payload: unknown) =>
   new Response(JSON.stringify(payload), {
@@ -46,7 +47,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input.toString();
     calls.push(url);
-    return responder();
+    return responder({ url });
   });
 });
 
@@ -73,6 +74,148 @@ describe("sanitizeBaseUrl", () => {
 
     const local = resolveEndpoints("http://localhost:11434/v1");
     expect(local.primaryUrl).toContain("localhost:11434");
+  });
+});
+
+describe("RU OpenRouter", () => {
+  const ruConfig: ApiConfig = {
+    mode: "openai",
+    baseUrl: "https://api.ru-openrouter.ru/v1",
+    apiKey: "sk_test",
+    model: "openai/gpt-4o-mini",
+    temperature: 0.8,
+    contextWindow: 20,
+    streamEnabled: false,
+  };
+
+  it("собирает адрес чата из пути /v1", () => {
+    expect(resolveEndpoints("https://api.ru-openrouter.ru/v1").primaryUrl).toBe(
+      "https://api.ru-openrouter.ru/v1/chat/completions"
+    );
+    expect(resolveEndpoints("https://api.ru-openrouter.ru/v1/").primaryUrl).toBe(
+      "https://api.ru-openrouter.ru/v1/chat/completions"
+    );
+    expect(resolveEndpoints("https://api.ru-openrouter.ru/v1/chat/completions").primaryUrl).toBe(
+      "https://api.ru-openrouter.ru/v1/chat/completions"
+    );
+  });
+
+  it("дописывает /v1, если указан только хост", () => {
+    expect(normalizeRuOpenRouterUrl("https://api.ru-openrouter.ru")).toBe(
+      "https://api.ru-openrouter.ru/v1"
+    );
+    expect(normalizeRuOpenRouterUrl("https://api.ru-openrouter.ru/")).toBe(
+      "https://api.ru-openrouter.ru/v1"
+    );
+    expect(resolveEndpoints("https://api.ru-openrouter.ru").primaryUrl).toBe(
+      "https://api.ru-openrouter.ru/v1/chat/completions"
+    );
+  });
+
+  it("не трогает адреса других провайдеров", () => {
+    expect(normalizeRuOpenRouterUrl("https://openrouter.ai/api/v1")).toBe(
+      "https://openrouter.ai/api/v1"
+    );
+    expect(normalizeRuOpenRouterUrl("https://api.deepseek.com")).toBe(
+      "https://api.deepseek.com"
+    );
+    expect(normalizeRuOpenRouterUrl("")).toBe("");
+  });
+
+  it("отвечает героем, когда прокси вернул нормальный ответ", async () => {
+    responder = ({ url }) =>
+      url.startsWith("/api/llm-proxy")
+        ? jsonResponse({ choices: [{ message: { content: "Ответ через прокси." } }] })
+        : (() => {
+            throw new TypeError("Failed to fetch");
+          })();
+
+    const reply = await requestRoleplayReply(
+      ruConfig,
+      "system",
+      [{ role: "user", content: "привет" }],
+      () => {}
+    );
+
+    expect(calls[0]).toBe("https://api.ru-openrouter.ru/v1/chat/completions");
+    expect(calls[1]).toContain("/api/llm-proxy?target=");
+    expect(reply.text).toContain("Ответ через прокси.");
+  });
+
+  it("объясняет, что прокси на этом домене нет, вместо «проверьте URL»", async () => {
+    responder = ({ url }) => {
+      if (url.startsWith("/api/llm-proxy")) {
+        return new Response("<!doctype html><html><body>Not found</body></html>", {
+          status: 404,
+          headers: { "content-type": "text/html" },
+        });
+      }
+      throw new TypeError("Failed to fetch");
+    };
+
+    const error = await requestRoleplayReply(
+      ruConfig,
+      "system",
+      [{ role: "user", content: "привет" }],
+      () => {}
+    ).catch((cause: Error) => cause);
+
+    expect(String(error)).toContain("api.ru-openrouter.ru");
+    expect(String(error)).toContain("/api/llm-proxy");
+    expect(String(error)).not.toContain("Эндпоинт API не найден");
+  });
+
+  it("отдельно сообщает, когда прокси не смог дойти до провайдера", async () => {
+    responder = ({ url }) =>
+      url.startsWith("/api/llm-proxy")
+        ? new Response(
+            JSON.stringify({ error: "Proxy fetch failed", details: "TypeError: fetch failed" }),
+            { status: 502, headers: { "content-type": "application/json" } }
+          )
+        : (() => {
+            throw new TypeError("Failed to fetch");
+          })();
+
+    await expect(
+      requestRoleplayReply(ruConfig, "system", [{ role: "user", content: "привет" }], () => {})
+    ).rejects.toThrow(/не смог соединиться/);
+  });
+
+  it("в стриминговом режиме ошибка прокси тоже понятная", async () => {
+    responder = ({ url }) => {
+      if (url.startsWith("/api/llm-proxy")) {
+        return new Response("<!doctype html><html>Not found</html>", {
+          status: 404,
+          headers: { "content-type": "text/html" },
+        });
+      }
+      throw new TypeError("Failed to fetch");
+    };
+
+    await expect(
+      requestRoleplayReply(
+        { ...ruConfig, streamEnabled: true },
+        "system",
+        [{ role: "user", content: "привет" }],
+        () => {}
+      )
+    ).rejects.toThrow(/резервный прокси/i);
+  });
+
+  it("ошибку самого провайдера через прокси не подменяет", async () => {
+    responder = ({ url }) =>
+      url.startsWith("/api/llm-proxy")
+        ? new Response(JSON.stringify({ error: { message: "Invalid API key" } }), {
+            status: 401,
+            headers: { "content-type": "application/json" },
+          })
+        : (() => {
+            throw new TypeError("Failed to fetch");
+          })();
+
+    await expect(
+      requestRoleplayReply(ruConfig, "system", [{ role: "user", content: "привет" }], () => {})
+    ).rejects.toThrow(/API-ключ/);
   });
 });
 

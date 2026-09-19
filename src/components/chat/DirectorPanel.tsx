@@ -877,6 +877,13 @@ export function DirectorPanel({
               )}
             </div>
 
+            {participantCharacters.some((item) => !isPresent(item.id)) && (
+              <p className="mt-2 text-[11px] leading-relaxed text-content-muted">
+                За кадром персонаж не молчит вечно: модель вернёт его сама, когда
+                это будет уместно по сюжету. Вручную — тумблером рядом с именем.
+              </p>
+            )}
+
             {participantCharacters.length === 0 && (
               <p className="mt-2 text-[11px] leading-relaxed text-content-muted">
                 Пока сцена обычная: отвечает один персонаж. Добавьте второго —

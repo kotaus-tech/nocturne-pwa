@@ -13,6 +13,7 @@ import {
   resolvePresence,
 } from "../src/services/groupScene";
 import { buildRoutingPrompt, parseRoutingAnswer } from "../src/services/groupRouter";
+import { buildSystemPrompt } from "../src/services/promptBuilder";
 import {
   GROUP_SIZE_MAX,
   GROUP_SIZE_MIN,
@@ -49,6 +50,12 @@ const character = (
   createdAt: 1,
   ...overrides,
 });
+
+const player = {
+  name: "Странник",
+  avatarUrl: "",
+  personaDescription: "гость",
+};
 
 const cast = [
   character("c-1", "Ая"),
@@ -207,6 +214,36 @@ describe("групповая сцена: выбор говорящего", () =>
     expect(prompt).toContain("Рин → группа: душа компании");
     expect(prompt).toContain("Ночь, гроза");
     expect(prompt).toContain("[Отвечает: Имя]");
+  });
+
+  it("промпт разрешает модели вернуть персонажа из-за кадра", () => {
+    const prompt = buildSystemPrompt(
+      cast[0],
+      {
+        id: "s-1",
+        characterId: "c-1",
+        characterIds: ["c-2", "c-3"],
+        activeCharacterIds: ["c-1", "c-3"],
+        absentReasons: { "c-2": "ушла в магазин" },
+        title: "Ветка",
+        directorNotes: "",
+        currentStats: { ...DEFAULT_STATS },
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      player,
+      [],
+      false,
+      {
+        others: [cast[1], cast[2]],
+        absent: [{ character: cast[1], reason: "ушла в магазин" }],
+      }
+    );
+
+    expect(prompt).toContain("СЦЕНИЧЕСКОЕ ПРИСУТСТВИЕ");
+    expect(prompt).toContain("ушла в магазин");
+    expect(prompt).toContain('"returned"');
+    expect(prompt).toContain("не говори за них");
   });
 
   it("в промпт роутера попадает не больше шести связей", () => {

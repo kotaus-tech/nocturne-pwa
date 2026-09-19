@@ -7,6 +7,11 @@ export interface ParsedResponse {
   feelingHint?: string;
   stats?: RelationshipStats;
   /**
+   * Кого модель вернула в сцену (мета-поле `returned`): персонажи,
+   * ушедшие за кадр, могут возвращаться сами по ходу истории.
+   */
+  returnedNames?: string[];
+  /**
    * Заполняется, если мета-блок был найден, но не разобрался:
    * блок убран из текста, а шкалы остались без изменений.
    */
@@ -29,7 +34,9 @@ export const META_PROTOCOL_INSTRUCTION = `### META-ПРОТОКОЛ СИСТЕМ
     "statusTitle": "Знакомство"
   }
 }
-\`\`\``;
+\`\`\`
+
+Необязательное поле "returned": ["Имя"] — кого из персонажей за кадром этот ответ вернул в сцену (нужно только в групповых сценах, когда кто-то был в отлучке).`;
 
 // ─────────────────────────────────────────────────────────────
 // Разбор ограждённых блоков (```lang ... ```)
@@ -43,7 +50,17 @@ interface FencedBlock {
 }
 
 const META_LANGUAGES = new Set(["", "meta", "json"]);
-const META_KEYS = ["innerThought", "inner_thought", "feelingHint", "feeling_hint", "stats"];
+const META_KEYS = [
+  "innerThought",
+  "inner_thought",
+  "feelingHint",
+  "feeling_hint",
+  "stats",
+  "returned",
+  "returnedNames",
+  "returned_names",
+  "вернулся",
+];
 
 /** Блоки ```...``` с точными границами: любой другой код в ответе не трогаем. */
 function findFencedBlocks(source: string): FencedBlock[] {
@@ -107,6 +124,34 @@ function repairJson(source: string): string {
   }
 
   return fixed;
+}
+
+/**
+ * Приводит мета-поле `returned` к списку имён: принимает строку, массив
+ * строк или массив объектов с полем name.
+ */
+export function parseReturnedNames(value: unknown): string[] {
+  const list = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  const names: string[] = [];
+
+  for (const item of list) {
+    const raw =
+      typeof item === "string"
+        ? item
+        : item && typeof item === "object"
+        ? (item as Record<string, unknown>).name
+        : undefined;
+
+    if (typeof raw !== "string") continue;
+
+    // Модель может перечислить всех в одной строке: «Мира, Кай».
+    for (const part of raw.split(/[,;]/)) {
+      const name = part.trim();
+      if (name && !names.includes(name)) names.push(name);
+    }
+  }
+
+  return names;
 }
 
 /** Возвращает объект метаданных либо null, если это не мета-блок. */
@@ -348,6 +393,14 @@ export function parseMetaBlock(
     }
   }
 
+  // Локальный стандарт: <returned names="Ая, Рин" />
+  const returnedMatch = raw.match(/<returned\s+[^>]*?names?\s*=\s*["']([^"']+)["'][^>]*>/i);
+  let returnedNames = returnedMatch ? parseReturnedNames(returnedMatch[1]) : [];
+
+  if (returnedMatch) {
+    text = text.replace(/<returned\s+[^>]*?>/i, "");
+  }
+
   // ───────────────────────────────────────────────────────────
   // Облачные метаданные перекрывают разобранные теги
   // ───────────────────────────────────────────────────────────
@@ -362,6 +415,15 @@ export function parseMetaBlock(
     if (stats && typeof stats === "object" && !Array.isArray(stats)) {
       newStats = buildStats(stats as Record<string, unknown>, baseStats);
     }
+
+    const returned =
+      metaJson.returned ??
+      metaJson.returnedNames ??
+      metaJson.returned_names ??
+      metaJson["вернулся"];
+
+    const cloudNames = parseReturnedNames(returned);
+    if (cloudNames.length > 0) returnedNames = cloudNames;
   }
 
   return {
@@ -369,6 +431,7 @@ export function parseMetaBlock(
     innerThought,
     feelingHint,
     stats: newStats,
+    returnedNames: returnedNames.length > 0 ? returnedNames : undefined,
     metaWarning,
   };
 }

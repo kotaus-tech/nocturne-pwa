@@ -1020,6 +1020,11 @@ export function ChatView({
 
         if (parsed.metaWarning) showMetaNotice(parsed.metaWarning);
 
+        // Ответ мог вернуть кого-то из «за кадра» — вводим его обратно в сцену.
+        if (parsed.returnedNames?.length) {
+          await returnToScene(resolveReturnedCharacters(parsed.returnedNames));
+        }
+
         const newStats = parsed.stats ?? speakerStats;
 
         const assistantMessage: Message = {
@@ -1150,6 +1155,64 @@ export function ChatView({
     if (!isPresent && targetCharacterId === target.id) {
       setTargetCharacterId(null);
     }
+  }
+
+  /**
+   * Модель вернула кого-то в сцену сама (мета-поле `returned`): снимаем
+   * «за кадром», чистим причину отлучки и сообщаем игроку.
+   */
+  async function returnToScene(targets: Character[]) {
+    if (!session || targets.length === 0) return;
+
+    const presentIds = new Set(presentCharacters.map((item) => item.id));
+    const returning = new Set(targets.map((item) => item.id));
+
+    // Порядок остаётся порядком состава, вернувшиеся встают на своё место.
+    const nextIds = participants
+      .map((item) => item.id)
+      .filter((id) => presentIds.has(id) || returning.has(id));
+
+    const nextReasons = { ...(session.absentReasons ?? {}) };
+    for (const id of returning) delete nextReasons[id];
+
+    await db.sessions.update(session.id, {
+      activeCharacterIds: nextIds,
+      absentReasons: nextReasons,
+      updatedAt: Date.now(),
+    });
+
+    if (session.showRelationshipToasts !== false) {
+      showToast({
+        title:
+          targets.length === 1
+            ? `${targets[0].name} снова в сцене`
+            : `В сцену вернулись: ${targets.map((item) => item.name).join(", ")}`,
+        type: "status",
+      });
+    }
+  }
+
+  /** Сопоставляет имена из мета-блока с теми, кто сейчас за кадром. */
+  function resolveReturnedCharacters(names: string[] | undefined): Character[] {
+    if (!names || names.length === 0) return [];
+
+    const found: Character[] = [];
+
+    for (const raw of names) {
+      const needle = raw.trim().toLocaleLowerCase("ru-RU");
+      if (needle.length < 2) continue;
+
+      const match = absentCharacters.find((item) => {
+        const name = item.character.name.trim().toLocaleLowerCase("ru-RU");
+        return name === needle || name.includes(needle) || needle.includes(name);
+      });
+
+      if (match && !found.some((item) => item.id === match.character.id)) {
+        found.push(match.character);
+      }
+    }
+
+    return found;
   }
 
   function handleTogglePresence(target: Character, isPresent: boolean) {
@@ -1297,6 +1360,11 @@ export function ChatView({
       );
 
       if (parsed.metaWarning) showMetaNotice(parsed.metaWarning);
+
+      // Перегенерация тоже может вернуть персонажа из-за кадра.
+      if (parsed.returnedNames?.length) {
+        await returnToScene(resolveReturnedCharacters(parsed.returnedNames));
+      }
 
       const newStats = parsed.stats ?? speakerStats;
       const newSwipes = [...message.swipes, parsed.text || "..."];

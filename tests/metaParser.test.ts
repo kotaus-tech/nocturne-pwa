@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseMetaBlock } from "../src/services/metaParser";
+import { parseMetaBlock, parseReturnedNames } from "../src/services/metaParser";
 import { DEFAULT_STATS } from "../src/types";
 import type { RelationshipStats } from "../src/types";
 
@@ -106,6 +106,46 @@ describe("parseMetaBlock: облачный мета-протокол", () => {
     expect(result.text).toBe("Реплика.");
     expect(result.stats).toBeUndefined();
     expect(result.metaWarning).toBeTruthy();
+  });
+});
+
+describe("parseMetaBlock: возвращение персонажей в сцену", () => {
+  it("читает список вернувшихся из мета-блока и убирает блок из текста", () => {
+    const result = withBase(
+      '*Дверь хлопнула.*\n\n```meta\n{"returned":["Мира","Кай"],"feelingHint":"Тепло"}\n```'
+    );
+
+    expect(result.text).toBe("*Дверь хлопнула.*");
+    expect(result.returnedNames).toEqual(["Мира", "Кай"]);
+    expect(result.feelingHint).toBe("Тепло");
+  });
+
+  it("принимает одиночное имя строкой и русское имя поля", () => {
+    expect(withBase('```meta\n{"returned":"Мира"}\n```').returnedNames).toEqual([
+      "Мира",
+    ]);
+    expect(withBase('```meta\n{"вернулся":"Кай"}\n```').returnedNames).toEqual([
+      "Кай",
+    ]);
+  });
+
+  it("понимает перечисление в одной строке, точки с запятой и лишние пробелы", () => {
+    expect(parseReturnedNames(" Мира , Кай;  ")).toEqual(["Мира", "Кай"]);
+    expect(parseReturnedNames(["Мира"])).toEqual(["Мира"]);
+    expect(parseReturnedNames([{ name: "Кай" }])).toEqual(["Кай"]);
+    expect(parseReturnedNames(undefined)).toEqual([]);
+    expect(parseReturnedNames([42, null, ""])).toEqual([]);
+  });
+
+  it("поддерживает локальный тег returned", () => {
+    const result = parseMetaBlock('<returned names="Мира" />\n— Я вернулась.');
+
+    expect(result.returnedNames).toEqual(["Мира"]);
+    expect(result.text).not.toContain("<returned");
+  });
+
+  it("без поля returned ничего не выдумывает", () => {
+    expect(withBase('```meta\n{"feelingHint":"Тепло"}\n```').returnedNames).toBeUndefined();
   });
 });
 

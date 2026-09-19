@@ -2014,6 +2014,7 @@ export function ChatView({
           contextMessages={currentContextSlice}
           lastAssistantMessage={lastAssistantMessage}
           participants={participants}
+          absent={absentCharacters}
           speakerId={lastAssistantMessage?.characterId ?? character.id}
         />
       )}

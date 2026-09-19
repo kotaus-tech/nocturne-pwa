@@ -243,6 +243,191 @@ ${customIdea.trim() ? `- Особая авторская задумка: "${cust
   ]
 }`;
 
+  const parsed = await requestModelJson(apiConfig, systemInstruction);
+
+  return normalizeGeneratedCharacter(parsed, selectedTags);
+}
+
+/** Приводит ответ модели к полям персонажа, подставляя безопасные значения. */
+export function normalizeGeneratedCharacter(
+  parsed: any,
+  selectedTags: string[]
+): Partial<Character> {
+  const source = parsed && typeof parsed === "object" ? parsed : {};
+
+  const settingTags =
+    TAG_CATEGORIES.find((c) => c.id === "setting")?.tags.map((t) => t.name) ?? [];
+  const detectedGenre = selectedTags.find((tag) => settingTags.includes(tag)) || "";
+
+  return {
+    name: typeof source.name === "string" && source.name.trim() ? source.name.trim() : "Безымянный",
+    tagline: source.tagline || "",
+    description: source.description || "",
+    personality: source.personality || "",
+    scenario: source.scenario || "",
+    systemPrompt: source.systemPrompt || "",
+    firstMessage: source.firstMessage || "*Смотрит на тебя в тишине...*",
+    tags: selectedTags,
+    genre: detectedGenre,
+    originTag: "ОРИГИНАЛЬНЫЙ ПЕРСОНАЖ",
+    initialStats: {
+      ...DEFAULT_STATS,
+      ...(source.initialStats || {}),
+    },
+    lorebook: Array.isArray(source.lorebook)
+      ? source.lorebook.map((entry: any) => ({
+          id: newId(),
+          keys: Array.isArray(entry?.keys) ? entry.keys : ["память"],
+          content: entry?.content || "",
+          isActive: true,
+        }))
+      : [],
+  };
+}
+
+// ------------------------------------------------------------------
+// Групповой генератор: 2–4 героя одной сцены + общий опенинг
+// ------------------------------------------------------------------
+
+export const GROUP_SIZE_MIN = 2;
+export const GROUP_SIZE_MAX = 4;
+
+export interface GeneratedGroup {
+  /** Готовые к сохранению карточки персонажей (2–4). */
+  characters: Partial<Character>[];
+  /** Общий опенинг: как все они оказались в одной сцене. */
+  opening: string;
+}
+
+/** Ограничивает размер группы допустимым диапазоном. */
+export function clampGroupSize(size: number): number {
+  if (!Number.isFinite(size)) return GROUP_SIZE_MIN;
+  return Math.min(GROUP_SIZE_MAX, Math.max(GROUP_SIZE_MIN, Math.round(size)));
+}
+
+/** Инструкция для модели: собрать группу героев и общий опенинг сцены. */
+export function buildGroupInstruction(
+  gender: "female" | "male" | "any",
+  selectedTags: string[],
+  customIdea: string,
+  size: number
+): string {
+  const count = clampGroupSize(size);
+
+  const genderPrompt =
+    gender === "female"
+      ? "Все персонажи — девушки (женский пол)."
+      : gender === "male"
+      ? "Все персонажи — парни (мужской пол)."
+      : "Пол каждого персонажа — на усмотрение модели.";
+
+  const tagsList =
+    selectedTags.length > 0
+      ? selectedTags.join(", ")
+      : "Повседневность, Разговорный / Бытовой";
+
+  return `Ты — ведущий нарративный дизайнер и специалист по живому диалоговому AI RolePlay.
+Твоя задача — собрать СЦЕНУ из ${count} персонажей для ролевой игры на русском языке: у каждого свой характер и голос, но всех связывает одна завязка.
+
+ВХОДНЫЕ ПАРАМЕТРЫ:
+- ${genderPrompt}
+- Выбранные теги, стиль речи и сеттинг: ${tagsList}
+${customIdea.trim() ? `- Особая авторская задумка: "${customIdea.trim()}"` : ""}
+
+ПРАВИЛА ГРУППЫ (КРИТИЧЕСКИ ВАЖНО):
+1. Персонажи должны звучать РАЗНО: разный темперамент, манера речи, отношение к игроку. Никаких близнецов по характеру.
+2. Между ними есть живые связи: дружба, соперничество, тайная симпатия, долг, старая обида. Взаимные чувства и конфликты важнее внешности.
+3. ПИШИ ЁМКО И КОНЦЕНТРАЦИРОВАННО, без воды и высокопарных клише XIX века.
+4. Опенинг — общая сцена: где все ${count} героя вместе с игроком, что происходит, кто что делает. Он должен дать игроку повод вмешаться, а не закрыть сцену.
+
+ТРЕБОВАНИЯ К ПОЛЯМ КАЖДОГО ПЕРСОНАЖА (СОБЛЮДАЙ ОБЪЁМ):
+- name: звучное, естественное имя или прозвище.
+- tagline: 1-3 слова сути («Дерзкая соседка», «Циничный напарник»).
+- description: 2-3 плотных предложения (рост, глаза, волосы, одежда, особые приметы).
+- personality: 3-4 предложения (психотип, привычки, слабости, триггеры).
+- scenario: 2-3 предложения (как он оказался вместе с остальными).
+- systemPrompt: 2-3 строгие директивы для ИИ (манера речи, реакции на эмоции).
+- firstMessage: 1-2 предложения — первая реплика героя в этой сцене (*действия в звёздочках*, речь через тире).
+- lorebook: ровно 2 коротких ключевых факта (по 1-2 предложения).
+
+ОТВЕТ ДОЛЖЕН БЫТЬ СТРОГО В ФОРМАТЕ ВАЛИДНОГО JSON:
+{
+  "opening": "Общий опенинг сцены: 4-6 предложений, где все герои вместе с игроком (*действия в звёздочках*, речь через тире).",
+  "characters": [
+    {
+      "name": "Имя",
+      "tagline": "Краткий статус",
+      "description": "Внешность (2-3 предложения)",
+      "personality": "Характер и психотип (3-4 предложения)",
+      "scenario": "Как оказался в сцене (2-3 предложения)",
+      "systemPrompt": "Инструкции стиля общения (2-3 директивы)",
+      "firstMessage": "*Действие...* — Первая реплика в сцене.",
+      "initialStats": {
+        "trust": 30,
+        "affection": 20,
+        "closeness": 15,
+        "tension": 25,
+        "conflict": 0,
+        "statusTitle": "Первая встреча"
+      },
+      "lorebook": [
+        { "keys": ["ключ1", "ключ2"], "content": "Короткий факт или тайна персонажа", "isActive": true },
+        { "keys": ["ключ3", "ключ4"], "content": "Второй ключевой факт", "isActive": true }
+      ]
+    }
+  ]
+}`;
+}
+
+/** Разбирает ответ модели в группу: карточки + общий опенинг. */
+export function parseGeneratedGroup(parsed: any, selectedTags: string[]): GeneratedGroup {
+  const rawList = Array.isArray(parsed?.characters)
+    ? parsed.characters
+    : Array.isArray(parsed)
+    ? parsed
+    : [];
+
+  const characters = rawList
+    .filter((item: any) => item && typeof item === "object")
+    .slice(0, GROUP_SIZE_MAX)
+    .map((item: any) => normalizeGeneratedCharacter(item, selectedTags));
+
+  const opening =
+    typeof parsed?.opening === "string" && parsed.opening.trim()
+      ? parsed.opening.trim()
+      : characters[0]?.firstMessage || "*Сцена начинается с тишины…*";
+
+  return { characters, opening };
+}
+
+/** Генерирует группу из 2–4 героев вместе с общим опенингом сцены. */
+export async function generateAiGroup(
+  apiConfig: ApiConfig,
+  gender: "female" | "male" | "any",
+  selectedTags: string[],
+  customIdea: string,
+  size: number
+): Promise<GeneratedGroup> {
+  const count = clampGroupSize(size);
+  const instruction = buildGroupInstruction(gender, selectedTags, customIdea, count);
+  const parsed = await requestModelJson(apiConfig, instruction, 3200 + count * 900);
+  const group = parseGeneratedGroup(parsed, selectedTags);
+
+  if (group.characters.length < GROUP_SIZE_MIN) {
+    throw new Error(
+      `Модель вернула ${group.characters.length} персонажей вместо ${count}. Попробуйте ещё раз или уменьшите группу.`
+    );
+  }
+
+  return group;
+}
+
+/** Запрос к модели в JSON-режиме: Gemini или OpenAI-совместимый эндпоинт. */
+async function requestModelJson(
+  apiConfig: ApiConfig,
+  systemInstruction: string,
+  maxTokens = 2500
+): Promise<any> {
   let rawJson = "";
 
   if (apiConfig.mode === "gemini") {
@@ -254,7 +439,7 @@ ${customIdea.trim() ? `- Особая авторская задумка: "${cust
         contents: [{ role: "user", parts: [{ text: systemInstruction }] }],
         generationConfig: {
           temperature: 0.85,
-          maxOutputTokens: 2500,
+          maxOutputTokens: maxTokens,
           responseMimeType: "application/json",
         },
       }),
@@ -290,7 +475,7 @@ ${customIdea.trim() ? `- Особая авторская задумка: "${cust
         num_ctx: apiConfig.localNumCtx ?? 8192,
       };
     } else {
-      bodyPayload.max_tokens = 2500;
+      bodyPayload.max_tokens = maxTokens;
       bodyPayload.response_format = { type: "json_object" };
     }
 
@@ -317,33 +502,5 @@ ${customIdea.trim() ? `- Особая авторская задумка: "${cust
     rawJson = data.choices?.[0]?.message?.content ?? data.message?.content ?? "";
   }
 
-  const parsed = safeParseJson(rawJson);
-
-  const settingTags = TAG_CATEGORIES.find((c) => c.id === "setting")?.tags.map((t) => t.name) ?? [];
-  const detectedGenre = selectedTags.find((tag) => settingTags.includes(tag)) || "";
-
-  return {
-    name: parsed.name || "Безымянный",
-    tagline: parsed.tagline || "",
-    description: parsed.description || "",
-    personality: parsed.personality || "",
-    scenario: parsed.scenario || "",
-    systemPrompt: parsed.systemPrompt || "",
-    firstMessage: parsed.firstMessage || "*Смотрит на тебя в тишине...*",
-    tags: selectedTags,
-    genre: detectedGenre,
-    originTag: "ОРИГИНАЛЬНЫЙ ПЕРСОНАЖ",
-    initialStats: {
-      ...DEFAULT_STATS,
-      ...(parsed.initialStats || {}),
-    },
-    lorebook: Array.isArray(parsed.lorebook)
-      ? parsed.lorebook.map((l: any) => ({
-          id: newId(),
-          keys: Array.isArray(l.keys) ? l.keys : ["память"],
-          content: l.content || "",
-          isActive: true,
-        }))
-      : [],
-  };
+  return safeParseJson(rawJson);
 }

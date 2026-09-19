@@ -14,6 +14,7 @@ import {
   Sparkles,
   Pin,
   Wand2,
+  Users,
 } from "lucide-react";
 import { db, toggleCharacterFavorite } from "../../db";
 import type { Character } from "../../types";
@@ -29,6 +30,7 @@ import { Avatar } from "../common/Avatar";
 import { ImagePromptModal } from "../common/ImagePromptModal";
 import { ChatImportModal } from "../chats/ChatImportModal";
 import { ConfirmDialog } from "../common/ConfirmDialog";
+import { GroupSceneModal } from "./GroupSceneModal";
 import { renderRoleplayText } from "../../utils/textRenderer";
 import { newId } from "../../utils/id";
 import { cn } from "../../utils/cn";
@@ -56,6 +58,7 @@ export function CharacterSheet({
   }, [character?.id]);
 
   const [promptModalOpen, setPromptModalOpen] = useState(false);
+  const [groupOpen, setGroupOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [pending, setPending] = useState<"create" | "delete" | "duplicate" | "export" | null>(
@@ -251,6 +254,16 @@ export function CharacterSheet({
 
                   <button
                     type="button"
+                    onClick={() => setGroupOpen(true)}
+                    title="Собрать сцену, где этот персонаж — лидер"
+                    className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-white/[0.08] bg-surface-2 px-4 py-2.5 text-sm font-medium text-zinc-200 transition-colors hover:border-accent/40 hover:bg-surface-3 hover:text-accent"
+                  >
+                    <Users size={15} />
+                    <span>Групповая сцена</span>
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={() => onEdit(character)}
                     className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-white/[0.08] bg-surface-2 px-4 py-2.5 text-sm font-medium text-zinc-200 transition-colors hover:bg-surface-3"
                   >
@@ -441,6 +454,16 @@ export function CharacterSheet({
         open={promptModalOpen}
         onClose={() => setPromptModalOpen(false)}
         character={character}
+      />
+
+      <GroupSceneModal
+        open={groupOpen}
+        onClose={() => setGroupOpen(false)}
+        lockedId={character.id}
+        onCreated={(sessionId) => {
+          onOpenSession(sessionId);
+          onClose();
+        }}
       />
 
       <ChatImportModal

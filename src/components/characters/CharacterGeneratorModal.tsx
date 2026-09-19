@@ -16,8 +16,12 @@ import {
 } from "lucide-react";
 import { Modal } from "../common/Modal";
 import {
+  GROUP_SIZE_MAX,
+  GROUP_SIZE_MIN,
   TAG_CATEGORIES,
   generateAiCharacter,
+  generateAiGroup,
+  type GeneratedGroup,
 } from "../../services/characterGenerator";
 import { isLocalEndpoint } from "../../services/apiClient";
 import { getApiConfig } from "../../db";
@@ -28,6 +32,11 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onApply: (generated: Partial<Character>) => void;
+  /**
+   * Режим группы доступен, только если вызывающий умеет принять сразу несколько
+   * персонажей: без него модалка остаётся одиночной, как раньше.
+   */
+  onApplyGroup?: (group: GeneratedGroup) => void | Promise<void>;
 }
 
 type Gender = "female" | "male" | "any";
@@ -51,7 +60,10 @@ export function CharacterGeneratorModal({
   open,
   onClose,
   onApply,
+  onApplyGroup,
 }: Props) {
+  const [mode, setMode] = useState<"single" | "group">("single");
+  const [groupSize, setGroupSize] = useState(GROUP_SIZE_MIN);
   const [activeCat, setActiveCat] = useState("archetype");
   const [gender, setGender] = useState<Gender>("female");
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
@@ -109,6 +121,20 @@ export function CharacterGeneratorModal({
         throw new Error("Не указан API-ключ в Настройках приложения!");
       }
 
+      if (mode === "group" && onApplyGroup) {
+        const group = await generateAiGroup(
+          apiConfig,
+          gender,
+          selectedTags,
+          customIdea,
+          groupSize
+        );
+
+        await onApplyGroup(group);
+        onClose();
+        return;
+      }
+
       const generated = await generateAiCharacter(
         apiConfig,
         gender,
@@ -141,9 +167,39 @@ export function CharacterGeneratorModal({
       onClose={onClose}
       variant="sheet"
       size="lg"
-      title="AI-генератор персонажа"
+      title={mode === "group" ? "AI-генератор группы" : "AI-генератор персонажа"}
     >
       <div className="space-y-6">
+        {onApplyGroup && (
+          <div
+            role="group"
+            aria-label="Что генерируем"
+            className="grid grid-cols-2 gap-2 rounded-2xl border border-white/[0.07] bg-[#121622]/70 p-1.5"
+          >
+            {(
+              [
+                { value: "single", label: "Один герой" },
+                { value: "group", label: `Группа ${GROUP_SIZE_MIN}–${GROUP_SIZE_MAX}` },
+              ] as const
+            ).map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                aria-pressed={mode === option.value}
+                onClick={() => setMode(option.value)}
+                className={cn(
+                  "min-h-10 rounded-xl px-3 text-sm font-semibold transition-colors",
+                  mode === option.value
+                    ? "bg-accent/15 text-accent"
+                    : "text-content-secondary hover:text-content"
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="flex items-start gap-3">
           <div
             aria-hidden="true"
@@ -153,9 +209,45 @@ export function CharacterGeneratorModal({
           </div>
 
           <p className="min-w-0 text-base leading-relaxed text-content-secondary">
-            Выберите теги и добавьте свою задумку. Результат появится в редакторе персонажа.
+            {mode === "group"
+              ? `Модель придумает ${groupSize} героя одной сцены, их связи и общий опенинг. Результат сразу станет групповой веткой.`
+              : "Выберите теги и добавьте свою задумку. Результат появится в редакторе персонажа."}
           </p>
         </div>
+
+        {mode === "group" && (
+          <fieldset className="min-w-0">
+            <legend className="mb-3 text-sm font-medium text-content-secondary">
+              Сколько героев в группе
+            </legend>
+
+            <div className="grid grid-cols-3 gap-2">
+              {[2, 3, 4].map((size) => {
+                const selected = groupSize === size;
+
+                return (
+                  <button
+                    key={size}
+                    type="button"
+                    aria-pressed={selected}
+                    onClick={() => setGroupSize(size)}
+                    className={cn(
+                      "flex min-h-12 items-center justify-center gap-1.5 rounded-xl border text-sm font-medium transition-all",
+                      selected
+                        ? "border-accent/60 bg-accent/10 text-accent"
+                        : "border-border-strong bg-surface-2 text-content-secondary hover:bg-surface-3"
+                    )}
+                  >
+                    {selected && (
+                      <Check size={15} strokeWidth={2.2} aria-hidden="true" />
+                    )}
+                    <span>{size}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </fieldset>
+        )}
 
         <fieldset className="min-w-0">
           <legend className="mb-3 text-sm font-medium text-content-secondary">
@@ -386,7 +478,11 @@ export function CharacterGeneratorModal({
                 className="shrink-0"
               />
             )}
-            <span>Сгенерировать персонажа</span>
+            <span>
+              {mode === "group"
+                ? "Сгенерировать группу"
+                : "Сгенерировать персонажа"}
+            </span>
           </button>
         </div>
       </div>

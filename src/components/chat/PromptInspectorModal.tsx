@@ -30,6 +30,8 @@ interface PromptInspectorModalProps {
   lastAssistantMessage?: Message;
   /** Групповая сцена: все участники (первый — основной персонаж ветки). */
   participants?: Character[];
+  /** Групповая сцена: кто сейчас за кадром — блок присутствия в промпте. */
+  absent?: { character: Character; reason?: string }[];
   /** Кто отвечал в последнем запросе — для него и показывается промпт. */
   speakerId?: string;
 }
@@ -54,6 +56,7 @@ export function PromptInspectorModal({
   contextMessages,
   lastAssistantMessage,
   participants,
+  absent,
   speakerId,
 }: PromptInspectorModalProps) {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
@@ -97,7 +100,14 @@ export function PromptInspectorModal({
       userProfile,
       contextMessages,
       isLocal,
-      others.length > 0 ? { others, currentStats: speakerStats } : undefined
+      others.length > 0
+        ? {
+            others,
+            currentStats: speakerStats,
+            absent,
+            relations: session.relations,
+          }
+        : undefined
     );
   }, [
     activeSpeaker,
@@ -106,6 +116,7 @@ export function PromptInspectorModal({
     contextMessages,
     isLocal,
     others,
+    absent,
     speakerStats,
   ]);
 

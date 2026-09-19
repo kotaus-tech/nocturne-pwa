@@ -16,9 +16,18 @@ import { db, sanitizeCharacter, toggleCharacterFavorite } from "../../db";
 import { CharacterEditor } from "./CharacterEditor";
 import { CharacterSheet } from "./CharacterSheet";
 import { CharacterImportModal } from "./CharacterImportModal";
+import { CharacterGeneratorModal } from "./CharacterGeneratorModal";
+import { GroupSceneModal } from "./GroupSceneModal";
+import {
+  GROUP_SIZE_MIN,
+  type GeneratedGroup,
+} from "../../services/characterGenerator";
+import { createGroupSession } from "../../utils/sessionActions";
+import { newId } from "../../utils/id";
 import { Badge } from "../common/Badge";
 import { FavoriteButton } from "../common/FavoriteButton";
 import { Avatar } from "../common/Avatar";
+import { DEFAULT_STATS } from "../../types";
 import type { Character } from "../../types";
 import { cn } from "../../utils/cn";
 
@@ -29,6 +38,25 @@ interface CharactersPageProps {
   favoritesOnly: boolean;
   createSignal: number;
 }
+
+/** Пустая карточка: генератор заполняет только то, что придумал. */
+const emptyCharacter = (): Character => ({
+  id: newId(),
+  name: "",
+  avatarUrl: "",
+  wallpaperUrl: "",
+  tagline: "",
+  genre: "",
+  tags: [],
+  description: "",
+  personality: "",
+  scenario: "",
+  systemPrompt: "",
+  firstMessage: "",
+  initialStats: { ...DEFAULT_STATS },
+  lorebook: [],
+  createdAt: Date.now(),
+});
 
 type SortOrder = "recommended" | "newest" | "name";
 type ViewMode = "grid" | "list";
@@ -73,6 +101,9 @@ export function CharactersPage({
   const [viewing, setViewing] = useState<Character | null>(null);
 
   const [importModalOpen, setImportModalOpen] = useState(false);
+  // Групповая сцена: сначала выбор готовых героев, затем (по желанию) AI-генерация.
+  const [groupPickerOpen, setGroupPickerOpen] = useState(false);
+  const [groupGeneratorOpen, setGroupGeneratorOpen] = useState(false);
   const [draggedFile, setDraggedFile] = useState<File | null>(null);
   const [isWindowDragOver, setIsWindowDragOver] = useState(false);
 
@@ -139,11 +170,8 @@ export function CharactersPage({
     });
   }, [characters, normalizedQuery, favoritesOnly, sortOrder]);
 
-  const saveCharacter = async (character: Character) => {
-    const isNew = !editing;
-
-    // createdAt обязан быть числом: Dexie не показывает записи без ключа индекса
-    // в orderBy("createdAt"), поэтому без страховки персонаж «терялся» в списке.
+  /** Пишет карточку в базу, подстраховывая дату создания. */
+  const persistCharacter = async (character: Character) => {
     await db.characters.put(
       sanitizeCharacter({
         ...character,
@@ -152,6 +180,14 @@ export function CharactersPage({
           : Date.now(),
       })
     );
+  };
+
+  const saveCharacter = async (character: Character) => {
+    const isNew = !editing;
+
+    // createdAt обязан быть числом: Dexie не показывает записи без ключа индекса
+    // в orderBy("createdAt"), поэтому без страховки персонаж «терялся» в списке.
+    await persistCharacter(character);
 
     // Персонаж создан в разделе «Избранное» — показываем его, а не пустой список.
     if (isNew && favoritesOnly && !character.isFavorite) {
@@ -160,6 +196,49 @@ export function CharactersPage({
 
     setEditorOpen(false);
     setEditing(null);
+  };
+
+  /** Одиночный режим генератора, открытого из библиотеки: просто сохраняем героя. */
+  const handleApplySingle = async (generated: Partial<Character>) => {
+    await persistCharacter({
+      ...emptyCharacter(),
+      ...generated,
+      id: newId(),
+      createdAt: Date.now(),
+    } as Character);
+  };
+
+  /**
+   * AI-группа: сохраняем всех героев в библиотеку и сразу открываем общую
+   * ветку — опенинг становится первым сообщением сцены.
+   */
+  const handleApplyGroup = async (group: GeneratedGroup) => {
+    const now = Date.now();
+
+    const saved: Character[] = group.characters.map((draft, index) =>
+      sanitizeCharacter({
+        ...emptyCharacter(),
+        ...draft,
+        id: newId(),
+        firstMessage: draft.firstMessage || "*Молчит, глядя на тебя.*",
+        initialStats: draft.initialStats ?? { ...DEFAULT_STATS },
+        lorebook: draft.lorebook ?? [],
+        createdAt: now + index,
+      } as Character)
+    );
+
+    if (saved.length < GROUP_SIZE_MIN) {
+      throw new Error("Модель вернула слишком мало персонажей для сцены.");
+    }
+
+    await db.characters.bulkPut(saved);
+
+    const [leader, ...rest] = saved;
+    const session = await createGroupSession(leader, rest, {
+      opening: group.opening,
+    });
+
+    onOpenSession(session.id);
   };
 
   const handleToggleFavorite = (characterId: string) => {
@@ -244,6 +323,15 @@ export function CharactersPage({
           >
             <Upload size={16} strokeWidth={1.8} />
             <span>Импорт</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setGroupPickerOpen(true)}
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-white/[0.09] bg-surface-2 px-4 py-2.5 text-sm font-semibold text-content transition-all hover:border-accent/40 hover:bg-surface-3 hover:text-accent"
+          >
+            <Users size={16} strokeWidth={1.8} />
+            <span>Групповая сцена</span>
           </button>
 
           <button
@@ -569,6 +657,20 @@ export function CharactersPage({
           setEditing(null);
         }}
         onSave={saveCharacter}
+      />
+
+      <GroupSceneModal
+        open={groupPickerOpen}
+        onClose={() => setGroupPickerOpen(false)}
+        onOpenGenerator={() => setGroupGeneratorOpen(true)}
+        onCreated={(sessionId) => onOpenSession(sessionId)}
+      />
+
+      <CharacterGeneratorModal
+        open={groupGeneratorOpen}
+        onClose={() => setGroupGeneratorOpen(false)}
+        onApply={handleApplySingle}
+        onApplyGroup={handleApplyGroup}
       />
 
       <CharacterImportModal

@@ -115,11 +115,30 @@ export type ThoughtMode =
   | "tactical"
   | "instinct";
 
+/** Микро-связь внутри группы: кто как относится к кому. */
+export interface SceneRelation {
+  id: string;
+  /** Кто так думает. */
+  from: string;
+  /** О ком — не задано, значит о группе в целом. */
+  to?: string;
+  text: string;
+}
+
 export interface ChatSession {
   id: string;
+  /** Лидер сцены: в групповых ветках — первый из состава. */
   characterId: string;
-  /** Групповая сцена: дополнительные участники (кроме основного characterId). */
+  /** Групповая ветка: несколько персонажей в одном сюжете. */
+  isGroup?: boolean;
+  /** Состав сюжета (2–4 героя). */
   characterIds?: string[];
+  /** Кто физически в сцене. Не задано — присутствуют все из состава. */
+  activeCharacterIds?: string[];
+  /** Почему персонаж за кадром: «ушёл в гараж», «спит». */
+  absentReasons?: Record<string, string>;
+  /** Взаимоотношения между персонажами группы. */
+  relations?: SceneRelation[];
   /** Шкалы отношений дополнительных участников, по их id. */
   participantStats?: Record<string, RelationshipStats>;
   /** Своя личность для этой ветки; не задана — берётся персона персонажа или активная. */

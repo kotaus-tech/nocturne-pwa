@@ -29,9 +29,13 @@ interface Props {
   sending: boolean;
   characterName?: string;
   modelName?: string;
-  /** Групповая сцена: участники, каждому можно дать ход отдельно. */
+  /** В ветке несколько персонажей — «Продолжить» передаёт ход следующему. */
+  groupScene?: boolean;
+  /** Групповая сцена: присутствующие, кому можно адресовать реплику. */
   participants?: { id: string; name: string; avatarUrl?: string }[];
-  onRequestTurn?: (characterId: string) => void;
+  /** Выбранный адресат: его ответ ждём следующим. */
+  targetId?: string | null;
+  onSelectTarget?: (characterId: string) => void;
 }
 
 export function InputBar({
@@ -43,8 +47,10 @@ export function InputBar({
   sending,
   characterName = "персонажу",
   modelName = "AI Model",
+  groupScene = false,
   participants,
-  onRequestTurn,
+  targetId,
+  onSelectTarget,
 }: Props) {
   const [text, setText] = useState("");
   const [ooc, setOoc] = useState(false);
@@ -166,33 +172,54 @@ export function InputBar({
         </section>
       )}
 
-      {participants && participants.length > 1 && onRequestTurn && (
+      {participants && participants.length > 1 && onSelectTarget && (
         <div
           role="group"
-          aria-label="Дать ход участнику сцены"
+          aria-label="Кому адресована реплика"
           className="mb-2 flex items-center gap-1.5 overflow-x-auto overscroll-contain pb-1"
         >
           <span className="shrink-0 pr-0.5 text-[10px] font-bold uppercase tracking-wider text-content-muted">
-            Ход
+            Ответит
           </span>
 
-          {participants.map((participant) => (
+          {participants.map((participant) => {
+            const isTarget = targetId === participant.id;
+
+            return (
+              <button
+                key={participant.id}
+                type="button"
+                onClick={() => onSelectTarget(participant.id)}
+                disabled={sending}
+                aria-pressed={isTarget}
+                title={
+                  isTarget
+                    ? `Снять выбор: отвечает любой`
+                    : `Адресовать реплику: ${participant.name}`
+                }
+                className={cn(
+                  "flex shrink-0 items-center gap-1.5 rounded-full border py-1 pl-1 pr-2.5",
+                  "text-[11px] font-medium transition-all active:scale-95 disabled:opacity-40",
+                  isTarget
+                    ? "border-accent/60 bg-accent/20 text-accent shadow-[0_0_16px_rgba(139,92,246,0.25)]"
+                    : "border-white/[0.08] bg-[#121622]/80 text-content-secondary hover:border-accent/40 hover:bg-[#161b28] hover:text-accent"
+                )}
+              >
+                <Avatar src={participant.avatarUrl} name={participant.name} size={20} />
+                <span className="max-w-[7rem] truncate">{participant.name}</span>
+              </button>
+            );
+          })}
+
+          {targetId && (
             <button
-              key={participant.id}
               type="button"
-              onClick={() => onRequestTurn(participant.id)}
-              disabled={sending}
-              title={`Дать ход: ${participant.name}`}
-              className={cn(
-                "flex shrink-0 items-center gap-1.5 rounded-full border border-white/[0.08] bg-[#121622]/80 py-1 pl-1 pr-2.5",
-                "text-[11px] font-medium text-content-secondary transition-all",
-                "hover:border-accent/40 hover:bg-[#161b28] hover:text-accent active:scale-95 disabled:opacity-40"
-              )}
+              onClick={() => onSelectTarget(targetId)}
+              className="shrink-0 rounded-full px-2 py-1 text-[10px] font-medium text-content-muted hover:text-content"
             >
-              <Avatar src={participant.avatarUrl} name={participant.name} size={20} />
-              <span className="max-w-[7rem] truncate">{participant.name}</span>
+              любой
             </button>
-          ))}
+          )}
         </div>
       )}
 
@@ -202,7 +229,11 @@ export function InputBar({
           type="button"
           onClick={onContinue}
           disabled={sending}
-          title="Продолжить — инициатива персонажа"
+          title={
+            groupScene
+              ? "Продолжить — передать ход следующему персонажу"
+              : "Продолжить — инициатива персонажа"
+          }
           className={toolButtonClass}
         >
           <Play size={14} fill="currentColor" className="text-accent shrink-0" />

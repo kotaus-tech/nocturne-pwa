@@ -26,22 +26,24 @@ import {
   ShieldAlert,
   Coffee,
   Crosshair,
-  UserCircle2,
   Users,
   X,
   GripVertical,
   Play,
   ChevronUp,
   ChevronDown,
+  ArrowRight,
+  Plus,
 } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { Reorder, useDragControls } from "framer-motion";
 import { Modal } from "../common/Modal";
 import { Avatar } from "../common/Avatar";
 import { AmbientPlayer } from "./AmbientPlayer";
-import { db, getPersonaState } from "../../db";
+import { db } from "../../db";
 import type { Character, ChatSession, ThoughtMode } from "../../types";
 import { moveItem } from "../../services/groupScene";
+import { newId } from "../../utils/id";
 import { WALLPAPER_PRESETS } from "../../utils/wallpaperPresets";
 import { prepareImageFile, WALLPAPER_OPTIONS } from "../../utils/image";
 import { PromptDialog } from "../common/PromptDialog";
@@ -67,6 +69,10 @@ interface Props {
   onOpenInspector?: () => void;
   /** Дать ход одному конкретному персонажу сцены. */
   onRequestTurn?: (characterId: string) => void;
+  /** Ввести персонажа в сцену или убрать за кадр (причина — в промпт). */
+  onTogglePresence?: (characterId: string, isPresent: boolean, reason?: string) => void;
+  /** Кто из состава сейчас в сцене. */
+  presentIds?: string[];
   /** Идёт генерация — кнопки хода заблокированы. */
   sending?: boolean;
   messageCount: number;
@@ -211,17 +217,21 @@ function ParticipantRow({
   index,
   total,
   disabled,
+  isPresent,
   onRemove,
   onMove,
   onRequestTurn,
+  onTogglePresence,
 }: {
   item: Character;
   index: number;
   total: number;
   disabled?: boolean;
+  isPresent: boolean;
   onRemove: () => void;
   onMove: (direction: -1 | 1) => void;
   onRequestTurn?: () => void;
+  onTogglePresence?: (isPresent: boolean) => void;
 }) {
   const dragControls = useDragControls();
 
@@ -257,6 +267,36 @@ function ParticipantRow({
       </span>
 
       <div className="flex shrink-0 items-center gap-0.5">
+        {onTogglePresence && (
+          <button
+            type="button"
+            onClick={() => onTogglePresence(!isPresent)}
+            disabled={disabled}
+            aria-pressed={isPresent}
+            aria-label={
+              isPresent
+                ? `Убрать ${item.name} из сцены`
+                : `Ввести ${item.name} в сцену`
+            }
+            title={isPresent ? "В сцене — убрать за кадр" : "За кадром — ввести в сцену"}
+            className={cn(
+              "flex h-7 shrink-0 items-center gap-1 rounded-lg px-1.5 text-[10px] font-semibold transition-colors disabled:opacity-30",
+              isPresent
+                ? "text-success hover:bg-success/10"
+                : "text-content-muted hover:bg-white/[0.06] hover:text-content"
+            )}
+          >
+            <span
+              aria-hidden="true"
+              className={cn(
+                "h-2 w-2 rounded-full",
+                isPresent ? "bg-success" : "bg-content-muted"
+              )}
+            />
+            {isPresent ? "в сцене" : "за кадром"}
+          </button>
+        )}
+
         <button
           type="button"
           onClick={() => onMove(-1)}
@@ -279,7 +319,7 @@ function ParticipantRow({
           <ChevronDown size={14} />
         </button>
 
-        {onRequestTurn && (
+        {onRequestTurn && isPresent && (
           <button
             type="button"
             onClick={onRequestTurn}
@@ -325,6 +365,8 @@ export function DirectorPanel({
   onUpdateThoughtMode,
   onOpenInspector,
   onRequestTurn,
+  onTogglePresence,
+  presentIds,
   sending = false,
 }: Props) {
   const [notes, setNotes] = useState(session.directorNotes || "");
@@ -347,7 +389,6 @@ export function DirectorPanel({
   const [wallpaperError, setWallpaperError] = useState<string | null>(null);
   const [wallpaperBusy, setWallpaperBusy] = useState(false);
 
-  const personaState = useLiveQuery(() => getPersonaState(), []);
   const character = useLiveQuery(
     () => db.characters.get(session.characterId),
     [session.characterId]
@@ -367,9 +408,27 @@ export function DirectorPanel({
     )
     .sort((a, b) => a.name.localeCompare(b.name, "ru"));
 
+  /** Присутствие приходит из чата: там же считаются состав и пул говорящих. */
+  const isPresent = (id: string) =>
+    !presentIds || presentIds.length === 0 || presentIds.includes(id);
+
   const updateParticipants = async (ids: string[]) => {
+    // Состав меняется — синхронизируем и «кто в сцене»: новый участник сразу
+    // входит в комнату, ушедшие из состава пропадают из списка присутствия.
+    let nextActive: string[] | undefined;
+
+    if (session.activeCharacterIds) {
+      const prevCast = new Set(session.characterIds ?? []);
+      const added = ids.filter((id) => !prevCast.has(id));
+      nextActive = ids.filter(
+        (id) => session.activeCharacterIds!.includes(id) || added.includes(id)
+      );
+    }
+
     await db.sessions.update(session.id, {
       characterIds: ids,
+      isGroup: ids.length > 0,
+      ...(nextActive ? { activeCharacterIds: nextActive } : {}),
       updatedAt: Date.now(),
     });
   };
@@ -378,6 +437,23 @@ export function DirectorPanel({
     if (!characterToAdd) return;
     await updateParticipants([...participantIds, characterToAdd]);
     setCharacterToAdd("");
+  };
+
+  const relations = session.relations ?? [];
+  const castOptions = [
+    { id: session.characterId, name: character?.name || "Основной" },
+    ...participantCharacters.map((item) => ({ id: item.id, name: item.name })),
+  ];
+
+  const updateRelations = async (
+    updater: (list: NonNullable<ChatSession["relations"]>) => NonNullable<
+      ChatSession["relations"]
+    >
+  ) => {
+    await db.sessions.update(session.id, {
+      relations: updater(relations),
+      updatedAt: Date.now(),
+    });
   };
 
   const favoriteCandidates = availableCharacters.filter(
@@ -394,7 +470,13 @@ export function DirectorPanel({
 
   const clearParticipants = async () => {
     await updateParticipants([]);
-    await db.sessions.update(session.id, { participantStats: {} });
+    await db.sessions.update(session.id, {
+      participantStats: {},
+      activeCharacterIds: undefined,
+      absentReasons: {},
+      relations: [],
+      isGroup: false,
+    });
   };
 
   const removeParticipant = async (id: string) => {
@@ -405,10 +487,6 @@ export function DirectorPanel({
     await updateParticipants(nextIds);
     await db.sessions.update(session.id, { participantStats: nextStats });
   };
-  const personas = personaState?.personas ?? [];
-  const characterDefaultPersona = character?.defaultPersonaId
-    ? personas.find((persona) => persona.id === character.defaultPersonaId)
-    : undefined;
   const [urlDialogOpen, setUrlDialogOpen] = useState(false);
   const [failedWallpaper, setFailedWallpaper] = useState<string | null>(null);
 
@@ -656,41 +734,6 @@ export function DirectorPanel({
             />
           </section>
 
-          {/* Секция: ваша личность в этой ветке */}
-          <section className="border-t border-white/[0.08] pt-5 sm:pt-6">
-            <label
-              htmlFor={`${id}-branch-persona`}
-              className="mb-1.5 flex items-center gap-2 text-sm font-semibold text-content sm:text-base"
-            >
-              <UserCircle2 size={18} className="text-accent" />
-              <span>Ваша личность в ветке</span>
-            </label>
-            <p className="mb-2.5 text-xs leading-relaxed text-content-secondary">
-              От чьего имени вы играете именно здесь. Настройка персонажа —
-              запасной вариант, активная персона — общий.
-            </p>
-            <select
-              id={`${id}-branch-persona`}
-              value={session.personaId ?? ""}
-              onChange={(event) =>
-                void db.sessions.update(session.id, {
-                  personaId: event.target.value || undefined,
-                })
-              }
-              className="input-field text-xs sm:text-sm"
-            >
-              <option value="">
-                Как у персонажа
-                {characterDefaultPersona ? ` — ${characterDefaultPersona.name}` : " (активная персона)"}
-              </option>
-              {personas.map((persona) => (
-                <option key={persona.id} value={persona.id}>
-                  {persona.name}
-                </option>
-              ))}
-            </select>
-          </section>
-
           {/* Секция: участники групповой сцены */}
           <section className="border-t border-white/[0.08] pt-5 sm:pt-6">
             <h3 className="mb-1.5 flex items-center gap-2 text-sm font-semibold text-content sm:text-base">
@@ -750,6 +793,13 @@ export function DirectorPanel({
                     index={index}
                     total={participantCharacters.length}
                     disabled={sending}
+                    isPresent={isPresent(item.id)}
+                    onTogglePresence={
+                      onTogglePresence
+                        ? (nextPresent) =>
+                            onTogglePresence(item.id, nextPresent, undefined)
+                        : undefined
+                    }
                     onRemove={() => void removeParticipant(item.id)}
                     onMove={(direction) =>
                       void updateParticipants(
@@ -830,8 +880,131 @@ export function DirectorPanel({
             {participantCharacters.length === 0 && (
               <p className="mt-2 text-[11px] leading-relaxed text-content-muted">
                 Пока сцена обычная: отвечает один персонаж. Добавьте второго —
-                и ходы будут идти по очереди.
+                и он подключится к сцене.
               </p>
+            )}
+
+            {participantCharacters.length > 0 && (
+              <div className="mt-4">
+                <h4 className="mb-1.5 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-content-secondary">
+                  <HeartHandshake size={13} className="text-accent" />
+                  <span>Взаимоотношения в группе</span>
+                </h4>
+                <p className="mb-2 text-[11px] leading-relaxed text-content-muted">
+                  Кто как относится к кому: спор, старая обида, тайная симпатия.
+                  Это топливо для живого полилога — модель играет связи через
+                  подтекст, а не пересказ.
+                </p>
+
+                {relations.length > 0 && (
+                  <div className="mb-2 space-y-2">
+                    {relations.map((relation) => (
+                      <div
+                        key={relation.id}
+                        className="flex flex-wrap items-center gap-1.5 rounded-2xl border border-white/[0.08] bg-[#121622]/70 p-2"
+                      >
+                        <select
+                          value={relation.from}
+                          onChange={(event) =>
+                            void updateRelations((list) =>
+                              list.map((row) =>
+                                row.id === relation.id
+                                  ? { ...row, from: event.target.value }
+                                  : row
+                              )
+                            )
+                          }
+                          aria-label="Кто думает"
+                          className="input-field h-9 w-28 shrink-0 text-[11px]"
+                        >
+                          {castOptions.map((option) => (
+                            <option key={option.id} value={option.id}>
+                              {option.name}
+                            </option>
+                          ))}
+                        </select>
+
+                        <ArrowRight
+                          size={12}
+                          className="shrink-0 text-content-muted"
+                          aria-hidden="true"
+                        />
+
+                        <select
+                          value={relation.to ?? ""}
+                          onChange={(event) =>
+                            void updateRelations((list) =>
+                              list.map((row) =>
+                                row.id === relation.id
+                                  ? { ...row, to: event.target.value || undefined }
+                                  : row
+                              )
+                            )
+                          }
+                          aria-label="О ком"
+                          className="input-field h-9 w-28 shrink-0 text-[11px]"
+                        >
+                          <option value="">вся группа</option>
+                          {castOptions.map((option) => (
+                            <option key={option.id} value={option.id}>
+                              {option.name}
+                            </option>
+                          ))}
+                        </select>
+
+                        <input
+                          value={relation.text}
+                          onChange={(event) =>
+                            void updateRelations((list) =>
+                              list.map((row) =>
+                                row.id === relation.id
+                                  ? { ...row, text: event.target.value }
+                                  : row
+                              )
+                            )
+                          }
+                          placeholder="считает его баловнем, но тайно переживает"
+                          aria-label="Отношение"
+                          className="input-field h-9 min-w-[8rem] flex-1 text-[11px]"
+                        />
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void updateRelations((list) =>
+                              list.filter((row) => row.id !== relation.id)
+                            )
+                          }
+                          aria-label="Удалить связь"
+                          title="Удалить связь"
+                          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-content-muted transition-colors hover:bg-white/[0.06] hover:text-danger"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    void updateRelations((list) => [
+                      ...list,
+                      {
+                        id: newId(),
+                        from: session.characterId,
+                        to: participantCharacters[0]?.id,
+                        text: "",
+                      },
+                    ])
+                  }
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.08] bg-[#121622]/80 px-2.5 py-1.5 text-[11px] font-medium text-content-secondary transition-colors hover:border-accent/40 hover:text-accent"
+                >
+                  <Plus size={12} />
+                  Добавить связь
+                </button>
+              </div>
             )}
           </section>
 

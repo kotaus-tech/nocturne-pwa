@@ -33,12 +33,15 @@ import { buildSystemPrompt } from "../../services/promptBuilder";
 import {
   buildAssistantLabeler,
   buildCharacterIndex,
+  nextSpeaker,
   pendingSpeakers,
   resolveParticipants,
+  resolvePresence,
   resolveSpeaker,
   resolveSpeakerName,
   statsForCharacter,
 } from "../../services/groupScene";
+import { chooseSpeaker } from "../../services/groupRouter";
 import {
   isLocalEndpoint,
   messagesToTurns,
@@ -57,7 +60,8 @@ import { MessageBubble } from "./MessageBubble";
 import { NovelReader } from "./NovelReader";
 import { CharacterProfileModal } from "./CharacterProfileModal";
 import { ConfirmDialog } from "../common/ConfirmDialog";
-import { PersonaSwitcher } from "../common/PersonaSwitcher";
+import { ScenePresenceBar } from "./ScenePresenceBar";
+import { PromptDialog } from "../common/PromptDialog";
 import { PromptInspectorModal } from "./PromptInspectorModal";
 import {
   RelationshipToast,
@@ -276,6 +280,20 @@ export function ChatView({
 
   const isGroupScene = participants.length > 1;
 
+  /** Кто физически в сцене, а кто за кадром (с причиной). */
+  const presence = useMemo(
+    () => resolvePresence(session, participants),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      participants,
+      session?.activeCharacterIds?.join(","),
+      session?.absentReasons ? Object.values(session.absentReasons).join("|") : "",
+    ]
+  );
+
+  const presentCharacters = presence.present;
+  const absentCharacters = presence.absent;
+
   const [visibleLimit, setVisibleLimit] = useState(INITIAL_PAGE_SIZE);
   // Личность игрока: ветка → персонаж → активная персона. Живой запрос, чтобы
   // смена активной персоны подхватывалась без перезахода в чат.
@@ -312,6 +330,10 @@ export function ChatView({
   const [streamingCharacterId, setStreamingCharacterId] = useState<string | null>(
     null
   );
+  /** Выбранный адресат: его реплику ждём следующей (подсказка «Отвечает: …»). */
+  const [targetCharacterId, setTargetCharacterId] = useState<string | null>(null);
+  /** Кого уводим из сцены: спрашиваем причину («ушёл в гараж»). */
+  const [presencePrompt, setPresencePrompt] = useState<Character | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [metaNotice, setMetaNotice] = useState<string | null>(null);
   const metaNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -781,15 +803,42 @@ export function ChatView({
   const statsFor = (characterId: string): RelationshipStats =>
     statsForCharacter(session, characterId, charactersById);
 
-  /** Другие участники сцены для промпта (без текущего говорящего). */
+  /** Текст последней реплики игрока — нужен роутеру говорящего. */
+  const lastUserTextIn = (list: Message[]): string => {
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      const message = list[index];
+      if (message.sender === "user") {
+        return message.swipes[message.currentSwipeIndex] ?? "";
+      }
+    }
+    return "";
+  };
+
+  /** Кто отвечал последним — его ход роутер старается не повторять. */
+  const lastAssistantSpeakerId = (list: Message[]): string => {
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      const message = list[index];
+      if (message.sender === "assistant") {
+        return message.characterId ?? character.id;
+      }
+    }
+    return character.id;
+  };
+
+  /** Другие присутствующие для промпта: отсутствующих описывает блок присутствия. */
   const othersFor = (characterId: string): Character[] =>
-    participants.filter((item) => item.id !== characterId);
+    presentCharacters.filter((item) => item.id !== characterId);
 
   /** Подпись чужих реплик в контексте запроса. */
   const turnLabelFor = (speakerId: string) =>
     buildAssistantLabeler(speakerId, character.id, (message) =>
       speakerName(message)
     );
+
+  /** Адресат следующей реплики, если он всё ещё в сцене. */
+  const activeTarget = targetCharacterId
+    ? presentCharacters.find((item) => item.id === targetCharacterId)
+    : undefined;
 
   const typingCharacter =
     (streamingCharacterId ? charactersById.get(streamingCharacterId) : undefined) ||
@@ -812,7 +861,8 @@ export function ChatView({
   async function callModelAndAppend(
     contextMessages: Message[],
     isInitiative = false,
-    onlySpeakers?: Character[]
+    onlySpeakers?: Character[],
+    targetName?: string
   ) {
     if (!apiConfig || !character || !session || !userProfile) return;
 
@@ -842,12 +892,38 @@ export function ChatView({
 
       // Групповая сцена: каждый участник отвечает своим ходом, по порядку списка.
       // Каждый следующий видит уже готовые реплики предыдущих.
-      const speakers =
-        onlySpeakers && onlySpeakers.length > 0
-          ? onlySpeakers
-          : isGroupScene
-            ? participants
-            : [character];
+      // Групповая сцена: за ход отвечает один персонаж. Либо его выбрал игрок
+      // (адресат), либо решает лёгкий запрос роутера, а при сбое — упоминание
+      // по имени и ротация. Одиночные ветки идут прежним путём.
+      let speakers: Character[];
+
+      if (onlySpeakers && onlySpeakers.length > 0) {
+        speakers = onlySpeakers;
+      } else if (isGroupScene) {
+        const pool =
+          presentCharacters.length > 0 ? presentCharacters : participants;
+
+        const lastSpeakerId = lastAssistantSpeakerId(contextMessages);
+
+        const lastUserText = lastUserTextIn(contextMessages);
+
+        const chosen = await chooseSpeaker(
+          apiConfig,
+          {
+            present: pool,
+            relations: session.relations,
+            userName: userProfile.name,
+            lastUserText,
+            lastSpeakerId,
+            directorNotes: session.directorNotes,
+          },
+          controller.signal
+        );
+
+        speakers = [chosen];
+      } else {
+        speakers = [character];
+      }
       let workingContext = contextMessages;
       let appended = 0;
       const participantStats = { ...(session.participantStats ?? {}) };
@@ -870,7 +946,12 @@ export function ChatView({
           recent,
           isLocal,
           isGroupScene
-            ? { others: othersFor(speaker.id), currentStats: speakerStats }
+            ? {
+                others: othersFor(speaker.id),
+                currentStats: speakerStats,
+                absent: absentCharacters,
+                relations: session.relations,
+              }
             : undefined
         );
 
@@ -882,6 +963,13 @@ export function ChatView({
           turns.push({
             role: "user",
             content: `[${userProfile.name} молчит или выжидает. ${speaker.name}, прояви собственную инициативу: продолжи мысль, соверши физическое действие, измени положение, начни новую реплику или нарушь паузу. НЕ говори и НЕ действуй за ${userProfile.name}!]`,
+          });
+        } else if (targetName && speaker.id === speakers[0].id) {
+          // Игрок выбрал адресата аватаром: подсказка уходит только в запрос,
+          // в истории сообщения её нет.
+          turns.push({
+            role: "user",
+            content: `[Отвечает: ${speaker.name}. Игрок обратился к нему в первую очередь — отвечай за ${speaker.name}, остальные остаются в сцене.]`,
           });
         }
 
@@ -996,11 +1084,62 @@ export function ChatView({
     await callModelAndAppend(full, false, pending);
   }
 
+  /** Ввести персонажа в сцену или убрать его за кадр. */
+  async function applyPresence(
+    target: Character,
+    isPresent: boolean,
+    reason?: string
+  ) {
+    if (!session) return;
+
+    const presentIds = new Set(presentCharacters.map((item) => item.id));
+
+    // Порядок присутствующих всегда повторяет порядок состава.
+    const nextIds = participants
+      .map((item) => item.id)
+      .filter((id) =>
+        id === target.id ? isPresent : presentIds.has(id)
+      );
+
+    const nextReasons = { ...(session.absentReasons ?? {}) };
+
+    if (isPresent) {
+      delete nextReasons[target.id];
+    } else if (reason?.trim()) {
+      nextReasons[target.id] = reason.trim().slice(0, 120);
+    }
+
+    await db.sessions.update(session.id, {
+      activeCharacterIds: nextIds,
+      absentReasons: nextReasons,
+      updatedAt: Date.now(),
+    });
+
+    if (!isPresent && targetCharacterId === target.id) {
+      setTargetCharacterId(null);
+    }
+  }
+
+  function handleTogglePresence(target: Character, isPresent: boolean) {
+    if (isPresent) {
+      void applyPresence(target, true);
+      return;
+    }
+
+    // Убираем из сцены: спросим причину — она уходит в промпт сцены.
+    if (presentCharacters.length <= 1) return;
+    setPresencePrompt(target);
+  }
+
   /** Дать ход одному участнику сцены (кнопка у его имени). */
   async function handleRequestTurn(characterId: string) {
     if (!session || sending) return;
 
-    const speaker = participants.find((item) => item.id === characterId);
+    const speaker =
+      presentCharacters.find((item) => item.id === characterId) ??
+      participants.find(
+        (item) => item.id === characterId && presence.present.includes(item)
+      );
     if (!speaker) return;
 
     const full = await db.messages
@@ -1014,6 +1153,8 @@ export function ChatView({
 
   async function handleSend(text: string) {
     if (!session) return;
+
+    const target = activeTarget;
 
     const userMessage: Message = {
       id: newId(),
@@ -1034,7 +1175,8 @@ export function ChatView({
       .equals(session.id)
       .sortBy("timestamp");
 
-    await callModelAndAppend(full, false);
+    setTargetCharacterId(null);
+    await callModelAndAppend(full, false, target ? [target] : undefined, target?.name);
   }
 
   async function handleContinue() {
@@ -1044,6 +1186,20 @@ export function ChatView({
       .where("sessionId")
       .equals(session.id)
       .sortBy("timestamp");
+
+    // Группа: «Продолжить» передаёт ход следующему, чтобы он среагировал
+    // на услышанное, а не повторял предыдущего.
+    if (isGroupScene) {
+      const next = nextSpeaker(
+        presentCharacters.length > 0 ? presentCharacters : participants,
+        lastAssistantSpeakerId(full)
+      );
+
+      if (!next) return;
+
+      await callModelAndAppend(full, true, [next]);
+      return;
+    }
 
     await callModelAndAppend(full, true);
   }
@@ -1082,7 +1238,12 @@ export function ChatView({
         recent,
         isLocal,
         isGroupScene
-          ? { others: othersFor(speaker.id), currentStats: speakerStats }
+          ? {
+              others: othersFor(speaker.id),
+              currentStats: speakerStats,
+              absent: absentCharacters,
+              relations: session.relations,
+            }
           : undefined
       );
       const turns = isGroupScene
@@ -1426,22 +1587,35 @@ export function ChatView({
                   <span className="truncate">{character.name}</span>
                   {isGroupScene && (
                     <span
-                      title={`Групповая сцена: ${participants
+                      title={`Групповая сцена. В комнате: ${presentCharacters
                         .map((item) => item.name)
-                        .join(", ")}`}
+                        .join(", ")}${
+                        absentCharacters.length > 0
+                          ? `. За кадром: ${absentCharacters
+                              .map(
+                                (item) =>
+                                  `${item.character.name}${
+                                    item.reason ? ` (${item.reason})` : ""
+                                  }`
+                              )
+                              .join(", ")}`
+                          : ""
+                      }`}
                       className="inline-flex shrink-0 items-center gap-1 rounded-full border border-accent/35 bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent"
                     >
                       <Users size={11} strokeWidth={2.2} />
-                      {participants.length}
+                      {absentCharacters.length > 0
+                        ? `${presentCharacters.length}/${participants.length}`
+                        : participants.length}
                     </span>
                   )}
                 </p>
                 <p className="truncate text-xs text-content-muted">
                   {isGroupScene
-                    ? `в сцене: ${participants
-                        .slice(1)
+                    ? `в сцене: ${presentCharacters
+                        .filter((item) => item.id !== character.id)
                         .map((item) => item.name)
-                        .join(", ")} · `
+                        .join(", ") || "только вы двое"} · `
                     : characterTagline
                       ? `${characterTagline} · `
                       : ""}
@@ -1452,8 +1626,6 @@ export function ChatView({
           </div>
 
           <div className="flex items-center gap-2.5">
-            <PersonaSwitcher variant="compact" className="hidden sm:block" />
-
             <StatsBadge stats={stats} onClick={() => setStatsOpen(true)} />
 
             <button
@@ -1472,6 +1644,15 @@ export function ChatView({
             </button>
           </div>
         </div>
+
+        {isGroupScene && (
+          <ScenePresenceBar
+            cast={participants}
+            present={presentCharacters}
+            disabled={sending}
+            onToggle={handleTogglePresence}
+          />
+        )}
 
         <RelationshipToast toast={toast} className="absolute top-full mt-3" />
       </header>
@@ -1632,16 +1813,22 @@ export function ChatView({
             sending={sending}
             characterName={character.name}
             modelName={apiConfig?.model || "AI Model"}
+            groupScene={isGroupScene}
             participants={
               isGroupScene
-                ? participants.map((item) => ({
+                ? presentCharacters.map((item) => ({
                     id: item.id,
                     name: item.name,
                     avatarUrl: item.avatarUrl,
                   }))
                 : undefined
             }
-            onRequestTurn={(characterId) => void handleRequestTurn(characterId)}
+            targetId={activeTarget?.id ?? null}
+            onSelectTarget={(characterId) =>
+              setTargetCharacterId((prev) =>
+                prev === characterId ? null : characterId
+              )
+            }
           />
         </div>
       </div>
@@ -1706,6 +1893,12 @@ export function ChatView({
         }
         onUpdateThoughtMode={handleUpdateThoughtMode}
         onRequestTurn={(characterId) => void handleRequestTurn(characterId)}
+        onTogglePresence={(characterId, isPresent, reason) => {
+          const target = participants.find((item) => item.id === characterId);
+          if (!target) return;
+          void applyPresence(target, isPresent, reason);
+        }}
+        presentIds={presentCharacters.map((item) => item.id)}
         sending={sending}
         onOpenInspector={() => setInspectorOpen(true)}
         onCompressMemory={compressMemory}
@@ -1727,6 +1920,26 @@ export function ChatView({
             Math.max(0, allMessages.length - 1)
           );
           setPendingDeleteId(null);
+        }}
+      />
+
+      <PromptDialog
+        open={presencePrompt !== null}
+        title={`Убрать ${presencePrompt?.name ?? "персонажа"} из сцены?`}
+        description="Персонаж уходит за кадр: он не сможет отвечать, и модель не будет говорить за него. Причину можно указать — она попадёт в контекст сцены."
+        label="Где он сейчас"
+        placeholder="ушёл в гараж, спит, уехал…"
+        initialValue={
+          presencePrompt
+            ? session.absentReasons?.[presencePrompt.id] ?? ""
+            : ""
+        }
+        confirmLabel="Убрать из сцены"
+        onClose={() => setPresencePrompt(null)}
+        onConfirm={async (reason) => {
+          const target = presencePrompt;
+          setPresencePrompt(null);
+          if (target) await applyPresence(target, false, reason);
         }}
       />
 

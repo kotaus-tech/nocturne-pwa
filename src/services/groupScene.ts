@@ -152,3 +152,87 @@ export function moveItem<T>(items: T[], index: number, direction: -1 | 1): T[] {
   [next[index], next[target]] = [next[target], next[index]];
   return next;
 }
+
+// ------------------------------------------------------------------
+// Присутствие: кто физически в сцене, а кто за кадром
+// ------------------------------------------------------------------
+
+export interface ScenePresence {
+  /** В сцене: могут говорить и действовать. */
+  present: Character[];
+  /** За кадром: говорить за них запрещено, указываем причину. */
+  absent: { character: Character; reason?: string }[];
+}
+
+/**
+ * Раскладывает состав на присутствующих и отсутствующих.
+ * `activeCharacterIds` не задан — значит в сцене все (одиночные ветки и старые данные).
+ */
+export function resolvePresence(
+  session:
+    | Pick<ChatSession, "characterId" | "characterIds" | "activeCharacterIds" | "absentReasons">
+    | undefined,
+  cast: Character[]
+): ScenePresence {
+  const activeIds = session?.activeCharacterIds;
+
+  if (!activeIds || activeIds.length === 0) {
+    return { present: cast, absent: [] };
+  }
+
+  const active = new Set(activeIds);
+  const present: Character[] = [];
+  const absent: { character: Character; reason?: string }[] = [];
+
+  for (const character of cast) {
+    if (active.has(character.id)) {
+      present.push(character);
+      continue;
+    }
+
+    const reason = session?.absentReasons?.[character.id];
+    absent.push({ character, reason: reason?.trim() || undefined });
+  }
+
+  // Если в сцене не осталось никого (например, персонажа удалили) — сцену не ломаем.
+  if (present.length === 0) return { present: cast, absent: [] };
+
+  return { present, absent };
+}
+
+/** Следующий по кругу говорящий после указанного (для «Продолжить»). */
+export function nextSpeaker(
+  present: Character[],
+  lastSpeakerId?: string
+): Character | undefined {
+  if (present.length === 0) return undefined;
+  if (!lastSpeakerId) return present[0];
+
+  const index = present.findIndex((item) => item.id === lastSpeakerId);
+  if (index === -1) return present[0];
+
+  return present[(index + 1) % present.length];
+}
+
+/** Кого игрок назвал по имени в своей реплике (грубое совпадение, для роутинга). */
+export function findMentionedCharacter(
+  text: string,
+  present: Character[]
+): Character | undefined {
+  const haystack = ` ${text.toLocaleLowerCase("ru-RU")} `;
+
+  let best: { character: Character; at: number } | null = null;
+
+  for (const character of present) {
+    const name = character.name.trim().toLocaleLowerCase("ru-RU");
+    if (name.length < 2) continue;
+
+    const at = haystack.indexOf(name);
+    if (at === -1) continue;
+
+    // Берём самое раннее упоминание: обычно к кому обратились в начале.
+    if (!best || at < best.at) best = { character, at };
+  }
+
+  return best?.character;
+}

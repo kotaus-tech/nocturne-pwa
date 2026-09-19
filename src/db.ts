@@ -2,6 +2,7 @@ import Dexie, { type Table } from "dexie";
 import type {
   Character,
   ChatSession,
+  SceneRelation,
   Message,
   Persona,
   UserProfile,
@@ -473,16 +474,86 @@ export function sanitizeParticipantStats(
   return result;
 }
 
+/**
+ * Кто сейчас в сцене. `undefined` означает «присутствуют все из состава» —
+ * так работают одиночные ветки и старые записи.
+ */
+export function sanitizeActiveCharacterIds(
+  rawIds: unknown,
+  castIds: string[],
+  mainId?: string
+): string[] | undefined {
+  if (!Array.isArray(rawIds)) return undefined;
+
+  const allowed = new Set(castIds);
+  if (mainId) allowed.add(mainId);
+
+  const seen = new Set<string>();
+  const ids: string[] = [];
+
+  for (const value of rawIds) {
+    if (typeof value !== "string") continue;
+    const id = value.trim();
+    if (!id || !allowed.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+
+  // Пустой список означал бы сцену без единого героя — считаем, что все на месте.
+  return ids.length > 0 ? ids : undefined;
+}
+
+/** Причины отсутствия: id персонажа → короткая фраза («ушёл в гараж»). */
+export function sanitizeAbsentReasons(raw?: unknown): Record<string, string> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+
+  const result: Record<string, string> = {};
+
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    const key = id.trim();
+    if (!key || typeof value !== "string") continue;
+    const text = value.trim();
+    if (!text) continue;
+    result[key] = text.slice(0, 120);
+  }
+
+  return result;
+}
+
+/** Взаимоотношения внутри группы: «кто» → «о ком» → «что думает». */
+export function sanitizeSceneRelations(raw?: unknown): SceneRelation[] {
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .filter((item) => item && typeof item === "object")
+    .map((item: any) => ({
+      id: typeof item?.id === "string" && item.id.trim() ? item.id : newId(),
+      from: typeof item?.from === "string" ? item.from.trim() : "",
+      to: typeof item?.to === "string" && item.to.trim() ? item.to.trim() : undefined,
+      text: typeof item?.text === "string" ? item.text.trim().slice(0, 400) : "",
+    }))
+    .filter((item) => item.from && item.text);
+}
+
 export function sanitizeSession(raw: Partial<ChatSession>): ChatSession {
   const validModes: ThoughtMode[] = ["censor", "counterpoint", "stream", "tactical", "instinct"];
   const rawMode = (raw as any)?.thoughtMode;
   const thoughtMode: ThoughtMode = validModes.includes(rawMode) ? rawMode : "censor";
+  const castIds = sanitizeCharacterIds(raw?.characterIds, raw?.characterId);
 
   return {
     id: typeof raw?.id === "string" && raw.id.trim() ? raw.id : newId(),
     characterId: typeof raw?.characterId === "string" ? raw.characterId : "",
     personaId: typeof raw?.personaId === "string" ? raw.personaId : undefined,
-    characterIds: sanitizeCharacterIds(raw?.characterIds, raw?.characterId),
+    characterIds: castIds,
+    isGroup: Boolean(raw?.isGroup) || castIds.length > 0,
+    activeCharacterIds: sanitizeActiveCharacterIds(
+      raw?.activeCharacterIds,
+      castIds,
+      raw?.characterId
+    ),
+    absentReasons: sanitizeAbsentReasons(raw?.absentReasons),
+    relations: sanitizeSceneRelations(raw?.relations),
     participantStats: sanitizeParticipantStats(raw?.participantStats),
     title: typeof raw?.title === "string" && raw.title.trim() ? raw.title : "Новая ветка",
     summary: typeof raw?.summary === "string" ? raw.summary : "",

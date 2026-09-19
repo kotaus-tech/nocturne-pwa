@@ -32,6 +32,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { sanitizeBaseUrl } from "../../services/apiClient";
 import {
   getApiConfig,
   setApiConfig,
@@ -80,12 +81,12 @@ const TEMPLATE_PRESETS: {
   },
   {
     label: "OpenRouter",
-    baseUrl: "[https://openrouter.ai/api/v1](https://openrouter.ai/api/v1)",
+    baseUrl: "https://openrouter.ai/api/v1",
     mode: "openai",
   },
   {
     label: "DeepSeek",
-    baseUrl: "[https://api.deepseek.com](https://api.deepseek.com)",
+    baseUrl: "https://api.deepseek.com",
     mode: "openai",
   },
   {
@@ -310,7 +311,17 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
     Promise.all([getApiConfig(), getApiPresets()])
       .then(([loadedApi, loadedPresets]) => {
         if (!active) return;
-        setApi(loadedApi);
+
+        // Раньше адрес мог сохраниться с markdown-обёрткой: чиним на месте,
+        // чтобы в поле настроек не висел мусорный адрес.
+        const cleanBaseUrl = sanitizeBaseUrl(loadedApi.baseUrl);
+        const normalized =
+          cleanBaseUrl === loadedApi.baseUrl
+            ? loadedApi
+            : { ...loadedApi, baseUrl: cleanBaseUrl };
+
+        setApi(normalized);
+        if (normalized !== loadedApi) void setApiConfig(normalized).catch(() => {});
         setPresets(loadedPresets);
       })
       .catch((cause) => {

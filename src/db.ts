@@ -3,6 +3,7 @@ import type {
   Character,
   ChatSession,
   Message,
+  Persona,
   UserProfile,
   ApiConfig,
   ApiPreset,
@@ -51,16 +52,135 @@ export async function setSetting<T>(key: string, value: T): Promise<void> {
   await db.kv.put({ key, value });
 }
 
+// -------------------- Свои личности (персоны) --------------------
+
+const PERSONAS_KEY = "personas";
+const ACTIVE_PERSONA_KEY = "activePersonaId";
+const LEGACY_PROFILE_KEY = "userProfile";
+
+export const DEFAULT_PROFILE: UserProfile = {
+  name: "Странник",
+  avatarUrl: "",
+  personaDescription: "Загадочный гость этого мира.",
+};
+
+function toProfile(persona: Persona): UserProfile {
+  return {
+    name: persona.name,
+    avatarUrl: persona.avatarUrl,
+    personaDescription: persona.personaDescription,
+  };
+}
+
+function isPersona(value: unknown): value is Persona {
+  const record = value as Persona | null;
+  return Boolean(record && typeof record === "object" && typeof record.id === "string");
+}
+
+/**
+ * Список персон. При первом запуске после обновления единственный старый
+ * профиль переносится в список — данные не теряются.
+ */
+export async function listPersonas(): Promise<Persona[]> {
+  const stored = await getSetting<Persona[]>(PERSONAS_KEY, []);
+  const personas = Array.isArray(stored) ? stored.filter(isPersona) : [];
+
+  if (personas.length > 0) return personas;
+
+  const legacy = await getSetting<UserProfile | null>(LEGACY_PROFILE_KEY, null);
+  const seed: Persona = {
+    id: newId(),
+    createdAt: Date.now(),
+    ...(legacy && typeof legacy === "object" ? { ...DEFAULT_PROFILE, ...legacy } : DEFAULT_PROFILE),
+  };
+
+  await db.kv.put({ key: PERSONAS_KEY, value: [seed] });
+  await db.kv.put({ key: ACTIVE_PERSONA_KEY, value: seed.id });
+  return [seed];
+}
+
+export async function getActivePersonaId(): Promise<string | null> {
+  const personas = await listPersonas();
+  const activeId = await getSetting<string | null>(ACTIVE_PERSONA_KEY, null);
+  return personas.some((persona) => persona.id === activeId) ? activeId : personas[0].id;
+}
+
+export async function getActivePersona(): Promise<Persona> {
+  const personas = await listPersonas();
+  const activeId = await getActivePersonaId();
+  return personas.find((persona) => persona.id === activeId) ?? personas[0];
+}
+
+export async function setActivePersona(id: string): Promise<void> {
+  const personas = await listPersonas();
+  const next = personas.find((persona) => persona.id === id);
+  if (!next) throw new Error("Персона не найдена.");
+
+  await db.kv.put({ key: ACTIVE_PERSONA_KEY, value: id });
+  // Старый ключ держим синхронным: на него смотрят прежние сборки и импорт.
+  await db.kv.put({ key: LEGACY_PROFILE_KEY, value: toProfile(next) });
+}
+
+export type PersonaDraft = Partial<Omit<Persona, "id" | "createdAt">>;
+
+export async function createPersona(draft: PersonaDraft = {}): Promise<Persona> {
+  const personas = await listPersonas();
+  const persona: Persona = {
+    id: newId(),
+    createdAt: Date.now(),
+    name: draft.name?.trim() || `Персона ${personas.length + 1}`,
+    avatarUrl: draft.avatarUrl ?? "",
+    personaDescription: draft.personaDescription ?? "",
+  };
+
+  await db.kv.put({ key: PERSONAS_KEY, value: [...personas, persona] });
+  return persona;
+}
+
+export async function updatePersona(id: string, patch: PersonaDraft): Promise<void> {
+  const personas = await listPersonas();
+  const index = personas.findIndex((persona) => persona.id === id);
+  if (index === -1) throw new Error("Персона не найдена.");
+
+  const updated: Persona = {
+    ...personas[index],
+    ...patch,
+    name: (patch.name ?? personas[index].name).trim() || personas[index].name,
+  };
+
+  const next = [...personas];
+  next[index] = updated;
+  await db.kv.put({ key: PERSONAS_KEY, value: next });
+
+  const activeId = await getActivePersonaId();
+  if (activeId === id) {
+    await db.kv.put({ key: LEGACY_PROFILE_KEY, value: toProfile(updated) });
+  }
+}
+
+export async function deletePersona(id: string): Promise<void> {
+  const personas = await listPersonas();
+  if (personas.length <= 1) {
+    throw new Error("Нужна хотя бы одна персона — удалить последнюю нельзя.");
+  }
+
+  const next = personas.filter((persona) => persona.id !== id);
+  await db.kv.put({ key: PERSONAS_KEY, value: next });
+
+  const activeId = await getActivePersonaId();
+  if (activeId === id) {
+    await setActivePersona(next[0].id);
+  }
+}
+
+/** Профиль игрока — это всегда активная персона. */
 export async function getUserProfile(): Promise<UserProfile> {
-  return getSetting<UserProfile>("userProfile", {
-    name: "Странник",
-    avatarUrl: "",
-    personaDescription: "Загадочный гость этого мира.",
-  });
+  return toProfile(await getActivePersona());
 }
 
 export async function setUserProfile(profile: UserProfile): Promise<void> {
-  await setSetting("userProfile", profile);
+  const persona = await getActivePersona();
+  await updatePersona(persona.id, profile);
 }
 
 export async function getApiConfig(): Promise<ApiConfig> {

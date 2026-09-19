@@ -8,6 +8,12 @@ export interface UserProfile {
   personaDescription: string;
 }
 
+/** Своя личность (альтер-эго), от лица которой игрок ведёт диалоги. */
+export interface Persona extends UserProfile {
+  id: string;
+  createdAt: number;
+}
+
 export interface RelationshipStats {
   trust: number;        // 0–100 (Доверие)
   affection: number;    // 0–100 (Привязанность)

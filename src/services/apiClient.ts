@@ -16,6 +16,20 @@ export interface GeminiContent {
   parts: GeminiContentPart[];
 }
 
+/**
+ * Убирает из адреса markdown-обёртку вида
+ * "[https://host/path](https://host/path)" — такие значения остались в
+ * сохранённых настройках и пресетах и приводили к запросу на собственный
+ * домен приложения. Корректные адреса возвращаются без изменений.
+ */
+export function sanitizeBaseUrl(baseUrl?: string): string {
+  const raw = (baseUrl || "").trim();
+  if (!raw || !raw.includes("](")) return raw;
+
+  const match = raw.match(/https?:\/\/[^\s)\]`"']+/);
+  return match ? match[0] : raw;
+}
+
 export function isLocalEndpoint(baseUrl?: string): boolean {
   if (!baseUrl) return false;
   const lower = baseUrl.toLowerCase();
@@ -50,7 +64,7 @@ export function isOllamaEndpoint(baseUrl?: string): boolean {
 }
 
 export function isDeepSeekEndpoint(config: ApiConfig): boolean {
-  const base = (config.baseUrl || "").toLowerCase();
+  const base = sanitizeBaseUrl(config.baseUrl).toLowerCase();
   const model = (config.model || "").toLowerCase();
   return base.includes("deepseek") || model.includes("deepseek") || model.includes("r1");
 }
@@ -67,7 +81,7 @@ export function resolveEndpoints(baseUrl: string): {
   primaryUrl: string;
   fallbackUrl: string | null;
 } {
-  const clean = (baseUrl || "").trim().replace(/\/+$/, "");
+  const clean = sanitizeBaseUrl(baseUrl).replace(/\/+$/, "");
 
   if (!clean) {
     throw new Error("Base URL не указан в настройках API. Укажите адрес сервера (например, адрес Ollama или провайдера).");
@@ -696,7 +710,6 @@ export async function callLLM(
     return callGemini(config, systemPrompt, turns, signal);
   }
 
-  const isLocal = isLocalEndpoint(config.baseUrl);
   const isOllama = isOllamaEndpoint(config.baseUrl);
 
   if (isStreamingEnabled && onChunk) {

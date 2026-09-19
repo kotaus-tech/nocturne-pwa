@@ -33,6 +33,7 @@ import { buildSystemPrompt } from "../../services/promptBuilder";
 import {
   buildAssistantLabeler,
   buildCharacterIndex,
+  matchReturnedCharacters,
   nextSpeaker,
   pendingSpeakers,
   resolveParticipants,
@@ -1022,7 +1023,12 @@ export function ChatView({
 
         // Ответ мог вернуть кого-то из «за кадра» — вводим его обратно в сцену.
         if (parsed.returnedNames?.length) {
-          await returnToScene(resolveReturnedCharacters(parsed.returnedNames));
+          await returnToScene(
+            matchReturnedCharacters(
+              parsed.returnedNames,
+              absentCharacters.map((item) => item.character)
+            )
+          );
         }
 
         const newStats = parsed.stats ?? speakerStats;
@@ -1192,29 +1198,6 @@ export function ChatView({
     }
   }
 
-  /** Сопоставляет имена из мета-блока с теми, кто сейчас за кадром. */
-  function resolveReturnedCharacters(names: string[] | undefined): Character[] {
-    if (!names || names.length === 0) return [];
-
-    const found: Character[] = [];
-
-    for (const raw of names) {
-      const needle = raw.trim().toLocaleLowerCase("ru-RU");
-      if (needle.length < 2) continue;
-
-      const match = absentCharacters.find((item) => {
-        const name = item.character.name.trim().toLocaleLowerCase("ru-RU");
-        return name === needle || name.includes(needle) || needle.includes(name);
-      });
-
-      if (match && !found.some((item) => item.id === match.character.id)) {
-        found.push(match.character);
-      }
-    }
-
-    return found;
-  }
-
   function handleTogglePresence(target: Character, isPresent: boolean) {
     if (isPresent) {
       void applyPresence(target, true);
@@ -1363,7 +1346,12 @@ export function ChatView({
 
       // Перегенерация тоже может вернуть персонажа из-за кадра.
       if (parsed.returnedNames?.length) {
-        await returnToScene(resolveReturnedCharacters(parsed.returnedNames));
+        await returnToScene(
+          matchReturnedCharacters(
+            parsed.returnedNames,
+            absentCharacters.map((item) => item.character)
+          )
+        );
       }
 
       const newStats = parsed.stats ?? speakerStats;

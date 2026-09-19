@@ -215,6 +215,73 @@ export function nextSpeaker(
 }
 
 /** Кого игрок назвал по имени в своей реплике (грубое совпадение, для роутинга). */
+/**
+ * Сопоставляет имена из мета-поля `returned` с персонажами за кадром.
+ * Модель может писать имя в другой форме («Мира» — «Миры»), поэтому сначала
+ * ищем точное совпадение, затем совпадение по основе слова.
+ */
+export function matchReturnedCharacters(
+  names: string[],
+  candidates: Character[]
+): Character[] {
+  const flat = names.flatMap((item) =>
+    typeof item === "string" ? item.split(/[,;]/) : []
+  );
+
+  const normalize = (value: string) =>
+    value.trim().toLocaleLowerCase("ru-RU").replace(/[^\p{L}\p{N} ]/gu, "");
+
+  // Основа слова: у имён длиннее двух букв отбрасываем последнюю букву, чтобы
+  // «Кай» и «Кая», «Рин» и «Рина» сходились между собой.
+  const stems = (value: string) => {
+    const word = normalize(value).split(/\s+/)[0] ?? "";
+    return word.length >= 3 ? word.slice(0, -1) : word;
+  };
+
+  const found: Character[] = [];
+
+  const push = (character: Character) => {
+    if (!found.some((item) => item.id === character.id)) found.push(character);
+  };
+
+  // Первый проход — только точные совпадения, чтобы «Кира» не перебивала «Киру».
+  const pending: string[] = [];
+  for (const raw of flat) {
+    const needle = normalize(raw);
+    if (needle.length < 2) continue;
+
+    const exact = candidates.find(
+      (item) => normalize(item.name) === needle && !found.some((f) => f.id === item.id)
+    );
+
+    if (exact) push(exact);
+    else pending.push(raw);
+  }
+
+  // Второй проход — по основе слова (падежи, уменьшительные формы).
+  for (const raw of pending) {
+    const needle = normalize(raw);
+    if (needle.length < 3) continue;
+
+    const stem = stems(raw);
+    const match = candidates.find((item) => {
+      if (found.some((f) => f.id === item.id)) return false;
+      const name = normalize(item.name);
+      if (name.length < 3) return false;
+      if (name.includes(needle) || needle.includes(name)) return true;
+
+      const nameStem = stems(item.name);
+      if (stem.length < 2 || nameStem.length < 2) return false;
+
+      return nameStem.startsWith(stem) || stem.startsWith(nameStem);
+    });
+
+    if (match) push(match);
+  }
+
+  return found;
+}
+
 export function findMentionedCharacter(
   text: string,
   present: Character[]

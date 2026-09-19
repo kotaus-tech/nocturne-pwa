@@ -14,6 +14,7 @@ import {
 } from "../src/services/groupScene";
 import { buildRoutingPrompt, parseRoutingAnswer } from "../src/services/groupRouter";
 import { buildSystemPrompt } from "../src/services/promptBuilder";
+import { matchReturnedCharacters } from "../src/services/groupScene";
 import {
   GROUP_SIZE_MAX,
   GROUP_SIZE_MIN,
@@ -244,6 +245,30 @@ describe("групповая сцена: выбор говорящего", () =>
     expect(prompt).toContain("ушла в магазин");
     expect(prompt).toContain('"returned"');
     expect(prompt).toContain("не говори за них");
+  });
+
+  it("сопоставляет вернувшихся по имени, включая падежи", () => {
+    const absent = [cast[1], cast[2]];
+
+    expect(matchReturnedCharacters(["Рин"], absent).map((item) => item.id)).toEqual([
+      "c-2",
+    ]);
+    expect(matchReturnedCharacters(["Рина"], absent).map((item) => item.id)).toEqual([
+      "c-2",
+    ]);
+    expect(
+      matchReturnedCharacters(["Рин, Кай"], absent).map((item) => item.id)
+    ).toEqual(["c-2", "c-3"]);
+    expect(matchReturnedCharacters(["кая"], absent).map((item) => item.id)).toEqual([
+      "c-3",
+    ]);
+  });
+
+  it("не выдумывает тех, кого за кадром нет", () => {
+    expect(matchReturnedCharacters(["Незнакомец"], [cast[1]])).toEqual([]);
+    expect(matchReturnedCharacters([], [cast[1]])).toEqual([]);
+    expect(matchReturnedCharacters(["а"], [cast[1]])).toEqual([]);
+    expect(matchReturnedCharacters(["Рин"], [cast[1], cast[1]])).toHaveLength(1);
   });
 
   it("в промпт роутера попадает не больше шести связей", () => {

@@ -12,6 +12,7 @@ import {
   HardDrive,
   Layers,
   Loader2,
+  PlugZap,
   Radio,
   RefreshCw,
   RotateCcw,
@@ -32,7 +33,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { sanitizeBaseUrl } from "../../services/apiClient";
+import {
+  sanitizeBaseUrl,
+  testConnection,
+  type ConnectionTestResult,
+} from "../../services/apiClient";
 import {
   getApiConfig,
   setApiConfig,
@@ -292,6 +297,9 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
   const [presetToast, setPresetToast] = useState<string | null>(null);
 
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [connectionTest, setConnectionTest] = useState<ConnectionTestResult | null>(null);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const connectionTestAbortRef = useRef<AbortController | null>(null);
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
 
@@ -468,6 +476,33 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
     } finally {
       if (mountedRef.current) setLoadingModels(false);
     }
+  };
+
+  /**
+   * Проверка соединения: короткий запрос к модели. Пока запрос идёт, кнопка
+   * превращается в «Отменить» — на медленных провайдерах это важнее, чем
+   * таймаут, который мог бы обрывать долгие размышления.
+   */
+  const handleTestConnection = async () => {
+    if (!api) return;
+
+    if (testingConnection) {
+      connectionTestAbortRef.current?.abort();
+      return;
+    }
+
+    const controller = new AbortController();
+    connectionTestAbortRef.current = controller;
+    setTestingConnection(true);
+    setConnectionTest(null);
+
+    const result = await testConnection(api, controller.signal);
+
+    if (!mountedRef.current) return;
+
+    connectionTestAbortRef.current = null;
+    setTestingConnection(false);
+    setConnectionTest(result);
   };
 
   const saveApi = async () => {
@@ -943,6 +978,76 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
                       <p className="mt-2 whitespace-pre-wrap text-xs text-danger leading-relaxed">
                         {modelError}
                       </p>
+                    )}
+                  </div>
+
+                  {/* Проверка соединения: короткий запрос прямо из настроек */}
+                  <div className="rounded-2xl border border-white/[0.08] bg-surface-2 p-3.5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="flex items-center gap-2 text-xs font-bold text-zinc-100">
+                          <PlugZap
+                            size={14}
+                            className={connectionTest?.ok ? "text-success" : "text-accent"}
+                          />
+                          <span>Проверка соединения</span>
+                        </p>
+                        <p className="mt-0.5 text-[11px] leading-relaxed text-content-muted">
+                          Короткий запрос к модели: сразу видно, отвечают ли
+                          провайдер, ключ и резервный прокси. Проверяются текущие
+                          значения полей — сохранять настройки не обязательно.
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => void handleTestConnection()}
+                        className={cn(
+                          "flex shrink-0 items-center gap-1.5 rounded-xl border px-3.5 py-1.5 text-xs font-semibold transition-all",
+                          testingConnection
+                            ? "border-danger/50 bg-danger/10 text-danger"
+                            : "border-accent/50 bg-accent/15 text-accent hover:border-accent"
+                        )}
+                      >
+                        {testingConnection ? (
+                          <Loader2 size={13} className="animate-spin" />
+                        ) : (
+                          <PlugZap size={13} />
+                        )}
+                        <span>{testingConnection ? "Отменить" : "Проверить"}</span>
+                      </button>
+                    </div>
+
+                    {connectionTest && (
+                      <div
+                        role="status"
+                        className={cn(
+                          "mt-3 flex items-start gap-2 rounded-xl border px-3 py-2 text-xs leading-relaxed",
+                          connectionTest.ok
+                            ? "border-success/30 bg-success/[0.08] text-success"
+                            : connectionTest.cancelled
+                              ? "border-white/[0.08] bg-[#121622] text-content-muted"
+                              : "border-danger/30 bg-danger/[0.06] text-danger"
+                        )}
+                      >
+                        {connectionTest.ok ? (
+                          <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
+                        ) : (
+                          <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                        )}
+                        <span className="min-w-0 flex-1 whitespace-pre-wrap">
+                          {connectionTest.ok
+                            ? `Соединение работает. Модель «${connectionTest.model}» ответила за ${connectionTest.ms} мс:`
+                            : connectionTest.cancelled
+                              ? connectionTest.message
+                              : `Не удалось получить ответ (${connectionTest.ms} мс). Модель «${connectionTest.model}»:`}
+                          {!connectionTest.cancelled && (
+                            <span className="mt-1 block font-medium">
+                              {connectionTest.message}
+                            </span>
+                          )}
+                        </span>
+                      </div>
                     )}
                   </div>
 

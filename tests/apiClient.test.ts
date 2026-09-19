@@ -5,6 +5,7 @@ import {
   requestRoleplayReply,
   resolveEndpoints,
   sanitizeBaseUrl,
+  testConnection,
 } from "../src/services/apiClient";
 import type { ApiConfig } from "../src/types";
 
@@ -44,9 +45,10 @@ const geminiConfig: ApiConfig = {
 beforeEach(() => {
   calls.length = 0;
   responder = () => jsonResponse({});
-  vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     calls.push(url);
+    if (init?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
     return responder({ url });
   });
 });
@@ -287,6 +289,101 @@ describe("запросы к Gemini", () => {
     ).catch((cause: Error) => cause);
 
     expect(String(error)).not.toContain("TEST-KEY-123");
+  });
+});
+
+describe("проверка соединения", () => {
+  const ruConfig: ApiConfig = {
+    mode: "openai",
+    baseUrl: "https://api.ru-openrouter.ru/v1",
+    apiKey: "sk_test",
+    model: "openai/gpt-4o-mini",
+    temperature: 0.8,
+    contextWindow: 20,
+    streamEnabled: true,
+  };
+
+  it("показывает ответ модели и время отклика", async () => {
+    responder = () =>
+      jsonResponse({ choices: [{ message: { content: "Связь есть, всё работает." } }] });
+
+    const result = await testConnection(ruConfig);
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toBe("Связь есть, всё работает.");
+    expect(result.model).toBe("openai/gpt-4o-mini");
+    expect(typeof result.ms).toBe("number");
+    // Проверка идёт тем же путём, что и генерация: адрес чата провайдера.
+    expect(calls[0]).toBe("https://api.ru-openrouter.ru/v1/chat/completions");
+  });
+
+  it("убирает служебную обвязку из ответа", async () => {
+    responder = () =>
+      jsonResponse({
+        choices: [{ message: { content: "<think>проверяю</think>\n— Да, связь есть.\n```meta\n{}\n```" } }],
+      });
+
+    const result = await testConnection(ruConfig);
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toBe("— Да, связь есть.");
+  });
+
+  it("сообщает об ошибке провайдера как есть", async () => {
+    responder = ({ url }) =>
+      url.includes("llm-proxy")
+        ? new Response(JSON.stringify({ error: { message: "Invalid API key" } }), {
+            status: 401,
+            headers: { "content-type": "application/json" },
+          })
+        : (() => {
+            throw new TypeError("Failed to fetch");
+          })();
+
+    const result = await testConnection(ruConfig);
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/API-ключ/);
+    expect(result.model).toBe("openai/gpt-4o-mini");
+  });
+
+  it("объясняет, когда нет ни прямого канала, ни прокси", async () => {
+    responder = ({ url }) => {
+      if (url.includes("llm-proxy")) {
+        return new Response("<!doctype html><html>Not found</html>", {
+          status: 404,
+          headers: { "content-type": "text/html" },
+        });
+      }
+      throw new TypeError("Failed to fetch");
+    };
+
+    const result = await testConnection(ruConfig);
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("/api/llm-proxy");
+  });
+
+  it("сообщает о пустом ответе, если модель промолчала", async () => {
+    responder = () => jsonResponse({ choices: [{ message: { content: "   " } }] });
+
+    const result = await testConnection(ruConfig);
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toMatch(/пустой/);
+  });
+
+  it("отменяется без ложной ошибки", async () => {
+    responder = () => jsonResponse({ choices: [{ message: { content: "поздно" } }] });
+
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await testConnection(ruConfig, controller.signal);
+
+    expect(result.ok).toBe(false);
+    expect(result.cancelled).toBe(true);
+    expect(result.message).toMatch(/отменена/i);
   });
 });
 

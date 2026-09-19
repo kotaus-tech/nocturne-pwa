@@ -1052,6 +1052,90 @@ export async function requestRoleplayReply(
   return parseMetaBlock(raw, baseStats);
 }
 
+export interface ConnectionTestResult {
+  /** Соединение и ключ в порядке, модель ответила. */
+  ok: boolean;
+  /** Короткий ответ модели либо понятное объяснение ошибки. */
+  message: string;
+  /** Сколько миллисекунд занял запрос — видно, насколько провайдер близко. */
+  ms: number;
+  /** Модель, к которой обращались (из настроек). */
+  model: string;
+  /** Тест отменён игроком, а не провалился. */
+  cancelled?: boolean;
+}
+
+/** Насколько длинный ответ модели показываем в отчёте. */
+const CONNECTION_TEST_ANSWER_LIMIT = 200;
+
+const CONNECTION_TEST_PROMPT =
+  "Ты — служебная проверка соединения. Ответь одной короткой фразой, что связь есть. Без мета-блоков, тегов и пояснений.";
+
+/**
+ * Короткий запрос к модели, чтобы игрок сразу видел: соединение, ключ и
+ * выбранная модель рабочие. Идёт ровно тем же путём, что и обычная генерация
+ * (включая резервный прокси), но без стриминга и без истории.
+ */
+export async function testConnection(
+  config: ApiConfig,
+  signal?: AbortSignal
+): Promise<ConnectionTestResult> {
+  const startedAt = Date.now();
+  const model = (config.model || "").trim();
+
+  const finish = (
+    ok: boolean,
+    message: string,
+    extra: { cancelled?: boolean } = {}
+  ): ConnectionTestResult => ({
+    ok,
+    message,
+    ms: Date.now() - startedAt,
+    model: model || "—",
+    ...extra,
+  });
+
+  try {
+    const answer = await callLLM(
+      { ...config, streamEnabled: false },
+      CONNECTION_TEST_PROMPT,
+      [{ role: "user", content: "Проверка связи. Ответь одной короткой фразой." }],
+      undefined,
+      signal
+    );
+
+    const clean = answer
+      .replace(/<think>[\s\S]*?<\/think>/gi, "")
+      .replace(/<thought>[\s\S]*?<\/thought>/gi, "")
+      .replace(/```[\s\S]*?```/g, "")
+      .trim()
+      .slice(0, CONNECTION_TEST_ANSWER_LIMIT);
+
+    if (!clean) {
+      return finish(true, "Провайдер ответил, но текст ответа пустой.");
+    }
+
+    return finish(true, clean);
+  } catch (cause) {
+    if (signal?.aborted || (cause instanceof Error && cause.name === "AbortError")) {
+      return finish(false, "Проверка отменена.", { cancelled: true });
+    }
+
+    // Провайдер ответил, но модель промолчала: сам канал рабочий, и это важно
+    // не путать с обрывом связи — иначе игрок пойдёт чинить настройки.
+    if (cause instanceof Error && /пустой ответ/i.test(cause.message)) {
+      return finish(true, "Провайдер ответил, но модель вернула пустой текст.");
+    }
+
+    return finish(
+      false,
+      cause instanceof Error && cause.message
+        ? cause.message
+        : "Не удалось получить ответ от модели."
+    );
+  }
+}
+
 export async function requestSummary(
   config: ApiConfig,
   characterName: string,

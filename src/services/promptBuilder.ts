@@ -2,12 +2,31 @@ import type { Character, ChatSession, Message, UserProfile } from "../types";
 import { activateLorebook } from "./lorebookEngine";
 import { META_PROTOCOL_INSTRUCTION } from "./metaParser";
 
+/** Контекст групповой сцены: другие персонажи, которые находятся рядом. */
+export interface GroupSceneContext {
+  /** Остальные участники сцены — они уже в истории, но отвечает сейчас только один. */
+  others: Character[];
+}
+
+/** Короткая выжимка о персонаже для списка участников сцены. */
+function briefCharacter(character: Character): string {
+  const source =
+    character.personality?.trim() ||
+    character.description?.trim() ||
+    character.tagline?.trim() ||
+    "";
+
+  if (!source) return "без дополнительных деталей";
+  return source.length > 160 ? `${source.slice(0, 160).trim()}…` : source;
+}
+
 export function buildSystemPrompt(
   character: Character,
   session: ChatSession,
   userProfile: UserProfile,
   recentMessages: Message[],
-  isLocal: boolean = false
+  isLocal: boolean = false,
+  group?: GroupSceneContext
 ): string {
   const parts: string[] = [];
 
@@ -79,6 +98,28 @@ export function buildSystemPrompt(
   parts.push(
     `### ДАННЫЕ СОБЕСЕДНИКА (ИГРОКА): ${userProfile.name}\n${userProfile.personaDescription}`
   );
+
+  // 8.1 Групповая сцена: несколько персонажей в одной истории
+  const others = (group?.others || []).filter(
+    (item) => item && item.id !== character.id
+  );
+
+  if (others.length > 0) {
+    const roster = others
+      .map((item) => `- ${item.name}: ${briefCharacter(item)}`)
+      .join("\n");
+
+    parts.push(
+      `### ГРУППОВАЯ СЦЕНА: НЕСКОЛЬКО ПЕРСОНАЖЕЙ\n` +
+        `Сейчас в сцене несколько персонажей. Ты отыгрываешь ТОЛЬКО ${character.name}.\n` +
+        `Кто ещё присутствует (их реплики приходят отдельными сообщениями истории):\n${roster}\n` +
+        `Правила групповой сцены:\n` +
+        `1. Реагируй на других персонажей как на живых людей: услышь их, смотри, перебивай, соглашайся, спорь, подмечай их реакцию — но НИКОГДА не пиши за них и не придумывай им реплики, мысли или действия.\n` +
+        `2. Не отвечай за ${userProfile.name}: ход игрока приходит отдельным сообщением.\n` +
+        `3. Не подписывай свою реплику именем и не добавляй заголовков вида «${character.name}:» — пиши сразу текст отыгрыша.\n` +
+        `4. Не пересказывай чужие реплики и не подводи итоги диалога: веди только свой ход и свою часть сцены.`
+    );
+  }
 
   // ============================================================
   // СЛОЙ 3: ПОВЕДЕНЧЕСКИЕ МОДУЛИ

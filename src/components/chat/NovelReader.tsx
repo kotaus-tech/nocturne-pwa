@@ -21,6 +21,8 @@ interface NovelReaderProps {
   messages: Message[];
   character: Character;
   userProfile: UserProfile;
+  /** Групповая сцена: имя автора конкретной реплики. */
+  resolveSpeakerName?: (message: Message) => string;
 }
 
 function NovelFateLabel({
@@ -82,6 +84,7 @@ export function NovelReader({
   messages,
   character,
   userProfile,
+  resolveSpeakerName,
 }: NovelReaderProps) {
   return (
     <article
@@ -107,7 +110,7 @@ export function NovelReader({
               const isUser = message.sender === "user";
               const senderName = isUser
                 ? userProfile.name
-                : character.name;
+                : resolveSpeakerName?.(message) || character.name;
 
               const isOOC =
                 displayText.startsWith("[OOC:") ||

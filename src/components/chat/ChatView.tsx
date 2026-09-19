@@ -15,6 +15,7 @@ import {
   RotateCcw,
   Loader2,
   AlertCircle,
+  Users,
   X,
 } from "lucide-react";
 import { db, getApiConfig, getPersonaState, resolvePersonaForChat } from "../../db";
@@ -29,6 +30,15 @@ import type {
   ThoughtMode,
 } from "../../types";
 import { buildSystemPrompt } from "../../services/promptBuilder";
+import {
+  buildAssistantLabeler,
+  buildCharacterIndex,
+  pendingSpeakers,
+  resolveParticipants,
+  resolveSpeaker,
+  resolveSpeakerName,
+  statsForCharacter,
+} from "../../services/groupScene";
 import {
   isLocalEndpoint,
   messagesToTurns,
@@ -247,6 +257,25 @@ export function ChatView({
     [sessionId]
   );
 
+  // Групповая сцена: индекс персонажей нужен, чтобы находить автора реплики
+  // по message.characterId и собирать список участников по session.characterIds.
+  const charactersIndex = useLiveQuery(() => db.characters.toArray(), []);
+  const charactersById = useMemo(
+    () => buildCharacterIndex(charactersIndex),
+    [charactersIndex]
+  );
+
+  const sessionCharacterIdsKey = (session?.characterIds ?? []).join(",");
+
+  /** Участники сцены: основной персонаж ветки всегда первый. */
+  const participants = useMemo(
+    () => resolveParticipants(session, character, charactersById),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [character, sessionCharacterIdsKey, charactersById]
+  );
+
+  const isGroupScene = participants.length > 1;
+
   const [visibleLimit, setVisibleLimit] = useState(INITIAL_PAGE_SIZE);
   // Личность игрока: ветка → персонаж → активная персона. Живой запрос, чтобы
   // смена активной персоны подхватывалась без перезахода в чат.
@@ -280,6 +309,9 @@ export function ChatView({
 
   const [sending, setSending] = useState(false);
   const [liveStreamedText, setLiveStreamedText] = useState("");
+  const [streamingCharacterId, setStreamingCharacterId] = useState<string | null>(
+    null
+  );
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [metaNotice, setMetaNotice] = useState<string | null>(null);
   const metaNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -672,7 +704,7 @@ export function ChatView({
     const transcript = recent
       .map(
         (message) =>
-          `${message.sender === "user" ? userProfile.name : character.name}: ${message.swipes[message.currentSwipeIndex]}`
+          `${speakerName(message)}: ${message.swipes[message.currentSwipeIndex]}`
       )
       .join("\n");
 
@@ -735,6 +767,34 @@ export function ChatView({
     );
   }
 
+  // -------------------- Групповая сцена: помощники --------------------
+
+  /** Автор реплики: для групповых сцен — по message.characterId, иначе основной персонаж. */
+  const speakerFor = (message: Message): Character =>
+    resolveSpeaker(message, character, charactersById);
+
+  /** Имя автора реплики (снимок имени переживает удаление персонажа). */
+  const speakerName = (message: Message): string =>
+    resolveSpeakerName(message, character, charactersById, userProfile.name);
+
+  /** Шкалы отношений конкретного персонажа сцены. */
+  const statsFor = (characterId: string): RelationshipStats =>
+    statsForCharacter(session, characterId, charactersById);
+
+  /** Другие участники сцены для промпта (без текущего говорящего). */
+  const othersFor = (characterId: string): Character[] =>
+    participants.filter((item) => item.id !== characterId);
+
+  /** Подпись чужих реплик в контексте запроса. */
+  const turnLabelFor = (speakerId: string) =>
+    buildAssistantLabeler(speakerId, character.id, (message) =>
+      speakerName(message)
+    );
+
+  const typingCharacter =
+    (streamingCharacterId ? charactersById.get(streamingCharacterId) : undefined) ||
+    character;
+
   const lastAssistantId = [...allMessages]
     .reverse()
     .find((message) => message.sender === "assistant")?.id;
@@ -751,7 +811,8 @@ export function ChatView({
 
   async function callModelAndAppend(
     contextMessages: Message[],
-    isInitiative = false
+    isInitiative = false,
+    onlySpeakers?: Character[]
   ) {
     if (!apiConfig || !character || !session || !userProfile) return;
 
@@ -777,75 +838,119 @@ export function ChatView({
 
     try {
       const isSteppedWindow = apiConfig.steppedContextEnabled !== false;
-      const recent = getSliceForContext(
-        contextMessages,
-        apiConfig.contextWindow,
-        isSteppedWindow
-      );
-
-      const systemPrompt = buildSystemPrompt(
-        character,
-        session,
-        userProfile,
-        recent,
-        isLocal
-      );
-      const turns = messagesToTurns(recent);
-
-      if (isInitiative) {
-        turns.push({
-          role: "user",
-          content: `[${userProfile.name} молчит или выжидает. ${character.name}, прояви собственную инициативу: продолжи мысль, соверши физическое действие, измени положение, начни новую реплику или нарушь паузу. НЕ говори и НЕ действуй за ${userProfile.name}!]`,
-        });
-      }
-
-      const parsed = await requestRoleplayReply(
-        apiConfig,
-        systemPrompt,
-        turns,
-        (chunk) => {
-          setLiveStreamedText(chunk);
-        },
-        session.currentStats,
-        controller.signal
-      );
-
-      if (parsed.metaWarning) showMetaNotice(parsed.metaWarning);
-
-      const oldStats = session.currentStats;
-      const newStats = parsed.stats ?? session.currentStats;
-
-      const assistantMessage: Message = {
-        id: newId(),
-        sessionId: session.id,
-        sender: "assistant",
-        swipes: [parsed.text || "..."],
-        currentSwipeIndex: 0,
-        innerThought: parsed.innerThought,
-        statsSnapshot: newStats,
-        timestamp: Date.now(),
-      };
-
-      await db.messages.add(assistantMessage);
-      await db.sessions.update(session.id, {
-        currentStats: newStats,
-        updatedAt: Date.now(),
-      });
-
-      const total = (allMessages?.length ?? 0) + 1;
       const toastsEnabled = session.showRelationshipToasts !== false;
 
-      if (toastsEnabled && parsed.feelingHint && parsed.feelingHint.trim()) {
-        showToast({
-          title: parsed.feelingHint.trim(),
-          type: "feeling",
-        });
-      } else if (parsed.stats) {
-        checkMilestone(oldStats, newStats, total);
+      // Групповая сцена: каждый участник отвечает своим ходом, по порядку списка.
+      // Каждый следующий видит уже готовые реплики предыдущих.
+      const speakers =
+        onlySpeakers && onlySpeakers.length > 0
+          ? onlySpeakers
+          : isGroupScene
+            ? participants
+            : [character];
+      let workingContext = contextMessages;
+      let appended = 0;
+      const participantStats = { ...(session.participantStats ?? {}) };
+
+      for (const speaker of speakers) {
+        if (controller.signal.aborted) break;
+
+        const recent = getSliceForContext(
+          workingContext,
+          apiConfig.contextWindow,
+          isSteppedWindow
+        );
+
+        const speakerStats = statsFor(speaker.id);
+
+        const systemPrompt = buildSystemPrompt(
+          speaker,
+          session,
+          userProfile,
+          recent,
+          isLocal,
+          isGroupScene ? { others: othersFor(speaker.id) } : undefined
+        );
+
+        const turns = isGroupScene
+          ? messagesToTurns(recent, turnLabelFor(speaker.id))
+          : messagesToTurns(recent);
+
+        if (isInitiative) {
+          turns.push({
+            role: "user",
+            content: `[${userProfile.name} молчит или выжидает. ${speaker.name}, прояви собственную инициативу: продолжи мысль, соверши физическое действие, измени положение, начни новую реплику или нарушь паузу. НЕ говори и НЕ действуй за ${userProfile.name}!]`,
+          });
+        }
+
+        setStreamingCharacterId(speaker.id);
+        setLiveStreamedText("");
+
+        const parsed = await requestRoleplayReply(
+          apiConfig,
+          systemPrompt,
+          turns,
+          (chunk) => {
+            setLiveStreamedText(chunk);
+          },
+          speakerStats,
+          controller.signal
+        );
+
+        if (parsed.metaWarning) showMetaNotice(parsed.metaWarning);
+
+        const newStats = parsed.stats ?? speakerStats;
+
+        const assistantMessage: Message = {
+          id: newId(),
+          sessionId: session.id,
+          sender: "assistant",
+          characterId: isGroupScene ? speaker.id : undefined,
+          characterName: isGroupScene ? speaker.name : undefined,
+          swipes: [parsed.text || "..."],
+          currentSwipeIndex: 0,
+          innerThought: parsed.innerThought,
+          statsSnapshot: newStats,
+          timestamp: Date.now(),
+        };
+
+        await db.messages.add(assistantMessage);
+        appended += 1;
+
+        if (speaker.id === character.id) {
+          await db.sessions.update(session.id, {
+            currentStats: newStats,
+            updatedAt: Date.now(),
+          });
+        } else {
+          participantStats[speaker.id] = newStats;
+          await db.sessions.update(session.id, {
+            participantStats: { ...participantStats },
+            updatedAt: Date.now(),
+          });
+        }
+
+        const total = (allMessages?.length ?? 0) + appended;
+
+        if (toastsEnabled && parsed.feelingHint && parsed.feelingHint.trim()) {
+          showToast({
+            title:
+              speaker.id === character.id
+                ? parsed.feelingHint.trim()
+                : `${speaker.name}: ${parsed.feelingHint.trim()}`,
+            type: "feeling",
+          });
+        } else if (parsed.stats && speaker.id === character.id) {
+          checkMilestone(speakerStats, newStats, total);
+        }
+
+        workingContext = [...workingContext, assistantMessage];
       }
 
-      if (total - lastExtractedMsgCountRef.current >= MEMORY_EXTRACT_INTERVAL) {
-        lastExtractedMsgCountRef.current = total;
+      const totalAfter = (allMessages?.length ?? 0) + appended;
+
+      if (totalAfter - lastExtractedMsgCountRef.current >= MEMORY_EXTRACT_INTERVAL) {
+        lastExtractedMsgCountRef.current = totalAfter;
         compressMemory().catch(() => {});
       }
     } catch (cause) {
@@ -859,6 +964,7 @@ export function ChatView({
       if (abortRef.current === controller) abortRef.current = null;
       setSending(false);
       setLiveStreamedText("");
+      setStreamingCharacterId(null);
     }
   }
 
@@ -875,7 +981,17 @@ export function ChatView({
 
     if (last && last.sender === "user") {
       await callModelAndAppend(full, false);
+      return;
     }
+
+    // Групповая сцена: если ход прервался на середине, дожимаем тех,
+    // кто ещё не ответил на последнюю реплику игрока.
+    if (!isGroupScene) return;
+
+    const pending = pendingSpeakers(full, participants, character?.id ?? "");
+    if (pending.length === 0) return;
+
+    await callModelAndAppend(full, false, pending);
   }
 
   async function handleSend(text: string) {
@@ -920,6 +1036,9 @@ export function ChatView({
     const index = allMessages.findIndex((item) => item.id === message.id);
     const context = allMessages.slice(0, index);
     const isLocal = isLocalEndpoint(apiConfig!.baseUrl);
+    // Групповая сцена: переписываем реплику того же персонажа, что её написал.
+    const speaker = speakerFor(message);
+    const speakerStats = statsFor(speaker.id);
 
     setSending(true);
     setLiveStreamedText("");
@@ -939,13 +1058,19 @@ export function ChatView({
       );
 
       const systemPrompt = buildSystemPrompt(
-        character!,
+        speaker,
         session,
         userProfile!,
         recent,
-        isLocal
+        isLocal,
+        isGroupScene ? { others: othersFor(speaker.id) } : undefined
       );
-      const turns = messagesToTurns(recent);
+      const turns = isGroupScene
+        ? messagesToTurns(recent, turnLabelFor(speaker.id))
+        : messagesToTurns(recent);
+
+      setStreamingCharacterId(speaker.id);
+      setLiveStreamedText("");
 
       const parsed = await requestRoleplayReply(
         apiConfig!,
@@ -954,13 +1079,13 @@ export function ChatView({
         (chunk) => {
           setLiveStreamedText(chunk);
         },
-        session.currentStats,
+        speakerStats,
         controller.signal
       );
 
       if (parsed.metaWarning) showMetaNotice(parsed.metaWarning);
 
-      const newStats = parsed.stats ?? session.currentStats;
+      const newStats = parsed.stats ?? speakerStats;
       const newSwipes = [...message.swipes, parsed.text || "..."];
 
       await db.messages.update(message.id, {
@@ -971,16 +1096,29 @@ export function ChatView({
         timestamp: Date.now(),
       });
 
-      await db.sessions.update(session.id, {
-        currentStats: newStats,
-        updatedAt: Date.now(),
-      });
+      if (speaker.id === character!.id) {
+        await db.sessions.update(session.id, {
+          currentStats: newStats,
+          updatedAt: Date.now(),
+        });
+      } else {
+        await db.sessions.update(session.id, {
+          participantStats: {
+            ...(session.participantStats ?? {}),
+            [speaker.id]: newStats,
+          },
+          updatedAt: Date.now(),
+        });
+      }
 
       const toastsEnabled = session.showRelationshipToasts !== false;
 
       if (toastsEnabled && parsed.feelingHint && parsed.feelingHint.trim()) {
         showToast({
-          title: parsed.feelingHint.trim(),
+          title:
+            speaker.id === character!.id
+              ? parsed.feelingHint.trim()
+              : `${speaker.name}: ${parsed.feelingHint.trim()}`,
           type: "feeling",
         });
       }
@@ -994,6 +1132,7 @@ export function ChatView({
       if (abortRef.current === controller) abortRef.current = null;
       setSending(false);
       setLiveStreamedText("");
+      setStreamingCharacterId(null);
     }
   }
 
@@ -1010,7 +1149,7 @@ export function ChatView({
     const transcript = targetMessages
       .map(
         (message) =>
-          `${message.sender === "user" ? userProfile.name : character.name}: ${message.swipes[message.currentSwipeIndex]}`
+          `${speakerName(message)}: ${message.swipes[message.currentSwipeIndex]}`
       )
       .join("\n");
 
@@ -1120,7 +1259,7 @@ export function ChatView({
     const transcript = allMessages
       .map(
         (message, index) =>
-          `[#${index + 1}] ${message.sender === "user" ? userProfile.name : character.name}: ${message.swipes[message.currentSwipeIndex]}`
+          `[#${index + 1}] ${speakerName(message)}: ${message.swipes[message.currentSwipeIndex]}`
       )
       .join("\n");
 
@@ -1263,11 +1402,29 @@ export function ChatView({
                 className="ring-2 ring-white/[0.12] transition-all group-hover:ring-accent/60"
               />
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-bold text-zinc-100 group-hover:text-accent sm:text-base">
-                  {character.name}
+                <p className="flex items-center gap-1.5 text-sm font-bold text-zinc-100 group-hover:text-accent sm:text-base">
+                  <span className="truncate">{character.name}</span>
+                  {isGroupScene && (
+                    <span
+                      title={`Групповая сцена: ${participants
+                        .map((item) => item.name)
+                        .join(", ")}`}
+                      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-accent/35 bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent"
+                    >
+                      <Users size={11} strokeWidth={2.2} />
+                      {participants.length}
+                    </span>
+                  )}
                 </p>
                 <p className="truncate text-xs text-content-muted">
-                  {characterTagline ? `${characterTagline} · ` : ""}
+                  {isGroupScene
+                    ? `в сцене: ${participants
+                        .slice(1)
+                        .map((item) => item.name)
+                        .join(", ")} · `
+                    : characterTagline
+                      ? `${characterTagline} · `
+                      : ""}
                   вы — {userProfile?.name || "Странник"}
                 </p>
               </div>
@@ -1313,11 +1470,15 @@ export function ChatView({
             messages={allMessages}
             character={character}
             userProfile={userProfile}
+            resolveSpeakerName={speakerName}
           />
         ) : (
           <div className="mx-auto flex w-full max-w-4xl flex-col-reverse gap-4 px-3 py-6 sm:px-6">
             {sending && (
-              <TypingBubble character={character} streamedText={liveStreamedText} />
+              <TypingBubble
+                character={typingCharacter}
+                streamedText={liveStreamedText}
+              />
             )}
 
             {errorMsg && (
@@ -1340,7 +1501,7 @@ export function ChatView({
                 <React.Fragment key={message.id}>
                   <MessageBubble
                     message={message}
-                    character={character}
+                    character={speakerFor(message)}
                     userProfile={userProfile}
                     isLastAssistant={message.id === lastAssistantId}
                     isLastUser={
@@ -1455,7 +1616,22 @@ export function ChatView({
         </div>
       </div>
 
-      <StatsPanel open={statsOpen} onClose={() => setStatsOpen(false)} stats={stats} />
+      <StatsPanel
+        open={statsOpen}
+        onClose={() => setStatsOpen(false)}
+        stats={stats}
+        participants={
+          isGroupScene
+            ? participants.map((item) => ({
+                id: item.id,
+                name: item.name,
+                avatarUrl: item.avatarUrl,
+                stats: statsFor(item.id),
+              }))
+            : undefined
+        }
+        activeParticipantId={character.id}
+      />
 
       <DirectorPanel
         open={directorOpen}
@@ -1592,6 +1768,8 @@ export function ChatView({
           apiConfig={apiConfig}
           contextMessages={currentContextSlice}
           lastAssistantMessage={lastAssistantMessage}
+          participants={participants}
+          speakerId={lastAssistantMessage?.characterId ?? character.id}
         />
       )}
     </div>

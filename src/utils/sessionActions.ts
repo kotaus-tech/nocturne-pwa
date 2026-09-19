@@ -64,11 +64,30 @@ export async function renameSession(sessionId: string, title: string): Promise<v
 
 export async function deleteCharacterCascade(characterId: string): Promise<void> {
   const sessions = await db.sessions.where("characterId").equals(characterId).toArray();
+
+  // Если персонаж был участником чужой групповой сцены — убираем его из состава,
+  // чтобы в ветке не оставалось «призрака» без аватара и шкал.
+  const allSessions = await db.sessions.toArray();
+  const groupSessions = allSessions.filter(
+    (s) => s.characterId !== characterId && (s.characterIds ?? []).includes(characterId)
+  );
+
   await db.transaction("rw", db.characters, db.sessions, db.messages, async () => {
     for (const s of sessions) {
       await db.messages.where("sessionId").equals(s.id).delete();
     }
     await db.sessions.where("characterId").equals(characterId).delete();
+
+    for (const s of groupSessions) {
+      const nextStats = { ...(s.participantStats ?? {}) };
+      delete nextStats[characterId];
+
+      await db.sessions.update(s.id, {
+        characterIds: (s.characterIds ?? []).filter((id) => id !== characterId),
+        participantStats: nextStats,
+      });
+    }
+
     await db.characters.delete(characterId);
   });
 }

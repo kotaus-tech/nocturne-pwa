@@ -155,13 +155,35 @@ export function buildGeminiThinkingConfig(modelName: string, mode: ThinkingMode 
   return undefined;
 }
 
-export function messagesToTurns(messages: Message[]): ChatTurn[] {
+/**
+ * Преобразует сообщения в реплики для API.
+ *
+ * Для групповых сцен можно передать labelAssistant: он вернёт имя автора для
+ * тех реплик персонажей, которые принадлежат не текущему отвечающему. Такие
+ * реплики помечаются префиксом «Имя: », чтобы модель понимала, кто что сказал.
+ */
+export function messagesToTurns(
+  messages: Message[],
+  labelAssistant?: (message: Message) => string | undefined
+): ChatTurn[] {
   return messages
     .filter((m) => m.sender !== "system")
-    .map((m) => ({
-      role: m.sender === "user" ? "user" : "assistant",
-      content: m.swipes[m.currentSwipeIndex] ?? "",
-    }));
+    .map((m) => {
+      const content = m.swipes[m.currentSwipeIndex] ?? "";
+
+      if (m.sender === "assistant" && labelAssistant) {
+        const label = labelAssistant(m);
+        const name = typeof label === "string" ? label.trim() : "";
+        if (name) {
+          return { role: "assistant" as const, content: `${name}: ${content}` };
+        }
+      }
+
+      return {
+        role: m.sender === "user" ? ("user" as const) : ("assistant" as const),
+        content,
+      };
+    });
 }
 
 export function formatApiError(

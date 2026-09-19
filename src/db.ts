@@ -423,6 +423,43 @@ export function sanitizeCharacter(raw: Partial<Character>): Character {
   };
 }
 
+/** Участники групповой сцены: строки, без пустых, без дублей и без основного персонажа. */
+export function sanitizeCharacterIds(rawIds: unknown, mainId?: string): string[] {
+  if (!Array.isArray(rawIds)) return [];
+
+  const seen = new Set<string>();
+  const ids: string[] = [];
+
+  for (const value of rawIds) {
+    if (typeof value !== "string") continue;
+    const id = value.trim();
+    if (!id || id === mainId || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+
+  return ids;
+}
+
+/** Шкалы отношений участников групповой сцены (по id персонажа). */
+export function sanitizeParticipantStats(
+  rawStats?: unknown
+): Record<string, RelationshipStats> {
+  if (!rawStats || typeof rawStats !== "object" || Array.isArray(rawStats)) {
+    return {};
+  }
+
+  const result: Record<string, RelationshipStats> = {};
+
+  for (const [id, value] of Object.entries(rawStats as Record<string, unknown>)) {
+    const key = id.trim();
+    if (!key) continue;
+    result[key] = sanitizeStats(value as Partial<RelationshipStats>);
+  }
+
+  return result;
+}
+
 export function sanitizeSession(raw: Partial<ChatSession>): ChatSession {
   const validModes: ThoughtMode[] = ["censor", "counterpoint", "stream", "tactical", "instinct"];
   const rawMode = (raw as any)?.thoughtMode;
@@ -432,6 +469,8 @@ export function sanitizeSession(raw: Partial<ChatSession>): ChatSession {
     id: typeof raw?.id === "string" && raw.id.trim() ? raw.id : newId(),
     characterId: typeof raw?.characterId === "string" ? raw.characterId : "",
     personaId: typeof raw?.personaId === "string" ? raw.personaId : undefined,
+    characterIds: sanitizeCharacterIds(raw?.characterIds, raw?.characterId),
+    participantStats: sanitizeParticipantStats(raw?.participantStats),
     title: typeof raw?.title === "string" && raw.title.trim() ? raw.title : "Новая ветка",
     summary: typeof raw?.summary === "string" ? raw.summary : "",
     storyLog: sanitizeStoryLog(raw?.storyLog),
@@ -474,6 +513,12 @@ export function sanitizeMessage(raw: any): Message {
   return {
     id: typeof raw?.id === "string" && raw.id.trim() ? raw.id : newId(),
     sessionId: typeof raw?.sessionId === "string" ? raw.sessionId : "",
+    characterId: typeof raw?.characterId === "string" && raw.characterId.trim()
+      ? raw.characterId
+      : undefined,
+    characterName: typeof raw?.characterName === "string" && raw.characterName.trim()
+      ? raw.characterName
+      : undefined,
     sender,
     swipes,
     currentSwipeIndex: typeof raw?.currentSwipeIndex === "number"

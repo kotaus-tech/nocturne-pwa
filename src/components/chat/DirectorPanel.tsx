@@ -27,9 +27,12 @@ import {
   Coffee,
   Crosshair,
   UserCircle2,
+  Users,
+  X,
 } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { Modal } from "../common/Modal";
+import { Avatar } from "../common/Avatar";
 import { AmbientPlayer } from "./AmbientPlayer";
 import { db, getPersonaState } from "../../db";
 import type { ChatSession, ThoughtMode } from "../../types";
@@ -236,6 +239,42 @@ export function DirectorPanel({
     () => db.characters.get(session.characterId),
     [session.characterId]
   );
+
+  // Групповая сцена: дополнительные участники.
+  const allCharacters = useLiveQuery(() => db.characters.toArray(), []);
+  const [characterToAdd, setCharacterToAdd] = useState("");
+  const participantIds = session.characterIds ?? [];
+  const participantCharacters = participantIds
+    .map((id) => allCharacters?.find((item) => item.id === id))
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const availableCharacters = (allCharacters ?? [])
+    .filter(
+      (item) =>
+        item.id !== session.characterId && !participantIds.includes(item.id)
+    )
+    .sort((a, b) => a.name.localeCompare(b.name, "ru"));
+
+  const updateParticipants = async (ids: string[]) => {
+    await db.sessions.update(session.id, {
+      characterIds: ids,
+      updatedAt: Date.now(),
+    });
+  };
+
+  const addParticipant = async () => {
+    if (!characterToAdd) return;
+    await updateParticipants([...participantIds, characterToAdd]);
+    setCharacterToAdd("");
+  };
+
+  const removeParticipant = async (id: string) => {
+    const nextIds = participantIds.filter((item) => item !== id);
+    const nextStats = { ...(session.participantStats ?? {}) };
+    delete nextStats[id];
+
+    await updateParticipants(nextIds);
+    await db.sessions.update(session.id, { participantStats: nextStats });
+  };
   const personas = personaState?.personas ?? [];
   const characterDefaultPersona = character?.defaultPersonaId
     ? personas.find((persona) => persona.id === character.defaultPersonaId)
@@ -520,6 +559,98 @@ export function DirectorPanel({
                 </option>
               ))}
             </select>
+          </section>
+
+          {/* Секция: участники групповой сцены */}
+          <section className="border-t border-white/[0.08] pt-5 sm:pt-6">
+            <h3 className="mb-1.5 flex items-center gap-2 text-sm font-semibold text-content sm:text-base">
+              <Users size={18} className="text-accent" />
+              <span>Групповая сцена</span>
+            </h3>
+            <p className="mb-2.5 text-xs leading-relaxed text-content-secondary">
+              Персонажи рядом с {character?.name || "основным"}. Каждый отвечает
+              своим ходом по порядку списка (отдельный запрос на участника) и
+              видит уже сказанное остальными.
+            </p>
+
+            <ul className="mb-2.5 space-y-2">
+              <li className="flex items-center gap-2.5 rounded-2xl border border-white/[0.08] bg-[#121622]/60 p-2">
+                <span className="w-4 text-center text-[11px] font-semibold tabular-nums text-content-muted">
+                  1
+                </span>
+                <Avatar
+                  src={character?.avatarUrl}
+                  name={character?.name || "Персонаж"}
+                  size={30}
+                />
+                <span className="min-w-0 flex-1 truncate text-xs font-medium text-zinc-200">
+                  {character?.name || "Основной персонаж"}
+                </span>
+                <span className="shrink-0 pr-1 text-[10px] uppercase tracking-wider text-content-muted">
+                  основной
+                </span>
+              </li>
+
+              {participantCharacters.map((item, index) => (
+                <li
+                  key={item.id}
+                  className="flex items-center gap-2.5 rounded-2xl border border-white/[0.08] bg-[#121622]/80 p-2"
+                >
+                  <span className="w-4 text-center text-[11px] font-semibold tabular-nums text-content-muted">
+                    {index + 2}
+                  </span>
+                  <Avatar src={item.avatarUrl} name={item.name} size={30} />
+                  <span className="min-w-0 flex-1 truncate text-xs font-medium text-zinc-200">
+                    {item.name}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void removeParticipant(item.id)}
+                    aria-label={`Убрать ${item.name} из сцены`}
+                    title="Убрать из сцены"
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-content-muted transition-colors hover:bg-white/[0.06] hover:text-danger"
+                  >
+                    <X size={15} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+
+            <div className="flex items-center gap-2">
+              <select
+                value={characterToAdd}
+                onChange={(event) => setCharacterToAdd(event.target.value)}
+                aria-label="Добавить персонажа в сцену"
+                className="input-field min-w-0 flex-1 text-xs sm:text-sm"
+              >
+                <option value="">
+                  {availableCharacters.length > 0
+                    ? "Добавить персонажа…"
+                    : "Все персонажи уже в сцене"}
+                </option>
+                {availableCharacters.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
+
+              <button
+                type="button"
+                onClick={() => void addParticipant()}
+                disabled={!characterToAdd}
+                className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border border-accent/40 bg-accent/15 px-3 text-xs font-semibold text-accent transition-all hover:bg-accent/25 disabled:cursor-not-allowed disabled:border-white/[0.08] disabled:bg-white/[0.03] disabled:text-content-muted"
+              >
+                Добавить
+              </button>
+            </div>
+
+            {participantCharacters.length === 0 && (
+              <p className="mt-2 text-[11px] leading-relaxed text-content-muted">
+                Пока сцена обычная: отвечает один персонаж. Добавьте второго —
+                и ходы будут идти по очереди.
+              </p>
+            )}
           </section>
 
           {/* Секция: Вектор скрытых мыслей (innerThought) */}

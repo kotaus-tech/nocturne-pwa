@@ -15,6 +15,7 @@ import {
   Loader2,
   Pin,
   GripVertical,
+  Users,
 } from "lucide-react";
 import { db, toggleSessionPin } from "../../db";
 import { Avatar } from "../common/Avatar";
@@ -202,6 +203,15 @@ export function SessionRow({
                 <span className="truncate text-sm sm:text-base font-bold text-zinc-100">
                   {characterName}
                 </span>
+                {(session.characterIds?.length ?? 0) > 0 && (
+                  <span
+                    title="Групповая сцена"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-accent/30 bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent"
+                  >
+                    <Users size={10} strokeWidth={2.4} />
+                    {(session.characterIds?.length ?? 0) + 1}
+                  </span>
+                )}
               </div>
 
               <time

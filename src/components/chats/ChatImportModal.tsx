@@ -233,6 +233,11 @@ export function ChatImportModal({
                       {preview.character?.genre && (
                         <Badge size="sm">{preview.character.genre}</Badge>
                       )}
+                      {preview.participants.length > 0 && (
+                        <Badge size="sm">
+                          сцена: +{preview.participants.length}
+                        </Badge>
+                      )}
                     </div>
                     <p className="truncate text-xs text-accent font-medium mt-0.5">
                       {preview.title}
@@ -254,6 +259,12 @@ export function ChatImportModal({
                 <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-zinc-300 italic">
                   «{preview.lastMessagePreview}»
                 </p>
+                {preview.participants.length > 0 && (
+                  <p className="mt-1.5 truncate text-[11px] text-content-muted">
+                    В сцене ещё:{" "}
+                    {preview.participants.map((item) => item.name).join(", ")}
+                  </p>
+                )}
               </div>
 
               {/* Шкалы отношений, если есть */}

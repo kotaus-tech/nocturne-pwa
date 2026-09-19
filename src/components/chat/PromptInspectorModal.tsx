@@ -24,6 +24,10 @@ interface PromptInspectorModalProps {
   apiConfig: ApiConfig;
   contextMessages: Message[];
   lastAssistantMessage?: Message;
+  /** Групповая сцена: все участники (первый — основной персонаж ветки). */
+  participants?: Character[];
+  /** Кто отвечал в последнем запросе — для него и показывается промпт. */
+  speakerId?: string;
 }
 
 type TabKey = "overview" | "system" | "turns" | "raw";
@@ -45,27 +49,56 @@ export function PromptInspectorModal({
   apiConfig,
   contextMessages,
   lastAssistantMessage,
+  participants,
+  speakerId,
 }: PromptInspectorModalProps) {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const isLocal = isLocalEndpoint(apiConfig.baseUrl);
 
+  const roster = participants && participants.length > 1 ? participants : null;
+  const activeSpeaker =
+    (roster && speakerId && roster.find((item) => item.id === speakerId)) ||
+    (roster && roster.find((item) => item.id === character.id)) ||
+    character;
+  const othersKey = roster
+    ? roster
+        .filter((item) => item.id !== activeSpeaker.id)
+        .map((item) => item.id)
+        .join(",")
+    : "";
+
+  const others = useMemo(
+    () => roster?.filter((item) => item.id !== activeSpeaker.id) ?? [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [othersKey, roster]
+  );
+
   // Сборка полного системного промпта, идентичного запросу к API
   const systemPrompt = useMemo(() => {
     return buildSystemPrompt(
-      character,
+      activeSpeaker,
       session,
       userProfile,
       contextMessages,
-      isLocal
+      isLocal,
+      others.length > 0 ? { others } : undefined
     );
-  }, [character, session, userProfile, contextMessages, isLocal]);
+  }, [activeSpeaker, session, userProfile, contextMessages, isLocal, others]);
 
   // Сборка массива реплик turns
   const turns = useMemo(() => {
-    return messagesToTurns(contextMessages);
-  }, [contextMessages]);
+    if (!roster) return messagesToTurns(contextMessages);
+
+    const namesById = new Map(roster.map((item) => [item.id, item.name]));
+
+    return messagesToTurns(contextMessages, (message) => {
+      const authorId = message.characterId ?? character.id;
+      if (authorId === activeSpeaker.id) return undefined;
+      return namesById.get(authorId) || message.characterName;
+    });
+  }, [contextMessages, roster, activeSpeaker.id, character.id]);
 
   // Расчёт метрик токенов
   const systemTokens = useMemo(() => estimateTokens(systemPrompt), [systemPrompt]);

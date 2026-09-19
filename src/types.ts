@@ -74,6 +74,10 @@ export interface Message {
   id: string;
   sessionId: string;
   sender: "user" | "assistant" | "system";
+  /** Групповая сцена: какой персонаж написал реплику. Не задано — основной персонаж ветки. */
+  characterId?: string;
+  /** Снимок имени автора на момент ответа (переживает удаление/переименование персонажа). */
+  characterName?: string;
   swipes: string[];
   currentSwipeIndex: number;
   innerThought?: string;
@@ -114,6 +118,10 @@ export type ThoughtMode =
 export interface ChatSession {
   id: string;
   characterId: string;
+  /** Групповая сцена: дополнительные участники (кроме основного characterId). */
+  characterIds?: string[];
+  /** Шкалы отношений дополнительных участников, по их id. */
+  participantStats?: Record<string, RelationshipStats>;
   /** Своя личность для этой ветки; не задана — берётся персона персонажа или активная. */
   personaId?: string;
   title: string;

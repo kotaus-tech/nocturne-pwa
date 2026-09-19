@@ -12,6 +12,10 @@ import { Modal } from "../common/Modal";
 import type { Character, ChatSession, Message, UserProfile, ApiConfig } from "../../types";
 import { buildSystemPrompt } from "../../services/promptBuilder";
 import { isLocalEndpoint, messagesToTurns } from "../../services/apiClient";
+import {
+  buildCharacterIndex,
+  statsForCharacter,
+} from "../../services/groupScene";
 import { copyTextToClipboard } from "../../utils/clipboard";
 import { cn } from "../../utils/cn";
 
@@ -75,6 +79,16 @@ export function PromptInspectorModal({
     [othersKey, roster]
   );
 
+  const speakerStats = useMemo(() => {
+    if (!roster) return undefined;
+
+    return statsForCharacter(
+      session,
+      activeSpeaker.id,
+      buildCharacterIndex(roster)
+    );
+  }, [roster, session, activeSpeaker.id]);
+
   // Сборка полного системного промпта, идентичного запросу к API
   const systemPrompt = useMemo(() => {
     return buildSystemPrompt(
@@ -83,9 +97,17 @@ export function PromptInspectorModal({
       userProfile,
       contextMessages,
       isLocal,
-      others.length > 0 ? { others } : undefined
+      others.length > 0 ? { others, currentStats: speakerStats } : undefined
     );
-  }, [activeSpeaker, session, userProfile, contextMessages, isLocal, others]);
+  }, [
+    activeSpeaker,
+    session,
+    userProfile,
+    contextMessages,
+    isLocal,
+    others,
+    speakerStats,
+  ]);
 
   // Сборка массива реплик turns
   const turns = useMemo(() => {

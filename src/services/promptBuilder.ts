@@ -1,4 +1,10 @@
-import type { Character, ChatSession, Message, UserProfile } from "../types";
+import type {
+  Character,
+  ChatSession,
+  Message,
+  RelationshipStats,
+  UserProfile,
+} from "../types";
 import { activateLorebook } from "./lorebookEngine";
 import { META_PROTOCOL_INSTRUCTION } from "./metaParser";
 
@@ -6,6 +12,8 @@ import { META_PROTOCOL_INSTRUCTION } from "./metaParser";
 export interface GroupSceneContext {
   /** Остальные участники сцены — они уже в истории, но отвечает сейчас только один. */
   others: Character[];
+  /** Шкалы отношений именно этого персонажа (в группе они у каждого свои). */
+  currentStats?: RelationshipStats;
 }
 
 /** Короткая выжимка о персонаже для списка участников сцены. */
@@ -224,8 +232,8 @@ export function buildSystemPrompt(
     }
   }
 
-  // 15. Текущее состояние отношений
-  const s = session.currentStats;
+  // 15. Текущее состояние отношений (в групповой сцене — шкалы говорящего)
+  const s = group?.currentStats ?? session.currentStats;
   parts.push(
     `### ТЕКУЩЕЕ СОСТОЯНИЕ ОТНОШЕНИЙ:\n` +
       `Доверие: ${s.trust}/100 | Привязанность: ${s.affection}/100 | Близость: ${s.closeness}/100 | Напряжение: ${s.tension}/100 | Конфликт: ${s.conflict}/100.\n` +

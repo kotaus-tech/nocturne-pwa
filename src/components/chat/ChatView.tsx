@@ -869,7 +869,9 @@ export function ChatView({
           userProfile,
           recent,
           isLocal,
-          isGroupScene ? { others: othersFor(speaker.id) } : undefined
+          isGroupScene
+            ? { others: othersFor(speaker.id), currentStats: speakerStats }
+            : undefined
         );
 
         const turns = isGroupScene
@@ -1079,7 +1081,9 @@ export function ChatView({
         userProfile!,
         recent,
         isLocal,
-        isGroupScene ? { others: othersFor(speaker.id) } : undefined
+        isGroupScene
+          ? { others: othersFor(speaker.id), currentStats: speakerStats }
+          : undefined
       );
       const turns = isGroupScene
         ? messagesToTurns(recent, turnLabelFor(speaker.id))

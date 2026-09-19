@@ -364,7 +364,7 @@ export function PromptStudioPage() {
                       onChange={(event) => setCharacterQuery(event.target.value)}
                       placeholder="Найти персонажа…"
                       aria-label="Поиск персонажа"
-                      className="input-field pl-9 pr-9"
+                      className="input-field input-field--icon-left input-field--icon-right"
                     />
                     {characterQuery && (
                       <button
@@ -384,7 +384,12 @@ export function PromptStudioPage() {
                     По запросу «{characterQuery.trim()}» никого не нашлось.
                   </p>
                 ) : (
-                  <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-4 xl:grid-cols-5">
+                  <div
+                    className="grid max-h-[188px] grid-cols-3 gap-2 overflow-y-auto overscroll-contain pr-1 sm:grid-cols-5 lg:grid-cols-4 xl:grid-cols-5"
+                    tabIndex={0}
+                    role="group"
+                    aria-label="Список персонажей"
+                  >
                     {visibleCharacters.map((item) => {
                       const active = item.id === characterId;
                       return (

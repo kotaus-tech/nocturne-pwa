@@ -409,12 +409,6 @@ export default function App() {
         <div className="p-3 border-t border-white/[0.07] space-y-2.5">
           <AmbientPlayer variant="compact" />
 
-          {/* Быстрое переключение персоны, не уходя из раздела */}
-          <PersonaSwitcher
-            align="top"
-            onOpenManager={() => handleNavigate("persona")}
-          />
-
           {/* Прямая кнопка настроек системы */}
           <button
             type="button"
@@ -430,31 +424,26 @@ export default function App() {
             <span>Настройки системы</span>
           </button>
 
-          {/* Плашка персоны */}
-          <button
-            type="button"
-            onClick={() => handleNavigate("persona")}
-            className={cn(
-              "group flex w-full items-center gap-3 rounded-xl border border-white/[0.06] bg-surface-2/60 p-2 text-left transition-all hover:border-white/[0.12] hover:bg-surface-2",
-              tab === "persona" && "border-accent/40 bg-surface-2"
-            )}
-          >
-            <Avatar
-              src={userProfile?.avatarUrl}
-              name={userProfile?.name || "Игрок"}
-              size={36}
+          {/* Плашка персоны: сразу и переключатель, и вход в управление */}
+          <div className="flex items-center gap-2">
+            <PersonaSwitcher
+              align="top"
+              className="min-w-0 flex-1"
+              onOpenManager={() => handleNavigate("persona")}
             />
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-semibold text-content group-hover:text-accent">
-                {userProfile?.name || "Странник"}
-              </p>
-              <p className="truncate text-[11px] text-content-muted">Ваша персона</p>
-            </div>
-            <ChevronRight
-              size={15}
-              className="shrink-0 text-content-muted transition-transform group-hover:translate-x-0.5 group-hover:text-content"
-            />
-          </button>
+            <button
+              type="button"
+              onClick={() => handleNavigate("persona")}
+              title="Управлять персонами"
+              aria-label="Управлять персонами"
+              className={cn(
+                "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-white/[0.07] bg-surface-2/70 text-content-muted transition-colors hover:bg-surface-2 hover:text-content",
+                tab === "persona" && "border-accent/40 text-accent"
+              )}
+            >
+              <ChevronRight size={16} />
+            </button>
+          </div>
         </div>
       </aside>
 

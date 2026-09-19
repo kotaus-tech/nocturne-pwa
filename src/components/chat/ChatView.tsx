@@ -75,7 +75,10 @@ import {
 import { renderRoleplayText } from "../../utils/textRenderer";
 import { cn } from "../../utils/cn";
 
-const MEMORY_EXTRACT_INTERVAL = 12;
+/** Реплик в ветке, после которых фоновый экстрактор памяти делает запись. */
+const MEMORY_EXTRACT_INTERVAL = 8;
+/** Сколько новых реплик должно накопиться, чтобы дожать память при выходе. */
+const MEMORY_FLUSH_MIN_MESSAGES = 4;
 const INITIAL_PAGE_SIZE = 35;
 const PAGE_STEP = 25;
 
@@ -348,6 +351,9 @@ export function ChatView({
   const abortRef = useRef<AbortController | null>(null);
   const lastToastMsgCount = useRef(0);
   const lastExtractedMsgCountRef = useRef(0);
+  /** Сколько реплик ещё не попало в память — нужно для дозаписи при выходе. */
+  const unsavedMessagesRef = useRef(0);
+  const memoryCompressRef = useRef<(() => Promise<void>) | null>(null);
   const lastStatusRef = useRef("");
 
   const isNearBottomRef = useRef(true);
@@ -409,12 +415,31 @@ export function ChatView({
 
     lastToastMsgCount.current = 0;
     lastMsgIdRef.current = null;
-    lastExtractedMsgCountRef.current = 0;
     isNearBottomRef.current = true;
 
     savedChatPositionRef.current = null;
     pendingReadingPositionRef.current = null;
   }, [sessionId]);
+
+  // Где остановился фоновый экстрактор памяти: ветка помнит это между заходами,
+  // иначе память дожималась бы заново при каждом открытии чата.
+  useEffect(() => {
+    if (!session) return;
+    lastExtractedMsgCountRef.current = session.memoryExtractedCount ?? 0;
+  }, [session?.id]);
+
+  // Память дожимается при выходе из ветки: если накопились новые реплики,
+  // а авто-экстрактор до них ещё не дошёл, записываем без ожидания.
+  useEffect(() => {
+    memoryCompressRef.current = compressMemory;
+  });
+
+  useEffect(() => {
+    unsavedMessagesRef.current = Math.max(
+      0,
+      (allMessages?.length ?? 0) - lastExtractedMsgCountRef.current
+    );
+  }, [allMessages?.length]);
 
   useEffect(() => {
     return () => {
@@ -427,6 +452,12 @@ export function ChatView({
       // Не оставляем «висящую» генерацию после закрытия ветки.
       abortRef.current?.abort();
       abortRef.current = null;
+
+      // Уходим из ветки — не теряем память: дожимаем её, если накопились
+      // реплики, до которых фоновый экстрактор не успел дойти.
+      if (unsavedMessagesRef.current >= MEMORY_FLUSH_MIN_MESSAGES) {
+        void memoryCompressRef.current?.();
+      }
     };
   }, []);
 
@@ -1041,6 +1072,7 @@ export function ChatView({
 
       if (totalAfter - lastExtractedMsgCountRef.current >= MEMORY_EXTRACT_INTERVAL) {
         lastExtractedMsgCountRef.current = totalAfter;
+        unsavedMessagesRef.current = 0;
         compressMemory().catch(() => {});
       }
     } catch (cause) {
@@ -1392,8 +1424,20 @@ export function ChatView({
         storyLog: currentStoryLog,
         diary: [...existingDiary, newDiaryEntry],
         extractedFacts: updatedFacts,
+        memoryExtractedCount: allMessages.length,
         updatedAt: Date.now(),
       });
+
+      lastExtractedMsgCountRef.current = allMessages.length;
+      unsavedMessagesRef.current = 0;
+
+      // Видно, что память действительно пишется (и сколько записей ушло).
+      if (session.showRelationshipToasts !== false) {
+        showToast({
+          title: `Память обновлена: ${updatedFacts.length} якорей, дневник и синопсис`,
+          type: "status",
+        });
+      }
     } catch (cause) {
       console.error("Memory extract error:", cause);
       throw cause;
@@ -1612,14 +1656,13 @@ export function ChatView({
                 </p>
                 <p className="truncate text-xs text-content-muted">
                   {isGroupScene
-                    ? `в сцене: ${presentCharacters
-                        .filter((item) => item.id !== character.id)
-                        .map((item) => item.name)
-                        .join(", ") || "только вы двое"} · `
-                    : characterTagline
-                      ? `${characterTagline} · `
-                      : ""}
-                  вы — {userProfile?.name || "Странник"}
+                    ? `в сцене: ${
+                        presentCharacters
+                          .filter((item) => item.id !== character.id)
+                          .map((item) => item.name)
+                          .join(", ") || "только вы двое"
+                      }`
+                    : characterTagline}
                 </p>
               </div>
             </button>

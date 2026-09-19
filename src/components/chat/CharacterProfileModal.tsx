@@ -603,7 +603,7 @@ export function CharacterProfileModal({
                   <EmptyState
                     icon={Heart}
                     title="В дневнике пока нет записей"
-                    description="Они формируются автоматически каждые 12 сообщений или по кнопке «Записать мысль»."
+                    description="Они формируются автоматически каждые 8 сообщений или по кнопке «Записать мысль»."
                   />
                 ) : (
                   <div className="space-y-4">

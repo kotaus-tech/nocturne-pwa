@@ -143,6 +143,8 @@ export interface ChatSession {
   participantStats?: Record<string, RelationshipStats>;
   /** Своя личность для этой ветки; не задана — берётся персона персонажа или активная. */
   personaId?: string;
+  /** Сколько реплик ветки уже обработал фоновый экстрактор памяти. */
+  memoryExtractedCount?: number;
   title: string;
   summary?: string;
   storyLog?: StoryLogEntry[];

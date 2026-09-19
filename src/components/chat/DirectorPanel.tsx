@@ -901,86 +901,94 @@ export function DirectorPanel({
                     {relations.map((relation) => (
                       <div
                         key={relation.id}
-                        className="flex flex-wrap items-center gap-1.5 rounded-2xl border border-white/[0.08] bg-[#121622]/70 p-2"
+                        className="space-y-1.5 rounded-2xl border border-white/[0.08] bg-[#121622]/70 p-2"
                       >
-                        <select
-                          value={relation.from}
-                          onChange={(event) =>
-                            void updateRelations((list) =>
-                              list.map((row) =>
-                                row.id === relation.id
-                                  ? { ...row, from: event.target.value }
-                                  : row
+                        <div className="flex items-center gap-1.5">
+                          <select
+                            value={relation.from}
+                            onChange={(event) =>
+                              void updateRelations((list) =>
+                                list.map((row) =>
+                                  row.id === relation.id
+                                    ? { ...row, from: event.target.value }
+                                    : row
+                                )
                               )
-                            )
-                          }
-                          aria-label="Кто думает"
-                          className="input-field h-9 w-28 shrink-0 text-[11px]"
-                        >
-                          {castOptions.map((option) => (
-                            <option key={option.id} value={option.id}>
-                              {option.name}
-                            </option>
-                          ))}
-                        </select>
+                            }
+                            aria-label="Кто думает"
+                            className="input-field h-9 min-w-0 flex-1 text-[11px]"
+                          >
+                            {castOptions.map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.name}
+                              </option>
+                            ))}
+                          </select>
 
-                        <ArrowRight
-                          size={12}
-                          className="shrink-0 text-content-muted"
-                          aria-hidden="true"
-                        />
+                          <ArrowRight
+                            size={12}
+                            className="shrink-0 text-content-muted"
+                            aria-hidden="true"
+                          />
 
-                        <select
-                          value={relation.to ?? ""}
-                          onChange={(event) =>
-                            void updateRelations((list) =>
-                              list.map((row) =>
-                                row.id === relation.id
-                                  ? { ...row, to: event.target.value || undefined }
-                                  : row
+                          <select
+                            value={relation.to ?? ""}
+                            onChange={(event) =>
+                              void updateRelations((list) =>
+                                list.map((row) =>
+                                  row.id === relation.id
+                                    ? {
+                                        ...row,
+                                        to: event.target.value || undefined,
+                                      }
+                                    : row
+                                )
                               )
-                            )
-                          }
-                          aria-label="О ком"
-                          className="input-field h-9 w-28 shrink-0 text-[11px]"
-                        >
-                          <option value="">вся группа</option>
-                          {castOptions.map((option) => (
-                            <option key={option.id} value={option.id}>
-                              {option.name}
-                            </option>
-                          ))}
-                        </select>
+                            }
+                            aria-label="О ком"
+                            className="input-field h-9 min-w-0 flex-1 text-[11px]"
+                          >
+                            <option value="">вся группа</option>
+                            {castOptions.map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.name}
+                              </option>
+                            ))}
+                          </select>
 
-                        <input
-                          value={relation.text}
-                          onChange={(event) =>
-                            void updateRelations((list) =>
-                              list.map((row) =>
-                                row.id === relation.id
-                                  ? { ...row, text: event.target.value }
-                                  : row
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            value={relation.text}
+                            onChange={(event) =>
+                              void updateRelations((list) =>
+                                list.map((row) =>
+                                  row.id === relation.id
+                                    ? { ...row, text: event.target.value }
+                                    : row
+                                )
                               )
-                            )
-                          }
-                          placeholder="считает его баловнем, но тайно переживает"
-                          aria-label="Отношение"
-                          className="input-field h-9 min-w-[8rem] flex-1 text-[11px]"
-                        />
+                            }
+                            placeholder="считает его баловнем, но тайно переживает"
+                            aria-label="Отношение"
+                            className="input-field h-9 min-w-0 flex-1 text-[11px]"
+                          />
 
-                        <button
-                          type="button"
-                          onClick={() =>
-                            void updateRelations((list) =>
-                              list.filter((row) => row.id !== relation.id)
-                            )
-                          }
-                          aria-label="Удалить связь"
-                          title="Удалить связь"
-                          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-content-muted transition-colors hover:bg-white/[0.06] hover:text-danger"
-                        >
-                          <X size={14} />
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void updateRelations((list) =>
+                                list.filter((row) => row.id !== relation.id)
+                              )
+                            }
+                            aria-label="Удалить связь"
+                            title="Удалить связь"
+                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-content-muted transition-colors hover:bg-white/[0.06] hover:text-danger"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>

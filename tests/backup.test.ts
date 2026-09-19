@@ -57,6 +57,17 @@ describe("санитайзеры", () => {
     expect(sanitizeSession(session).personaId).toBe("persona-2");
   });
 
+  it("запоминают, сколько реплик уже ушло в память", () => {
+    expect(
+      sanitizeSession({ ...session, memoryExtractedCount: 14 }).memoryExtractedCount
+    ).toBe(14);
+    expect(
+      sanitizeSession({ ...session, memoryExtractedCount: Number.NaN })
+        .memoryExtractedCount
+    ).toBe(0);
+    expect(sanitizeSession({ ...session, memoryExtractedCount: -5 }).memoryExtractedCount).toBe(0);
+  });
+
   it("не выдумывают персону, если её не было", () => {
     const { defaultPersonaId, ...withoutPersona } = character;
     void defaultPersonaId;

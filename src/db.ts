@@ -555,6 +555,10 @@ export function sanitizeSession(raw: Partial<ChatSession>): ChatSession {
     absentReasons: sanitizeAbsentReasons(raw?.absentReasons),
     relations: sanitizeSceneRelations(raw?.relations),
     participantStats: sanitizeParticipantStats(raw?.participantStats),
+    memoryExtractedCount: Math.max(
+      0,
+      Math.round(finiteNumber(raw?.memoryExtractedCount, 0))
+    ),
     title: typeof raw?.title === "string" && raw.title.trim() ? raw.title : "Новая ветка",
     summary: typeof raw?.summary === "string" ? raw.summary : "",
     storyLog: sanitizeStoryLog(raw?.storyLog),

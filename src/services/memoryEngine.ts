@@ -96,7 +96,7 @@ function safeParseJson(raw: string): any {
 }
 
 /**
- * Фоновое извлечение Дневника, Фактов и одного нового события (каждые 12 сообщений).
+ * Фоновое извлечение Дневника, Фактов и одного нового события (каждые 8 сообщений).
  */
 export async function extractMemoriesAndDiary(
   apiConfig: ApiConfig,

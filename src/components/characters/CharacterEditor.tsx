@@ -27,6 +27,7 @@ import { ImageCropperModal } from "../common/ImageCropperModal";
 import { CharacterGeneratorModal } from "./CharacterGeneratorModal";
 import { TAG_CATEGORIES } from "../../services/characterGenerator";
 import { WALLPAPER_PRESETS } from "../../utils/wallpaperPresets";
+import { prepareImageFile, WALLPAPER_OPTIONS, MAX_SOURCE_MB } from "../../utils/image";
 import type {
   Character,
   LorebookEntry,
@@ -405,10 +406,20 @@ export function CharacterEditor({
     if (!file) return;
 
     try {
+      if (file.size > MAX_SOURCE_MB * 1024 * 1024) {
+        throw new Error(
+          `Файл слишком большой (${Math.round(file.size / 1024 / 1024)} МБ). Максимум — ${MAX_SOURCE_MB} МБ.`
+        );
+      }
+
       const raw = await fileToDataUrl(file);
       setCropImage(raw);
-    } catch {
-      setError("Не удалось прочитать изображение аватара.");
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Не удалось прочитать изображение аватара."
+      );
     } finally {
       e.currentTarget.value = "";
     }
@@ -419,10 +430,15 @@ export function CharacterEditor({
     if (!file) return;
 
     try {
-      const raw = await fileToDataUrl(file);
+      // Обои персонажа тоже ужимаем: они хранятся в базе и копируются в бэкап.
+      const raw = await prepareImageFile(file, WALLPAPER_OPTIONS);
       update("wallpaperUrl", raw);
-    } catch {
-      setError("Не удалось прочитать фоновое изображение.");
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Не удалось прочитать фоновое изображение."
+      );
     } finally {
       e.currentTarget.value = "";
     }

@@ -35,6 +35,7 @@ import { PwaBanners } from "./components/common/PwaBanners";
 import { db, getUserProfile } from "./db";
 import { ensureSeedData } from "./seed";
 import { initPwa } from "./services/pwa";
+import { requestPersistentStorage } from "./services/storage";
 import type { UserProfile } from "./types";
 import { cn } from "./utils/cn";
 
@@ -91,6 +92,10 @@ export default function App() {
         setInitError(err instanceof Error ? err.message : "Ошибка базы данных");
         setReady(true);
       });
+
+    // Просим браузер пометить хранилище постоянным: иначе Safari на iOS
+    // может вычистить библиотеку историй после долгого простоя.
+    void requestPersistentStorage().catch(() => {});
 
     const disposePwa = initPwa();
     return disposePwa;

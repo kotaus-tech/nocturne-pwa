@@ -11,6 +11,7 @@ import { getUserProfile, setUserProfile } from "../../db";
 import type { UserProfile } from "../../types";
 import { Avatar } from "../common/Avatar";
 import { ImageCropperModal } from "../common/ImageCropperModal";
+import { MAX_SOURCE_MB } from "../../utils/image";
 
 function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -48,10 +49,20 @@ export function PersonaPage() {
     if (!file) return;
 
     try {
+      if (file.size > MAX_SOURCE_MB * 1024 * 1024) {
+        throw new Error(
+          `Файл слишком большой (${Math.round(file.size / 1024 / 1024)} МБ). Максимум — ${MAX_SOURCE_MB} МБ.`
+        );
+      }
+
       const raw = await fileToDataUrl(file);
       setCropImage(raw);
-    } catch {
-      setError("Не удалось прочитать выбранное изображение.");
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Не удалось прочитать выбранное изображение."
+      );
     } finally {
       e.currentTarget.value = "";
     }

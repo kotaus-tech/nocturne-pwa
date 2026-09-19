@@ -32,6 +32,8 @@ import { AmbientPlayer } from "./AmbientPlayer";
 import { db } from "../../db";
 import type { ChatSession, ThoughtMode } from "../../types";
 import { WALLPAPER_PRESETS } from "../../utils/wallpaperPresets";
+import { prepareImageFile, WALLPAPER_OPTIONS } from "../../utils/image";
+import { PromptDialog } from "../common/PromptDialog";
 import { cn } from "../../utils/cn";
 
 interface Props {
@@ -225,6 +227,8 @@ export function DirectorPanel({
   const [dim, setDim] = useState(session.wallpaperDim ?? 0.55);
   const [blur, setBlur] = useState(session.wallpaperBlur ?? 0);
   const [wallpaperError, setWallpaperError] = useState<string | null>(null);
+  const [wallpaperBusy, setWallpaperBusy] = useState(false);
+  const [urlDialogOpen, setUrlDialogOpen] = useState(false);
   const [failedWallpaper, setFailedWallpaper] = useState<string | null>(null);
 
   const [presetTab, setPresetTab] = useState<"all" | "gradients" | "vectors">("all");
@@ -296,31 +300,33 @@ export function DirectorPanel({
     return WALLPAPER_PRESETS.filter((p) => p.category === presetTab);
   }, [presetTab]);
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const input = event.currentTarget;
     const file = input.files?.[0];
+    input.value = "";
     if (!file) return;
 
     setWallpaperError(null);
-    const reader = new FileReader();
-    reader.onload = () => {
-      onUpdateWallpaper(reader.result as string);
-    };
-    reader.onerror = () => {
+    setWallpaperBusy(true);
+
+    try {
+      // Обои сжимаются до 1920px: оригинал с телефона раздувает базу и квоту.
+      const dataUrl = await prepareImageFile(file, WALLPAPER_OPTIONS);
+      if (mountedRef.current) onUpdateWallpaper(dataUrl);
+    } catch (cause) {
       if (mountedRef.current) {
-        setWallpaperError("Не удалось прочитать изображение.");
+        setWallpaperError(
+          cause instanceof Error ? cause.message : "Не удалось подготовить изображение."
+        );
       }
-    };
-    reader.readAsDataURL(file);
-    input.value = "";
+    } finally {
+      if (mountedRef.current) setWallpaperBusy(false);
+    }
   };
 
   const handleSetUrl = () => {
-    const url = prompt("Введите ссылку на фоновое изображение:", session.wallpaperUrl || "");
-    if (url !== null) {
-      setWallpaperError(null);
-      onUpdateWallpaper(url.trim() || undefined);
-    }
+    setWallpaperError(null);
+    setUrlDialogOpen(true);
   };
 
   const handleSelectThoughtMode = (mode: ThoughtMode) => {
@@ -681,11 +687,18 @@ export function DirectorPanel({
               />
               <button
                 type="button"
+                disabled={wallpaperBusy}
                 onClick={() => fileInputRef.current?.click()}
-                className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-2 text-xs font-semibold text-zinc-200 hover:bg-surface-3 truncate"
+                className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-2 text-xs font-semibold text-zinc-200 hover:bg-surface-3 truncate disabled:opacity-50"
               >
-                <Upload size={14} className="shrink-0" />
-                <span className="truncate">Загрузить файл</span>
+                {wallpaperBusy ? (
+                  <Loader2 size={14} className="shrink-0 animate-spin" />
+                ) : (
+                  <Upload size={14} className="shrink-0" />
+                )}
+                <span className="truncate">
+                  {wallpaperBusy ? "Обработка…" : "Загрузить файл"}
+                </span>
               </button>
 
               <button
@@ -926,6 +939,18 @@ export function DirectorPanel({
           </div>
         </div>
       </Modal>
+
+      <PromptDialog
+        open={urlDialogOpen}
+        title="Фон по ссылке"
+        description="Укажите прямую ссылку на изображение. Для офлайн-доступа надёжнее загрузить файл."
+        label="Адрес изображения"
+        initialValue={session.wallpaperUrl?.startsWith("http") ? session.wallpaperUrl : ""}
+        placeholder="https://…"
+        confirmLabel="Применить"
+        onClose={() => setUrlDialogOpen(false)}
+        onConfirm={(url) => onUpdateWallpaper(url.trim() || undefined)}
+      />
     </>
   );
 }

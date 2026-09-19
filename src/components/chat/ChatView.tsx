@@ -269,6 +269,7 @@ export function ChatView({
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastMsgIdRef = useRef<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const lastToastMsgCount = useRef(0);
   const lastExtractedMsgCountRef = useRef(0);
   const lastStatusRef = useRef("");
@@ -355,6 +356,9 @@ export function ChatView({
       if (toastTimerRef.current) {
         clearTimeout(toastTimerRef.current);
       }
+      // Не оставляем «висящую» генерацию после закрытия ветки.
+      abortRef.current?.abort();
+      abortRef.current = null;
     };
   }, []);
 
@@ -625,6 +629,19 @@ export function ChatView({
     }
   };
 
+  const isAbortError = (cause: unknown): boolean =>
+    cause instanceof DOMException
+      ? cause.name === "AbortError"
+      : cause instanceof Error && cause.name === "AbortError";
+
+  /** Прерывает текущую генерацию: частичный ответ не сохраняется. */
+  const handleStop = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setSending(false);
+    setLiveStreamedText("");
+  };
+
   const handleGetSuggestions = async (): Promise<string[]> => {
     if (!apiConfig || !character || !userProfile || !messages || !session) {
       return [];
@@ -733,6 +750,10 @@ export function ChatView({
     setErrorMsg(null);
     isNearBottomRef.current = true;
 
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
       const isSteppedWindow = apiConfig.steppedContextEnabled !== false;
       const recent = getSliceForContext(
@@ -764,7 +785,8 @@ export function ChatView({
         (chunk) => {
           setLiveStreamedText(chunk);
         },
-        session.currentStats
+        session.currentStats,
+        controller.signal
       );
 
       const oldStats = session.currentStats;
@@ -804,10 +826,14 @@ export function ChatView({
         compressMemory().catch(() => {});
       }
     } catch (cause) {
-      setErrorMsg(
-        cause instanceof Error ? cause.message : "Ошибка при получении ответа."
-      );
+      // Отмена пользователем — не ошибка, просто снимаем индикаторы.
+      if (!isAbortError(cause)) {
+        setErrorMsg(
+          cause instanceof Error ? cause.message : "Ошибка при получении ответа."
+        );
+      }
     } finally {
+      if (abortRef.current === controller) abortRef.current = null;
       setSending(false);
       setLiveStreamedText("");
     }
@@ -877,6 +903,10 @@ export function ChatView({
     setErrorMsg(null);
     isNearBottomRef.current = true;
 
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
       const isSteppedWindow = apiConfig!.steppedContextEnabled !== false;
       const recent = getSliceForContext(
@@ -901,7 +931,8 @@ export function ChatView({
         (chunk) => {
           setLiveStreamedText(chunk);
         },
-        session.currentStats
+        session.currentStats,
+        controller.signal
       );
 
       const newStats = parsed.stats ?? session.currentStats;
@@ -929,10 +960,13 @@ export function ChatView({
         });
       }
     } catch (cause) {
-      setErrorMsg(
-        cause instanceof Error ? cause.message : "Ошибка регенерации."
-      );
+      if (!isAbortError(cause)) {
+        setErrorMsg(
+          cause instanceof Error ? cause.message : "Ошибка регенерации."
+        );
+      }
     } finally {
+      if (abortRef.current === controller) abortRef.current = null;
       setSending(false);
       setLiveStreamedText("");
     }
@@ -1369,6 +1403,7 @@ export function ChatView({
             onOpenDirector={() => setDirectorOpen(true)}
             onRequestSuggestions={handleGetSuggestions}
             onContinue={handleContinue}
+            onStop={handleStop}
             sending={sending}
             characterName={character.name}
             modelName={apiConfig?.model || "AI Model"}

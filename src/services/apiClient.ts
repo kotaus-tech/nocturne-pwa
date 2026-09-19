@@ -320,7 +320,8 @@ async function callOllamaStream(
   config: ApiConfig,
   systemPrompt: string,
   turns: ChatTurn[],
-  onChunk: (accumulatedText: string) => void
+  onChunk: (accumulatedText: string) => void,
+  signal?: AbortSignal
 ): Promise<string> {
   const { primaryUrl } = resolveEndpoints(config.baseUrl);
 
@@ -359,6 +360,7 @@ async function callOllamaStream(
     method: "POST",
     headers,
     body: JSON.stringify(bodyPayload),
+    signal,
   });
 
   if (!res.ok) {
@@ -401,6 +403,9 @@ async function resilientFetch(
   try {
     return await fetch(url, options);
   } catch (err) {
+    // Пользователь отменил генерацию — не пытаемся идти через прокси.
+    if (options.signal?.aborted) throw err;
+
     if (allowProxy && err instanceof TypeError) {
       const proxied = `/api/llm-proxy?target=${encodeURIComponent(url)}`;
       return await fetch(proxied, options);
@@ -413,7 +418,8 @@ async function callOpenAICompatibleStream(
   config: ApiConfig,
   systemPrompt: string,
   turns: ChatTurn[],
-  onChunk: (accumulatedText: string) => void
+  onChunk: (accumulatedText: string) => void,
+  signal?: AbortSignal
 ): Promise<string> {
   const { primaryUrl, fallbackUrl } = resolveEndpoints(config.baseUrl);
   const isDeepSeek = isDeepSeekEndpoint(config);
@@ -446,6 +452,7 @@ async function callOpenAICompatibleStream(
       method: "POST",
       headers,
       body: JSON.stringify(bodyPayload),
+      signal,
     }, allowProxy);
 
     if (!res.ok && res.status === 404 && fallbackUrl) {
@@ -453,6 +460,7 @@ async function callOpenAICompatibleStream(
         method: "POST",
         headers,
         body: JSON.stringify(bodyPayload),
+        signal,
       }, allowProxy);
     }
   } catch (netErr) {
@@ -517,7 +525,8 @@ async function callGeminiStream(
   config: ApiConfig,
   systemPrompt: string,
   turns: ChatTurn[],
-  onChunk: (accumulatedText: string) => void
+  onChunk: (accumulatedText: string) => void,
+  signal?: AbortSignal
 ): Promise<string> {
   const model = cleanGeminiModel(config.model);
   const apiKey = (config.apiKey || "").trim();
@@ -555,6 +564,7 @@ async function callGeminiStream(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(bodyPayload),
+      signal,
     });
   } catch (netErr) {
     throw new Error(formatApiError(netErr));
@@ -633,7 +643,8 @@ export async function callLLM(
   config: ApiConfig,
   systemPrompt: string,
   turns: ChatTurn[],
-  onChunk?: (text: string) => void
+  onChunk?: (text: string) => void,
+  signal?: AbortSignal
 ): Promise<string> {
   const isStreamingEnabled =
     config.streamEnabled !== false &&
@@ -642,9 +653,9 @@ export async function callLLM(
 
   if (config.mode === "gemini") {
     if (isStreamingEnabled && onChunk) {
-      return callGeminiStream(config, systemPrompt, turns, onChunk);
+      return callGeminiStream(config, systemPrompt, turns, onChunk, signal);
     }
-    return callGemini(config, systemPrompt, turns);
+    return callGemini(config, systemPrompt, turns, signal);
   }
 
   const isLocal = isLocalEndpoint(config.baseUrl);
@@ -652,18 +663,19 @@ export async function callLLM(
 
   if (isStreamingEnabled && onChunk) {
     if (isOllama) {
-      return callOllamaStream(config, systemPrompt, turns, onChunk);
+      return callOllamaStream(config, systemPrompt, turns, onChunk, signal);
     }
-    return callOpenAICompatibleStream(config, systemPrompt, turns, onChunk);
+    return callOpenAICompatibleStream(config, systemPrompt, turns, onChunk, signal);
   }
 
-  return callOpenAICompatible(config, systemPrompt, turns);
+  return callOpenAICompatible(config, systemPrompt, turns, signal);
 }
 
 async function callOpenAICompatible(
   config: ApiConfig,
   systemPrompt: string,
-  turns: ChatTurn[]
+  turns: ChatTurn[],
+  signal?: AbortSignal
 ): Promise<string> {
   const { isOllama, primaryUrl, fallbackUrl } = resolveEndpoints(config.baseUrl);
   const isDeepSeek = isDeepSeekEndpoint(config);
@@ -726,6 +738,7 @@ async function callOpenAICompatible(
       method: "POST",
       headers,
       body: JSON.stringify(bodyPayload),
+      signal,
     }, allowProxy);
 
     if (!res.ok && res.status === 404 && fallbackUrl) {
@@ -733,6 +746,7 @@ async function callOpenAICompatible(
         method: "POST",
         headers,
         body: JSON.stringify(bodyPayload),
+        signal,
       }, allowProxy);
     }
   } catch (netErr) {
@@ -760,7 +774,8 @@ async function callOpenAICompatible(
 async function callGemini(
   config: ApiConfig,
   systemPrompt: string,
-  turns: ChatTurn[]
+  turns: ChatTurn[],
+  signal?: AbortSignal
 ): Promise<string> {
   const model = cleanGeminiModel(config.model);
   const apiKey = (config.apiKey || "").trim();
@@ -798,6 +813,7 @@ async function callGemini(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(bodyPayload),
+      signal,
     });
   } catch (netErr) {
     throw new Error(formatApiError(netErr));
@@ -840,9 +856,10 @@ export async function requestRoleplayReply(
   systemPrompt: string,
   turns: ChatTurn[],
   onChunk?: (streamedText: string) => void,
-  baseStats?: import("../types").RelationshipStats
+  baseStats?: import("../types").RelationshipStats,
+  signal?: AbortSignal
 ): Promise<ParsedResponse> {
-  const raw = await callLLM(config, systemPrompt, turns, onChunk);
+  const raw = await callLLM(config, systemPrompt, turns, onChunk, signal);
   return parseMetaBlock(raw, baseStats);
 }
 

@@ -13,6 +13,7 @@ import {
   X,
   Sparkles,
   Play,
+  Square,
 } from "lucide-react";
 import { rollFate } from "../../services/dice";
 import { cn } from "../../utils/cn";
@@ -22,6 +23,8 @@ interface Props {
   onOpenDirector: () => void;
   onRequestSuggestions: () => Promise<string[]>;
   onContinue: () => void;
+  /** Прерывает текущую генерацию, если она идёт. */
+  onStop?: () => void;
   sending: boolean;
   characterName?: string;
   modelName?: string;
@@ -32,6 +35,7 @@ export function InputBar({
   onOpenDirector,
   onRequestSuggestions,
   onContinue,
+  onStop,
   sending,
   characterName = "персонажу",
   modelName = "AI Model",
@@ -246,18 +250,30 @@ export function InputBar({
           className="block max-h-44 min-h-[44px] min-w-0 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-relaxed text-zinc-100 placeholder:text-content-muted focus:outline-none sm:text-base"
         />
 
-        <button
-          type="button"
-          onClick={send}
-          disabled={!text.trim() || sending}
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-accent text-on-accent shadow-[0_0_18px_rgba(139,92,246,0.35)] transition-all hover:bg-accent-hover active:scale-95 disabled:opacity-25 disabled:shadow-none"
-        >
-          {sending ? (
-            <Loader2 size={18} className="animate-spin" />
-          ) : (
-            <Send size={18} />
-          )}
-        </button>
+        {sending && onStop ? (
+          <button
+            type="button"
+            onClick={onStop}
+            title="Прервать генерацию"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-danger/40 bg-danger/15 text-danger transition-all hover:bg-danger/25 active:scale-95"
+          >
+            <Square size={16} fill="currentColor" />
+            <span className="sr-only">Остановить генерацию</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={send}
+            disabled={!text.trim() || sending}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-accent text-on-accent shadow-[0_0_18px_rgba(139,92,246,0.35)] transition-all hover:bg-accent-hover active:scale-95 disabled:opacity-25 disabled:shadow-none"
+          >
+            {sending ? (
+              <Loader2 size={18} className="animate-spin" />
+            ) : (
+              <Send size={18} />
+            )}
+          </button>
+        )}
       </div>
 
       <div className="mt-2 flex items-center justify-between px-2 text-[11px] text-content-muted">

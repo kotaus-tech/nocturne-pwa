@@ -34,6 +34,7 @@ import {
   buildAssistantLabeler,
   buildCharacterIndex,
   matchLeftCharacters,
+  mergeSceneRelations,
   matchReturnedCharacters,
   nextSpeaker,
   pendingSpeakers,
@@ -1045,6 +1046,8 @@ export function ChatView({
           });
         }
 
+        await applyRelationUpdates(parsed.relations);
+
         const newStats = parsed.stats ?? speakerStats;
 
         const assistantMessage: Message = {
@@ -1247,6 +1250,42 @@ export function ChatView({
     });
   }
 
+  /**
+   * Живые связи: модель пишет в мета-блоке только то, что изменилось, а мы
+   * обновляем пару в ветке и показываем игроку тост.
+   */
+  async function applyRelationUpdates(
+    incoming: { from: string; to?: string; text: string }[] | undefined
+  ) {
+    if (!session || !incoming || incoming.length === 0) return;
+
+    const result = mergeSceneRelations(session.relations ?? [], incoming, participants);
+    if (result.changed.length === 0) return;
+
+    await db.sessions.update(session.id, {
+      relations: result.relations,
+      updatedAt: Date.now(),
+    });
+
+    if (session.showRelationshipToasts === false) return;
+
+    const [first] = result.changed;
+    if (result.changed.length === 1) {
+      showToast({
+        title: first.to
+          ? `Связи обновились: ${first.from} → ${first.to}`
+          : `Связи обновились: ${first.from}`,
+        type: "status",
+      });
+      return;
+    }
+
+    showToast({
+      title: `Связи обновились: ${result.changed.length} пары`,
+      type: "status",
+    });
+  }
+
   function handleTogglePresence(target: Character, isPresent: boolean) {
     if (isPresent) {
       void applyPresence(target, true);
@@ -1403,6 +1442,8 @@ export function ChatView({
           leaving: matchLeftCharacters(parsed.left ?? [], presentCharacters),
         });
       }
+
+      await applyRelationUpdates(parsed.relations);
 
       const newStats = parsed.stats ?? speakerStats;
       const newSwipes = [...message.swipes, parsed.text || "..."];

@@ -17,6 +17,11 @@ export interface ParsedResponse {
    */
   left?: { name: string; reason?: string }[];
   /**
+   * Живые связи между героями (мета-поле `relations`): модель обновляет их по
+   * ходу сцены, а панель режиссёра показывает, что изменилось.
+   */
+  relations?: { from: string; to?: string; text: string }[];
+  /**
    * Заполняется, если мета-блок был найден, но не разобрался:
    * блок убран из текста, а шкалы остались без изменений.
    */
@@ -42,6 +47,7 @@ export const META_PROTOCOL_INSTRUCTION = `### META-ПРОТОКОЛ СИСТЕМ
 \`\`\`
 
 Необязательное поле "returned": ["Имя"] — кого из персонажей за кадром этот ответ вернул в сцену (нужно только в групповых сценах, когда кто-то был в отлучке).
+Необязательное поле "relations": [{"from": "Имя", "to": "Имя", "text": "как изменилось отношение"}] — только если по ходу ответа отношение между героями правда изменилось.
 Необязательное поле "left": {"Имя": "короткая причина"} — кто ушёл из сцены по ходу этого ответа (ушёл по делам, вышел, уехал). Не отправляй героев за кадр без причины и не уводи всех сразу.`;
 
 // ─────────────────────────────────────────────────────────────
@@ -70,6 +76,8 @@ const META_KEYS = [
   "leftNames",
   "left_names",
   "ушли",
+  "relations",
+  "связи",
 ];
 
 /** Блоки ```...``` с точными границами: любой другой код в ответе не трогаем. */
@@ -203,6 +211,66 @@ export function parseLeftScene(value: unknown): { name: string; reason?: string 
   }
 
   return entries;
+}
+
+/**
+ * Приводит мета-поле `relations` к списку связей. Принимает список объектов
+ * `{from, to, text}`, словарь вида `{"Ая→Рин": "текст"}` и строку-описание.
+ */
+export function parseSceneRelations(
+  value: unknown
+): { from: string; to?: string; text: string }[] {
+  const relations: { from: string; to?: string; text: string }[] = [];
+
+  const push = (from: unknown, to: unknown, text: unknown) => {
+    const fromName = typeof from === "string" ? from.trim() : "";
+    const relationText = typeof text === "string" ? text.trim().slice(0, 400) : "";
+    if (!fromName || !relationText) return;
+
+    const toName = typeof to === "string" ? to.trim() : undefined;
+    relations.push(toName ? { from: fromName, to: toName, text: relationText } : {
+      from: fromName,
+      text: relationText,
+    });
+  };
+
+  if (typeof value === "string") {
+    // «Ая → Рин: ревнует» — терпим к стрелкам и двоеточиям.
+    for (const line of value.split(/\n|;/)) {
+      const match = line.match(/^\s*([^→:\-]+?)\s*(?:→|->|—|-|:)\s*([^:]*?)\s*:\s*(.+)$/);
+      if (match) push(match[1], match[2], match[3]);
+      else {
+        const simple = line.match(/^\s*([^:]+?)\s*:\s*(.+)$/);
+        if (simple) push(simple[1], undefined, simple[2]);
+      }
+    }
+    return relations;
+  }
+
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    for (const [key, text] of Object.entries(value as Record<string, unknown>)) {
+      const parts = key.split(/→|->|—/);
+      push(parts[0], parts[1], text);
+    }
+    return relations;
+  }
+
+  const list = Array.isArray(value) ? value : [];
+
+  for (const item of list) {
+    if (typeof item === "string") continue;
+
+    if (item && typeof item === "object") {
+      const record = item as Record<string, unknown>;
+      push(
+        record.from ?? record.author ?? record["от"],
+        record.to ?? record.about ?? record["кому"],
+        record.text ?? record.feeling ?? record["текст"]
+      );
+    }
+  }
+
+  return relations;
 }
 
 /** Возвращает объект метаданных либо null, если это не мета-блок. */
@@ -457,9 +525,33 @@ export function parseMetaBlock(
     /<left\s+[^>]*?names?\s*=\s*["']([^"']+)["'][^>]*?(?:reason\s*=\s*["']([^"']*)["'][^>]*?)?\/?>/i
   );
   let left = leftMatch ? parseLeftScene({ [leftMatch[1]]: leftMatch[2] }) : [];
+  let relations: { from: string; to?: string; text: string }[] = [];
 
   if (leftMatch) {
     text = text.replace(/<left\s+[^>]*?>/i, "");
+  }
+
+  // Локальный стандарт: <relation from="Ая" to="Рин" text="начала ревновать" />
+  const relationTags = [...raw.matchAll(/<relation\s+([^>]*?)\/?>/gi)];
+  for (const tag of relationTags) {
+    const attrs = tag[1];
+    const attribute = (name: string) =>
+      attrs.match(new RegExp(`${name}\\s*=\\s*["']([^"']*)["']`, "i"))?.[1];
+
+    const from = attribute("from");
+    const relationText = attribute("text");
+    if (!from || !relationText) continue;
+
+    const to = attribute("to");
+    relations.push(
+      to
+        ? { from: from.trim(), to: to.trim(), text: relationText.trim().slice(0, 400) }
+        : { from: from.trim(), text: relationText.trim().slice(0, 400) }
+    );
+  }
+
+  if (relationTags.length > 0) {
+    text = text.replace(/<relation\s+[^>]*?\/?>/gi, "");
   }
 
   // ───────────────────────────────────────────────────────────
@@ -491,6 +583,11 @@ export function parseMetaBlock(
 
     const cloudLeftNames = parseLeftScene(cloudLeft);
     if (cloudLeftNames.length > 0) left = cloudLeftNames;
+
+    const cloudRelations = parseSceneRelations(
+      metaJson.relations ?? metaJson["связи"]
+    );
+    if (cloudRelations.length > 0) relations = cloudRelations;
   }
 
   return {
@@ -500,6 +597,7 @@ export function parseMetaBlock(
     stats: newStats,
     returnedNames: returnedNames.length > 0 ? returnedNames : undefined,
     left: left.length > 0 ? left : undefined,
+    relations: relations.length > 0 ? relations : undefined,
     metaWarning,
   };
 }

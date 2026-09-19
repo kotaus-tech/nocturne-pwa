@@ -123,6 +123,8 @@ export interface SceneRelation {
   /** О ком — не задано, значит о группе в целом. */
   to?: string;
   text: string;
+  /** Когда связь обновили по ходу игры (моделью) — для пометки в панели. */
+  updatedAt?: number;
 }
 
 export interface ChatSession {

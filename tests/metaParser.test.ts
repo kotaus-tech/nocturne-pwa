@@ -3,6 +3,7 @@ import {
   parseLeftScene,
   parseMetaBlock,
   parseReturnedNames,
+  parseSceneRelations,
 } from "../src/services/metaParser";
 import { DEFAULT_STATS } from "../src/types";
 import type { RelationshipStats } from "../src/types";
@@ -187,6 +188,41 @@ describe("parseMetaBlock: уход героя за кадр", () => {
 
   it("без поля left ничего не выдумывает", () => {
     expect(withBase('```meta\n{"feelingHint":"Тепло"}\n```').left).toBeUndefined();
+  });
+});
+
+describe("parseMetaBlock: живые связи героев", () => {
+  it("читает изменившиеся отношения из мета-блока", () => {
+    const result = withBase(
+      '*Рин отвернулась.*\n\n```meta\n{"relations":[{"from":"Рин","to":"Кай","text":"начала ревновать"}]}\n```'
+    );
+
+    expect(result.text).toBe("*Рин отвернулась.*");
+    expect(result.relations).toEqual([
+      { from: "Рин", to: "Кай", text: "начала ревновать" },
+    ]);
+  });
+
+  it("понимает словарь со стрелками и связь на всю группу", () => {
+    expect(parseSceneRelations({ "Рин → Кай": "ревнует" })).toEqual([
+      { from: "Рин", to: "Кай", text: "ревнует" },
+    ]);
+    expect(parseSceneRelations([{ from: "Ая", text: "насторожилась" }])).toEqual([
+      { from: "Ая", text: "насторожилась" },
+    ]);
+    expect(parseSceneRelations([{ text: "без автора" }])).toEqual([]);
+    expect(parseSceneRelations(undefined)).toEqual([]);
+  });
+
+  it("поддерживает локальный тег relation", () => {
+    const result = parseMetaBlock(
+      '<relation from="Ая" to="Рин" text="начала ревновать" />\n— Всё в порядке.'
+    );
+
+    expect(result.relations).toEqual([
+      { from: "Ая", to: "Рин", text: "начала ревновать" },
+    ]);
+    expect(result.text).not.toContain("<relation");
   });
 });
 

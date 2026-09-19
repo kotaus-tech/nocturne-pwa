@@ -900,7 +900,9 @@ export function DirectorPanel({
                 <p className="mb-2 text-[11px] leading-relaxed text-content-muted">
                   Кто как относится к кому: спор, старая обида, тайная симпатия.
                   Это топливо для живого полилога — модель играет связи через
-                  подтекст, а не пересказ.
+                  подтекст, а не пересказ. Если по ходу сцены кто-то обиделся или
+                  потеплел, связь обновится сама — такую строку можно поправить
+                  руками.
                 </p>
 
                 {relations.length > 0 && (
@@ -968,6 +970,11 @@ export function DirectorPanel({
                         <div className="flex items-center gap-1.5">
                           <input
                             value={relation.text}
+                            title={
+                              relation.updatedAt
+                                ? "Обновлено по ходу сцены — можно поправить вручную"
+                                : undefined
+                            }
                             onChange={(event) =>
                               void updateRelations((list) =>
                                 list.map((row) =>
@@ -996,6 +1003,12 @@ export function DirectorPanel({
                             <X size={14} />
                           </button>
                         </div>
+
+                        {relation.updatedAt && (
+                          <p className="text-[10px] text-content-muted">
+                            обновлено по ходу сцены
+                          </p>
+                        )}
                       </div>
                     ))}
                   </div>

@@ -1,4 +1,11 @@
-import type { Character, ChatSession, Message, RelationshipStats } from "../types";
+import type {
+  Character,
+  ChatSession,
+  Message,
+  RelationshipStats,
+  SceneRelation,
+} from "../types";
+import { newId } from "../utils/id";
 
 /**
  * Групповые сцены: чистая логика «кто в сцене» и «кто это сказал».
@@ -299,6 +306,68 @@ export function matchLeftCharacters(
   }
 
   return result;
+}
+
+/** Сколько связей вообще держим в ветке: больше не помещается в промпт. */
+const MAX_SCENE_RELATIONS = 12;
+
+export interface SceneRelationUpdate {
+  /** Итоговый список связей ветки. */
+  relations: SceneRelation[];
+  /** Какие пары модель действительно переписала — для тоста игроку. */
+  changed: { from: string; to?: string }[];
+}
+
+/**
+ * Живые связи: модель возвращает в мета-блоке только изменившиеся отношения,
+ * а мы находим эту пару в ветке и обновляем текст. Новые пары добавляются,
+ * незнакомые имена игнорируются.
+ */
+export function mergeSceneRelations(
+  existing: SceneRelation[],
+  incoming: { from: string; to?: string; text: string }[],
+  participants: Character[]
+): SceneRelationUpdate {
+  const relations = existing.map((item) => ({ ...item }));
+  const changed: { from: string; to?: string }[] = [];
+
+  for (const update of incoming) {
+    const [from] = matchReturnedCharacters([update.from], participants);
+    if (!from) continue;
+
+    const to = update.to
+      ? matchReturnedCharacters([update.to], participants)[0]
+      : undefined;
+    if (update.to && !to) continue;
+
+    const text = update.text.trim().slice(0, 400);
+    if (!text) continue;
+
+    const samePair = relations.find(
+      (item) => item.from === from.id && (item.to ?? undefined) === (to?.id ?? undefined)
+    );
+
+    if (samePair) {
+      if (samePair.text === text) continue;
+      samePair.text = text;
+      samePair.updatedAt = Date.now();
+      changed.push({ from: from.name, to: to?.name });
+      continue;
+    }
+
+    if (relations.length >= MAX_SCENE_RELATIONS) continue;
+
+    relations.push({
+      id: newId(),
+      from: from.id,
+      to: to?.id,
+      text,
+      updatedAt: Date.now(),
+    });
+    changed.push({ from: from.name, to: to?.name });
+  }
+
+  return { relations, changed };
 }
 
 export function findMentionedCharacter(

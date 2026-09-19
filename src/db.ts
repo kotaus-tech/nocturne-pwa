@@ -531,6 +531,7 @@ export function sanitizeSceneRelations(raw?: unknown): SceneRelation[] {
       from: typeof item?.from === "string" ? item.from.trim() : "",
       to: typeof item?.to === "string" && item.to.trim() ? item.to.trim() : undefined,
       text: typeof item?.text === "string" ? item.text.trim().slice(0, 400) : "",
+      updatedAt: item?.updatedAt ? finiteNumber(item.updatedAt, 0) || undefined : undefined,
     }))
     .filter((item) => item.from && item.text);
 }

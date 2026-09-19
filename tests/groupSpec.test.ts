@@ -17,6 +17,7 @@ import { buildSystemPrompt } from "../src/services/promptBuilder";
 import {
   matchLeftCharacters,
   matchReturnedCharacters,
+  mergeSceneRelations,
 } from "../src/services/groupScene";
 import {
   GROUP_SIZE_MAX,
@@ -295,6 +296,61 @@ describe("групповая сцена: выбор говорящего", () =>
     );
 
     expect(result).toHaveLength(1);
+  });
+
+  it("обновляет уже известную связь и не плодит дубли", () => {
+    const existing = [
+      { id: "r-1", from: "c-2", to: "c-3", text: "считает его баловнем" },
+      { id: "r-2", from: "c-1", to: "c-3", text: "доверяет" },
+    ];
+
+    const result = mergeSceneRelations(
+      existing,
+      [{ from: "Рин", to: "Кай", text: "начала ревновать" }],
+      cast
+    );
+
+    expect(result.relations).toHaveLength(2);
+    expect(result.relations[0]).toMatchObject({
+      id: "r-1",
+      from: "c-2",
+      to: "c-3",
+      text: "начала ревновать",
+    });
+    expect(result.relations[0].updatedAt).toBeTypeOf("number");
+    expect(result.changed).toEqual([{ from: "Рин", to: "Кай" }]);
+  });
+
+  it("добавляет новую связь и обходится без изменений, если текст тот же", () => {
+    const added = mergeSceneRelations([], [{ from: "Ая", text: "насторожилась" }], cast);
+
+    expect(added.relations).toHaveLength(1);
+    expect(added.relations[0].from).toBe("c-1");
+    expect(added.relations[0].to).toBeUndefined();
+
+    const same = mergeSceneRelations(
+      [{ id: "r-1", from: "c-2", to: "c-3", text: "друзья" }],
+      [{ from: "Рин", to: "Кай", text: "друзья" }],
+      cast
+    );
+
+    expect(same.changed).toEqual([]);
+    expect(same.relations).toHaveLength(1);
+  });
+
+  it("игнорирует незнакомые имена и битые пары", () => {
+    const result = mergeSceneRelations(
+      [],
+      [
+        { from: "Незнакомец", text: "что-то" },
+        { from: "Рин", to: "Призрак", text: "что-то" },
+        { from: "Кай", to: "Рин", text: "   " },
+      ],
+      cast
+    );
+
+    expect(result.relations).toEqual([]);
+    expect(result.changed).toEqual([]);
   });
 
   it("в промпт роутера попадает не больше шести связей", () => {

@@ -17,8 +17,7 @@ import {
 import {
   createPersona,
   deletePersona,
-  getActivePersonaId,
-  listPersonas,
+  getPersonaState,
   setActivePersona,
   updatePersona,
 } from "../../db";
@@ -41,8 +40,9 @@ function fileToDataUrl(file: File): Promise<string> {
 const EMPTY_DRAFT = { name: "", avatarUrl: "", personaDescription: "" };
 
 export function PersonaPage() {
-  const personas = useLiveQuery(() => listPersonas(), []);
-  const activeId = useLiveQuery(() => getActivePersonaId(), []);
+  // Один запрос на всё состояние: список и активная персона обновляются вместе
+  // и сразу после переключения (см. комментарий в db.ts про liveQuery).
+  const personaState = useLiveQuery(() => getPersonaState(), []);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -176,8 +176,8 @@ export function PersonaPage() {
     }
   };
 
-  const list = personas ?? [];
-  const active = list.find((persona) => persona.id === activeId) ?? list[0];
+  const list = personaState?.personas ?? [];
+  const active = personaState?.activePersona ?? list[0];
 
   return (
     <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6 md:px-8">
@@ -224,7 +224,7 @@ export function PersonaPage() {
         </div>
       )}
 
-      {personas === undefined ? (
+      {personaState === undefined ? (
         <div className="flex items-center justify-center py-20">
           <Loader2 size={24} className="animate-spin text-accent" />
         </div>

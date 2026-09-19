@@ -34,11 +34,10 @@ import { ChatView } from "./components/chat/ChatView";
 import { AmbientPlayer } from "./components/chat/AmbientPlayer";
 import { Avatar } from "./components/common/Avatar";
 import { PwaBanners } from "./components/common/PwaBanners";
-import { db, getUserProfile } from "./db";
+import { db, ensurePersonas, getUserProfile } from "./db";
 import { ensureSeedData } from "./seed";
 import { initPwa } from "./services/pwa";
 import { requestPersistentStorage } from "./services/storage";
-import type { UserProfile } from "./types";
 import { cn } from "./utils/cn";
 
 export default function App() {
@@ -48,7 +47,9 @@ export default function App() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  // Персона для сайдбара: liveQuery, чтобы имя и аватар менялись сразу
+  // после переключения в «Моих персонах».
+  const userProfile = useLiveQuery(() => getUserProfile(), []);
 
   // Статистика базы для бейджей сайдбара
   const charactersCount = useLiveQuery(() => db.characters.count(), []);
@@ -84,9 +85,9 @@ export default function App() {
 
   useEffect(() => {
     ensureSeedData()
-      .then(() => getUserProfile())
-      .then((profile) => {
-        setUserProfile(profile);
+      // Одиночный профиль прошлых версий превращается в первую персону.
+      .then(() => ensurePersonas())
+      .then(() => {
         setReady(true);
       })
       .catch((err) => {

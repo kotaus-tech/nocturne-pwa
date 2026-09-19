@@ -21,6 +21,8 @@ import {
   Check,
   Palette,
 } from "lucide-react";
+import { useLiveQuery } from "dexie-react-hooks";
+import { getPersonaState } from "../../db";
 import { Modal } from "../common/Modal";
 import { Avatar } from "../common/Avatar";
 import { ImageCropperModal } from "../common/ImageCropperModal";
@@ -333,6 +335,10 @@ export function CharacterEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [failedWallpaper, setFailedWallpaper] = useState<string | null>(null);
+
+  // Список персон для выбора «от чьего лица» идёт диалог с этим персонажем.
+  const personaState = useLiveQuery(() => getPersonaState(), []);
+  const personas = personaState?.personas ?? [];
 
   const [showPresetsPicker, setShowPresetsPicker] = useState(false);
 
@@ -726,6 +732,35 @@ export function CharacterEditor({
                   multiline
                   rows={4}
                 />
+
+                <div>
+                  <label
+                    htmlFor={`${editorId}-persona`}
+                    className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-content-secondary"
+                  >
+                    Кем играете в этой истории
+                  </label>
+                  <select
+                    id={`${editorId}-persona`}
+                    value={draft.defaultPersonaId ?? ""}
+                    onChange={(event) =>
+                      update("defaultPersonaId", event.target.value || undefined)
+                    }
+                    className="input-field text-sm"
+                  >
+                    <option value="">Активная персона (как в разделе «Мои персоны»)</option>
+                    {personas.map((persona) => (
+                      <option key={persona.id} value={persona.id}>
+                        {persona.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-content-muted">
+                    Истории с этим персонажем будут вестись от выбранной личности,
+                    даже если активная персона другая. Отдельную ветку можно
+                    переопределить в «Режиссёре» чата.
+                  </p>
+                </div>
               </div>
             )}
 

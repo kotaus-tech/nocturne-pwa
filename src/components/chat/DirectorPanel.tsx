@@ -26,10 +26,12 @@ import {
   ShieldAlert,
   Coffee,
   Crosshair,
+  UserCircle2,
 } from "lucide-react";
+import { useLiveQuery } from "dexie-react-hooks";
 import { Modal } from "../common/Modal";
 import { AmbientPlayer } from "./AmbientPlayer";
-import { db } from "../../db";
+import { db, getPersonaState } from "../../db";
 import type { ChatSession, ThoughtMode } from "../../types";
 import { WALLPAPER_PRESETS } from "../../utils/wallpaperPresets";
 import { prepareImageFile, WALLPAPER_OPTIONS } from "../../utils/image";
@@ -228,6 +230,16 @@ export function DirectorPanel({
   const [blur, setBlur] = useState(session.wallpaperBlur ?? 0);
   const [wallpaperError, setWallpaperError] = useState<string | null>(null);
   const [wallpaperBusy, setWallpaperBusy] = useState(false);
+
+  const personaState = useLiveQuery(() => getPersonaState(), []);
+  const character = useLiveQuery(
+    () => db.characters.get(session.characterId),
+    [session.characterId]
+  );
+  const personas = personaState?.personas ?? [];
+  const characterDefaultPersona = character?.defaultPersonaId
+    ? personas.find((persona) => persona.id === character.defaultPersonaId)
+    : undefined;
   const [urlDialogOpen, setUrlDialogOpen] = useState(false);
   const [failedWallpaper, setFailedWallpaper] = useState<string | null>(null);
 
@@ -473,6 +485,41 @@ export function DirectorPanel({
               }}
               placeholder="Введите режиссёрское указание для сцены..."
             />
+          </section>
+
+          {/* Секция: ваша личность в этой ветке */}
+          <section className="border-t border-white/[0.08] pt-5 sm:pt-6">
+            <label
+              htmlFor={`${id}-branch-persona`}
+              className="mb-1.5 flex items-center gap-2 text-sm font-semibold text-content sm:text-base"
+            >
+              <UserCircle2 size={18} className="text-accent" />
+              <span>Ваша личность в ветке</span>
+            </label>
+            <p className="mb-2.5 text-xs leading-relaxed text-content-secondary">
+              От чьего имени вы играете именно здесь. Настройка персонажа —
+              запасной вариант, активная персона — общий.
+            </p>
+            <select
+              id={`${id}-branch-persona`}
+              value={session.personaId ?? ""}
+              onChange={(event) =>
+                void db.sessions.update(session.id, {
+                  personaId: event.target.value || undefined,
+                })
+              }
+              className="input-field text-xs sm:text-sm"
+            >
+              <option value="">
+                Как у персонажа
+                {characterDefaultPersona ? ` — ${characterDefaultPersona.name}` : " (активная персона)"}
+              </option>
+              {personas.map((persona) => (
+                <option key={persona.id} value={persona.id}>
+                  {persona.name}
+                </option>
+              ))}
+            </select>
           </section>
 
           {/* Секция: Вектор скрытых мыслей (innerThought) */}

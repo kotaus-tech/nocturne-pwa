@@ -17,7 +17,7 @@ import {
   AlertCircle,
   X,
 } from "lucide-react";
-import { db, getApiConfig, getUserProfile } from "../../db";
+import { db, getApiConfig, getPersonaState, resolvePersonaForChat } from "../../db";
 import { newId } from "../../utils/id";
 import type {
   ApiConfig,
@@ -247,7 +247,26 @@ export function ChatView({
   );
 
   const [visibleLimit, setVisibleLimit] = useState(INITIAL_PAGE_SIZE);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  // Личность игрока: ветка → персонаж → активная персона. Живой запрос, чтобы
+  // смена активной персоны подхватывалась без перезахода в чат.
+  const personaState = useLiveQuery(() => getPersonaState(), []);
+
+  const userProfile: UserProfile | null = useMemo(() => {
+    if (!personaState) return null;
+
+    const persona = resolvePersonaForChat(personaState, [
+      session?.personaId,
+      character?.defaultPersonaId,
+    ]);
+
+    if (!persona) return null;
+
+    return {
+      name: persona.name,
+      avatarUrl: persona.avatarUrl,
+      personaDescription: persona.personaDescription,
+    };
+  }, [personaState, session?.personaId, character?.defaultPersonaId]);
   const [apiConfig, setApiConfig] = useState<ApiConfig | null>(null);
 
   const [statsOpen, setStatsOpen] = useState(false);
@@ -302,17 +321,6 @@ export function ChatView({
 
   useEffect(() => {
     let active = true;
-
-    getUserProfile()
-      .then((profile) => {
-        if (active) setUserProfile(profile);
-      })
-      .catch((cause) => {
-        if (!active) return;
-        setInitializationError(
-          cause instanceof Error ? cause.message : "Не удалось прочитать профиль."
-        );
-      });
 
     getApiConfig()
       .then((config) => {

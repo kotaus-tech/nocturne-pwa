@@ -53,6 +53,12 @@ export async function setSetting<T>(key: string, value: T): Promise<void> {
 }
 
 // -------------------- Свои личности (персоны) --------------------
+//
+// ВАЖНО про liveQuery: Dexie отслеживает только те чтения, которые идут из
+// самой функции запроса «напрямую». Чтение ключа после `await` вложенного
+// хелпера теряет подписку, и интерфейс перестаёт обновляться (именно так
+// ломалось переключение персоны). Поэтому getPersonaState() читает оба ключа
+// сам, без вложенных вызовов, а остальные функции построены поверх него.
 
 const PERSONAS_KEY = "personas";
 const ACTIVE_PERSONA_KEY = "activePersonaId";
@@ -64,6 +70,15 @@ export const DEFAULT_PROFILE: UserProfile = {
   personaDescription: "Загадочный гость этого мира.",
 };
 
+function isPersona(value: unknown): value is Persona {
+  const record = value as Persona | null;
+  return Boolean(record && typeof record === "object" && typeof record.id === "string");
+}
+
+function parsePersonas(value: unknown): Persona[] {
+  return Array.isArray(value) ? value.filter(isPersona) : [];
+}
+
 function toProfile(persona: Persona): UserProfile {
   return {
     name: persona.name,
@@ -72,47 +87,83 @@ function toProfile(persona: Persona): UserProfile {
   };
 }
 
-function isPersona(value: unknown): value is Persona {
-  const record = value as Persona | null;
-  return Boolean(record && typeof record === "object" && typeof record.id === "string");
+function resolveActive(personas: Persona[], activeId: string | null): Persona | null {
+  return personas.find((persona) => persona.id === activeId) ?? personas[0] ?? null;
 }
 
 /**
- * Список персон. При первом запуске после обновления единственный старый
- * профиль переносится в список — данные не теряются.
+ * Состояние персон для интерфейса: список и активная. Читает ключи напрямую,
+ * поэтому подходит для useLiveQuery — обновляется сразу после переключения.
  */
+export async function getPersonaState(): Promise<{
+  personas: Persona[];
+  activePersona: Persona | null;
+}> {
+  const personasRecord = await db.kv.get(PERSONAS_KEY);
+  const activeRecord = await db.kv.get(ACTIVE_PERSONA_KEY);
+
+  const personas = parsePersonas(personasRecord?.value);
+  const activeId =
+    typeof activeRecord?.value === "string" ? activeRecord.value : null;
+
+  return { personas, activePersona: resolveActive(personas, activeId) };
+}
+
+/** Императивное чтение списка (кнопки, обработчики). */
 export async function listPersonas(): Promise<Persona[]> {
-  const stored = await getSetting<Persona[]>(PERSONAS_KEY, []);
-  const personas = Array.isArray(stored) ? stored.filter(isPersona) : [];
+  return (await getPersonaState()).personas;
+}
 
-  if (personas.length > 0) return personas;
+export async function getActivePersonaId(): Promise<string | null> {
+  return (await getPersonaState()).activePersona?.id ?? null;
+}
 
-  const legacy = await getSetting<UserProfile | null>(LEGACY_PROFILE_KEY, null);
+export async function getActivePersona(): Promise<Persona> {
+  const { activePersona } = await getPersonaState();
+  if (activePersona) return activePersona;
+
+  // Персон ещё нет (первый запуск): подсказываем старый одиночный профиль.
+  const legacyRecord = await db.kv.get(LEGACY_PROFILE_KEY);
+  const legacy = legacyRecord?.value as Partial<UserProfile> | undefined;
+
+  return {
+    id: "legacy",
+    createdAt: 0,
+    ...DEFAULT_PROFILE,
+    ...(legacy && typeof legacy === "object" ? legacy : {}),
+  };
+}
+
+/**
+ * Первый запуск после обновления: одиночный профиль становится первой персоной.
+ * Вызывается при инициализации приложения — в live-запросах побочных эффектов нет.
+ */
+export async function ensurePersonas(): Promise<void> {
+  const { personas } = await getPersonaState();
+  if (personas.length > 0) return;
+
+  const legacyRecord = await db.kv.get(LEGACY_PROFILE_KEY);
+  const legacy = legacyRecord?.value as Partial<UserProfile> | undefined;
+
   const seed: Persona = {
     id: newId(),
     createdAt: Date.now(),
-    ...(legacy && typeof legacy === "object" ? { ...DEFAULT_PROFILE, ...legacy } : DEFAULT_PROFILE),
+    ...DEFAULT_PROFILE,
+    ...(legacy && typeof legacy === "object" ? legacy : {}),
   };
 
   await db.kv.put({ key: PERSONAS_KEY, value: [seed] });
   await db.kv.put({ key: ACTIVE_PERSONA_KEY, value: seed.id });
-  return [seed];
+  await db.kv.put({ key: LEGACY_PROFILE_KEY, value: toProfile(seed) });
 }
 
-export async function getActivePersonaId(): Promise<string | null> {
-  const personas = await listPersonas();
-  const activeId = await getSetting<string | null>(ACTIVE_PERSONA_KEY, null);
-  return personas.some((persona) => persona.id === activeId) ? activeId : personas[0].id;
-}
-
-export async function getActivePersona(): Promise<Persona> {
-  const personas = await listPersonas();
-  const activeId = await getActivePersonaId();
-  return personas.find((persona) => persona.id === activeId) ?? personas[0];
+/** Всегда перезаписывает список целиком — просто и предсказуемо. */
+async function writePersonas(personas: Persona[]): Promise<void> {
+  await db.kv.put({ key: PERSONAS_KEY, value: personas });
 }
 
 export async function setActivePersona(id: string): Promise<void> {
-  const personas = await listPersonas();
+  const { personas } = await getPersonaState();
   const next = personas.find((persona) => persona.id === id);
   if (!next) throw new Error("Персона не найдена.");
 
@@ -124,7 +175,7 @@ export async function setActivePersona(id: string): Promise<void> {
 export type PersonaDraft = Partial<Omit<Persona, "id" | "createdAt">>;
 
 export async function createPersona(draft: PersonaDraft = {}): Promise<Persona> {
-  const personas = await listPersonas();
+  const { personas } = await getPersonaState();
   const persona: Persona = {
     id: newId(),
     createdAt: Date.now(),
@@ -133,44 +184,60 @@ export async function createPersona(draft: PersonaDraft = {}): Promise<Persona> 
     personaDescription: draft.personaDescription ?? "",
   };
 
-  await db.kv.put({ key: PERSONAS_KEY, value: [...personas, persona] });
+  await writePersonas([...personas, persona]);
   return persona;
 }
 
 export async function updatePersona(id: string, patch: PersonaDraft): Promise<void> {
-  const personas = await listPersonas();
+  const { personas, activePersona } = await getPersonaState();
   const index = personas.findIndex((persona) => persona.id === id);
   if (index === -1) throw new Error("Персона не найдена.");
 
+  const current = personas[index];
   const updated: Persona = {
-    ...personas[index],
+    ...current,
     ...patch,
-    name: (patch.name ?? personas[index].name).trim() || personas[index].name,
+    name: (patch.name ?? current.name).trim() || current.name,
   };
 
   const next = [...personas];
   next[index] = updated;
-  await db.kv.put({ key: PERSONAS_KEY, value: next });
+  await writePersonas(next);
 
-  const activeId = await getActivePersonaId();
-  if (activeId === id) {
+  if (activePersona?.id === id) {
     await db.kv.put({ key: LEGACY_PROFILE_KEY, value: toProfile(updated) });
   }
 }
 
 export async function deletePersona(id: string): Promise<void> {
-  const personas = await listPersonas();
+  const { personas } = await getPersonaState();
   if (personas.length <= 1) {
     throw new Error("Нужна хотя бы одна персона — удалить последнюю нельзя.");
   }
 
   const next = personas.filter((persona) => persona.id !== id);
-  await db.kv.put({ key: PERSONAS_KEY, value: next });
+  await writePersonas(next);
 
-  const activeId = await getActivePersonaId();
-  if (activeId === id) {
+  const { activePersona } = await getPersonaState();
+  if (!activePersona || activePersona.id === id) {
     await setActivePersona(next[0].id);
   }
+}
+
+/**
+ * Кто из персон ведёт диалог: сначала выбор ветки, затем персонаж, затем
+ * активная. Неизвестные id (персону удалили) просто пропускаются.
+ */
+export function resolvePersonaForChat(
+  state: { personas: Persona[]; activePersona: Persona | null },
+  preferredIds: Array<string | undefined | null>
+): Persona | null {
+  for (const id of preferredIds) {
+    if (!id) continue;
+    const found = state.personas.find((persona) => persona.id === id);
+    if (found) return found;
+  }
+  return state.activePersona;
 }
 
 /** Профиль игрока — это всегда активная персона. */
@@ -180,6 +247,12 @@ export async function getUserProfile(): Promise<UserProfile> {
 
 export async function setUserProfile(profile: UserProfile): Promise<void> {
   const persona = await getActivePersona();
+  if (persona.id === "legacy") {
+    // Персон ещё нет — создаём первую из того, что ввели в форме.
+    const created = await createPersona(profile);
+    await setActivePersona(created.id);
+    return;
+  }
   await updatePersona(persona.id, profile);
 }
 
@@ -325,6 +398,8 @@ export function sanitizeCharacter(raw: Partial<Character>): Character {
   return {
     id: typeof raw?.id === "string" && raw.id.trim() ? raw.id : newId(),
     name: typeof raw?.name === "string" && raw.name.trim() ? raw.name : "Безымянный",
+    defaultPersonaId:
+      typeof raw?.defaultPersonaId === "string" ? raw.defaultPersonaId : undefined,
     avatarUrl: typeof raw?.avatarUrl === "string" ? raw.avatarUrl : "",
     wallpaperUrl: typeof raw?.wallpaperUrl === "string" ? raw.wallpaperUrl : undefined,
     tagline: typeof raw?.tagline === "string" ? raw.tagline : "",
@@ -356,6 +431,7 @@ export function sanitizeSession(raw: Partial<ChatSession>): ChatSession {
   return {
     id: typeof raw?.id === "string" && raw.id.trim() ? raw.id : newId(),
     characterId: typeof raw?.characterId === "string" ? raw.characterId : "",
+    personaId: typeof raw?.personaId === "string" ? raw.personaId : undefined,
     title: typeof raw?.title === "string" && raw.title.trim() ? raw.title : "Новая ветка",
     summary: typeof raw?.summary === "string" ? raw.summary : "",
     storyLog: sanitizeStoryLog(raw?.storyLog),

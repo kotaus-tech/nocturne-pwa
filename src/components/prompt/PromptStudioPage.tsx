@@ -12,6 +12,8 @@ import {
   RectangleHorizontal,
   RectangleVertical,
   Square,
+  Search,
+  X,
 } from "lucide-react";
 import { db, getApiConfig } from "../../db";
 import { requestImagePrompt } from "../../services/apiClient";
@@ -114,6 +116,7 @@ export function PromptStudioPage() {
   const id = useId();
 
   const [characterId, setCharacterId] = useState<string | null>(null);
+  const [characterQuery, setCharacterQuery] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [contextMode, setContextMode] = useState<ContextMode>(
     stored.contextMode ?? "last"
@@ -162,6 +165,22 @@ export function PromptStudioPage() {
     () => characters?.find((item) => item.id === characterId),
     [characters, characterId]
   );
+
+  // Персонажей может быть много — ищем по имени, жанру и тегам.
+  const visibleCharacters = useMemo(() => {
+    if (!characters) return [];
+    const query = characterQuery.trim().toLowerCase();
+
+    if (!query) return characters;
+
+    return characters.filter((item) =>
+      [item.name, item.tagline, item.genre, ...(item.tags ?? [])]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(query)
+    );
+  }, [characters, characterQuery]);
 
   const lastMessageText = useMemo(() => {
     if (!lastMessages?.length) return "";
@@ -314,7 +333,14 @@ export function PromptStudioPage() {
         {/* ── Настройки ───────────────────────────────────────── */}
         <div className="space-y-5">
           <section className="rounded-3xl border border-white/[0.07] bg-surface p-4 sm:p-5">
-            <h2 className="mb-3 text-sm font-semibold text-content">Персонаж</h2>
+            <h2 className="mb-3 flex items-center justify-between gap-2 text-sm font-semibold text-content">
+              Персонаж
+              {characters && characters.length > 6 && (
+                <span className="text-[11px] font-normal text-content-muted">
+                  {visibleCharacters.length} из {characters.length}
+                </span>
+              )}
+            </h2>
 
             {characters === undefined ? (
               <p className="text-xs text-content-muted">Загрузка…</p>
@@ -324,35 +350,72 @@ export function PromptStudioPage() {
                 студия подхватит его автоматически.
               </p>
             ) : (
-              <div className="flex gap-2 overflow-x-auto pb-1">
-                {characters.map((item) => {
-                  const active = item.id === characterId;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      aria-pressed={active}
-                      onClick={() => setCharacterId(item.id)}
-                      className={cn(
-                        "flex w-[92px] shrink-0 flex-col items-center gap-2 rounded-2xl border px-2 py-3 transition-colors duration-150",
-                        active
-                          ? "border-accent/50 bg-accent/10"
-                          : "border-white/[0.07] bg-surface-2 hover:bg-surface-3"
-                      )}
-                    >
-                      <Avatar src={item.avatarUrl} name={item.name} size={44} />
-                      <span
-                        className={cn(
-                          "w-full truncate text-center text-[11px] font-medium",
-                          active ? "text-accent" : "text-content-secondary"
-                        )}
+              <>
+                {characters.length > 6 && (
+                  <div className="relative mb-3">
+                    <Search
+                      size={15}
+                      aria-hidden="true"
+                      className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-content-muted"
+                    />
+                    <input
+                      type="search"
+                      value={characterQuery}
+                      onChange={(event) => setCharacterQuery(event.target.value)}
+                      placeholder="Найти персонажа…"
+                      aria-label="Поиск персонажа"
+                      className="input-field pl-9 pr-9"
+                    />
+                    {characterQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setCharacterQuery("")}
+                        aria-label="Очистить поиск"
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-lg p-1 text-content-muted hover:text-content"
                       >
-                        {item.name}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
+                        <X size={14} />
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {visibleCharacters.length === 0 ? (
+                  <p className="text-xs leading-relaxed text-content-secondary">
+                    По запросу «{characterQuery.trim()}» никого не нашлось.
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-4 xl:grid-cols-5">
+                    {visibleCharacters.map((item) => {
+                      const active = item.id === characterId;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() => setCharacterId(item.id)}
+                          title={item.name}
+                          className={cn(
+                            "flex w-full flex-col items-center gap-2 rounded-2xl border px-2 py-3 transition-colors duration-150",
+                            active
+                              ? "border-accent/50 bg-accent/10"
+                              : "border-white/[0.07] bg-surface-2 hover:bg-surface-3"
+                          )}
+                        >
+                          <Avatar src={item.avatarUrl} name={item.name} size={44} />
+                          <span
+                            className={cn(
+                              "w-full truncate text-center text-[11px] font-medium",
+                              active ? "text-accent" : "text-content-secondary"
+                            )}
+                          >
+                            {item.name}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
             )}
           </section>
 

@@ -43,6 +43,8 @@ export interface LorebookEntry {
 export interface Character {
   id: string;
   name: string;
+  /** Персона игрока по умолчанию для диалогов с этим персонажем. */
+  defaultPersonaId?: string;
   avatarUrl: string;
   wallpaperUrl?: string;
   tagline: string;
@@ -112,6 +114,8 @@ export type ThoughtMode =
 export interface ChatSession {
   id: string;
   characterId: string;
+  /** Своя личность для этой ветки; не задана — берётся персона персонажа или активная. */
+  personaId?: string;
   title: string;
   summary?: string;
   storyLog?: StoryLogEntry[];

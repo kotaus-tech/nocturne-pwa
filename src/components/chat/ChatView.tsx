@@ -261,6 +261,8 @@ export function ChatView({
   const [sending, setSending] = useState(false);
   const [liveStreamedText, setLiveStreamedText] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [metaNotice, setMetaNotice] = useState<string | null>(null);
+  const metaNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [initializationError, setInitializationError] = useState<string | null>(null);
 
   const [showScrollBottom, setShowScrollBottom] = useState(false);
@@ -355,6 +357,9 @@ export function ChatView({
     return () => {
       if (toastTimerRef.current) {
         clearTimeout(toastTimerRef.current);
+      }
+      if (metaNoticeTimerRef.current) {
+        clearTimeout(metaNoticeTimerRef.current);
       }
       // Не оставляем «висящую» генерацию после закрытия ветки.
       abortRef.current?.abort();
@@ -534,6 +539,13 @@ export function ChatView({
       }
     }
   }, [liveStreamedText, sending, novelMode]);
+
+  /** Короткое служебное уведомление (например, о неразобранном мета-блоке). */
+  const showMetaNotice = (message: string) => {
+    if (metaNoticeTimerRef.current) clearTimeout(metaNoticeTimerRef.current);
+    setMetaNotice(message);
+    metaNoticeTimerRef.current = setTimeout(() => setMetaNotice(null), 8000);
+  };
 
   const showToast = (data: ToastData) => {
     if (toastTimerRef.current) {
@@ -789,6 +801,8 @@ export function ChatView({
         controller.signal
       );
 
+      if (parsed.metaWarning) showMetaNotice(parsed.metaWarning);
+
       const oldStats = session.currentStats;
       const newStats = parsed.stats ?? session.currentStats;
 
@@ -934,6 +948,8 @@ export function ChatView({
         session.currentStats,
         controller.signal
       );
+
+      if (parsed.metaWarning) showMetaNotice(parsed.metaWarning);
 
       const newStats = parsed.stats ?? session.currentStats;
       const newSwipes = [...message.swipes, parsed.text || "..."];
@@ -1394,6 +1410,24 @@ export function ChatView({
                 className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-2xl border border-white/[0.08] bg-[#161b28]/90 text-content-secondary shadow-xl backdrop-blur-xl transition-all hover:border-accent/40 hover:text-accent"
               >
                 <ChevronDown size={20} />
+              </button>
+            </div>
+          )}
+
+          {metaNotice && (
+            <div
+              role="status"
+              className="mx-3 mb-2 flex items-start gap-2 rounded-2xl border border-warning/25 bg-warning/[0.08] px-3 py-2 text-[11px] leading-relaxed text-warning"
+            >
+              <AlertCircle size={14} className="mt-0.5 shrink-0" />
+              <span className="flex-1">{metaNotice}</span>
+              <button
+                type="button"
+                onClick={() => setMetaNotice(null)}
+                aria-label="Скрыть уведомление"
+                className="shrink-0 rounded-lg px-1.5 text-warning/70 hover:text-warning"
+              >
+                <X size={13} />
               </button>
             </div>
           )}

@@ -395,6 +395,44 @@ async function callOllamaStream(
   return fullOutput;
 }
 
+/**
+ * Понятное имя узла для сообщений об ошибке (без query-параметров,
+ * чтобы API-ключ не попал в текст на экране).
+ */
+export function describeEndpoint(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Читает тело ответа как JSON. Если сервер вернул HTML (обычно это значит,
+ * что запрос ушёл не на тот адрес и хостинг отдал index.html), пользователь
+ * получит понятный текст вместо «Unexpected token '<'».
+ */
+export async function readJsonResponse(res: Response, url?: string): Promise<any> {
+  const body = await res.text();
+  const trimmed = body.trim();
+  const host = url ? describeEndpoint(url) : "";
+  const where = host ? ` (${host})` : "";
+
+  if (trimmed.startsWith("<")) {
+    throw new Error(
+      `Сервер вернул HTML вместо JSON${where}. Проверьте адрес API и ключ: запрос, скорее всего, ушёл не туда.`
+    );
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    throw new Error(
+      `Ответ сервера${where} не является JSON: ${trimmed.slice(0, 200) || "(пустой ответ)"}`
+    );
+  }
+}
+
 async function resilientFetch(
   url: string,
   options: RequestInit,
@@ -576,7 +614,7 @@ async function callGeminiStream(
   }
 
   if (!res.body) {
-    return callGemini(config, systemPrompt, turns);
+    return callGemini(config, systemPrompt, turns, signal);
   }
 
   const reader = res.body.getReader();
@@ -633,7 +671,7 @@ async function callGeminiStream(
   }
 
   if (!fullOutput || !fullOutput.trim()) {
-    return callGemini(config, systemPrompt, turns);
+    return callGemini(config, systemPrompt, turns, signal);
   }
 
   return fullOutput;
@@ -758,7 +796,7 @@ async function callOpenAICompatible(
     throw new Error(formatApiError(null, res.status, errText, config.baseUrl, config.model));
   }
 
-  const data = await res.json();
+  const data = await readJsonResponse(res);
   const choice = data?.choices?.[0]?.message;
   let content = extractResponseContent(data);
 
@@ -784,7 +822,7 @@ async function callGemini(
     throw new Error("Укажите API-ключ Gemini в настройках.");
   }
 
-  const url = `[https://generativelanguage.googleapis.com/v1beta/models/$](https://generativelanguage.googleapis.com/v1beta/models/$){model}:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const contents = sanitizeGeminiContents(turns);
   const thinkingConfig = buildGeminiThinkingConfig(model, config.thinkingMode);
 
@@ -824,7 +862,7 @@ async function callGemini(
     throw new Error(formatApiError(null, res.status, errText));
   }
 
-  const data = await res.json();
+  const data = await readJsonResponse(res, url);
   const candidate = data?.candidates?.[0];
   const finishReason = candidate?.finishReason;
   const blockReason = data?.promptFeedback?.blockReason;
@@ -912,7 +950,7 @@ ${transcript}
     if (apiConfig.mode === "gemini") {
       const model = cleanGeminiModel(apiConfig.model);
       const apiKey = (apiConfig.apiKey || "").trim();
-      const url = `[https://generativelanguage.googleapis.com/v1beta/models/$](https://generativelanguage.googleapis.com/v1beta/models/$){model}:generateContent?key=${apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -923,7 +961,7 @@ ${transcript}
         }),
       });
       if (!res.ok) return [];
-      const data = await res.json();
+      const data = await readJsonResponse(res, url);
       raw = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     } else {
       const { isOllama, primaryUrl, fallbackUrl } = resolveEndpoints(apiConfig.baseUrl);
@@ -963,7 +1001,7 @@ ${transcript}
       }
 
       if (!res.ok) return [];
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       raw = extractResponseContent(data);
     }
 
@@ -1027,7 +1065,7 @@ OUTPUT ONLY THE RAW PROMPT STRING.`;
     if (apiConfig.mode === "gemini") {
       const model = cleanGeminiModel(apiConfig.model);
       const apiKey = (apiConfig.apiKey || "").trim();
-      const url = `[https://generativelanguage.googleapis.com/v1beta/models/$](https://generativelanguage.googleapis.com/v1beta/models/$){model}:generateContent?key=${apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1038,7 +1076,7 @@ OUTPUT ONLY THE RAW PROMPT STRING.`;
         }),
       });
       if (!res.ok) throw new Error("Gemini Prompt Error");
-      const data = await res.json();
+      const data = await readJsonResponse(res, url);
       raw = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     } else {
       const { isOllama, primaryUrl, fallbackUrl } = resolveEndpoints(apiConfig.baseUrl);
@@ -1079,7 +1117,7 @@ OUTPUT ONLY THE RAW PROMPT STRING.`;
       }
 
       if (!res.ok) throw new Error("API Prompt Error");
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       raw = extractResponseContent(data);
     }
   } catch (err) {
@@ -1094,13 +1132,13 @@ export async function fetchAvailableModels(apiConfig: ApiConfig): Promise<string
     if (apiConfig.mode === "gemini") {
       const apiKey = (apiConfig.apiKey || "").trim();
       if (!apiKey) throw new Error("Сначала укажите API-ключ Gemini в настройках.");
-      const url = `[https://generativelanguage.googleapis.com/v1beta/models?key=$](https://generativelanguage.googleapis.com/v1beta/models?key=$){apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
       const res = await fetch(url);
       if (!res.ok) {
         const errText = await res.text().catch(() => "");
         throw new Error(formatApiError(null, res.status, errText));
       }
-      const data = await res.json();
+      const data = await readJsonResponse(res, url);
       const models: string[] = (data.models || [])
         .map((m: { name?: string }) => (m.name ? m.name.replace(/^models\//, "") : ""))
         .filter((name: string) => name.includes("gemini") || name.includes("flash") || name.includes("pro"));
@@ -1122,7 +1160,7 @@ export async function fetchAvailableModels(apiConfig: ApiConfig): Promise<string
         const reqHeaders = Object.keys(headers).length > 0 ? headers : undefined;
         const ollamaRes = await resilientFetch(`${rootUrl}/api/tags`, { headers: reqHeaders }, allowProxy);
         if (ollamaRes.ok) {
-          const ollamaData = await ollamaRes.json();
+          const ollamaData = await readJsonResponse(ollamaRes);
           if (Array.isArray(ollamaData.models) && ollamaData.models.length > 0) {
             return ollamaData.models
               .map((m: { name?: string; model?: string }) => m.name || m.model)
@@ -1143,7 +1181,7 @@ export async function fetchAvailableModels(apiConfig: ApiConfig): Promise<string
         const reqHeaders = Object.keys(headers).length > 0 ? headers : undefined;
         const res = await resilientFetch(standardModelsUrl, { headers: reqHeaders }, allowProxy);
         if (res.ok) {
-          const data = await res.json();
+          const data = await readJsonResponse(res);
           if (Array.isArray(data.data) && data.data.length > 0) {
             return data.data
               .map((m: { id?: string }) => m.id)

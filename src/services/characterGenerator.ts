@@ -1,7 +1,7 @@
 import { newId } from "../utils/id";
 import type { ApiConfig, Character } from "../types";
 import { DEFAULT_STATS } from "../types";
-import { resolveEndpoints } from "./apiClient";
+import { readJsonResponse, resolveEndpoints } from "./apiClient";
 
 export interface TagOption {
   id: string;
@@ -263,7 +263,7 @@ ${customIdea.trim() ? `- Особая авторская задумка: "${cust
       const err = await res.text();
       throw new Error(`Gemini API Error: ${err}`);
     }
-    const data = await res.json();
+    const data = await readJsonResponse(res);
     rawJson = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
   } else {
     const { isOllama, primaryUrl, fallbackUrl } = resolveEndpoints(apiConfig.baseUrl);
@@ -313,7 +313,7 @@ ${customIdea.trim() ? `- Особая авторская задумка: "${cust
       const err = await res.text();
       throw new Error(`API Error: ${err}`);
     }
-    const data = await res.json();
+    const data = await readJsonResponse(res);
     rawJson = data.choices?.[0]?.message?.content ?? data.message?.content ?? "";
   }
 

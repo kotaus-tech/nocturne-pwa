@@ -71,6 +71,8 @@ interface Props {
   onRequestTurn?: (characterId: string) => void;
   /** Ввести персонажа в сцену или убрать за кадр (причина — в промпт). */
   onTogglePresence?: (characterId: string, isPresent: boolean, reason?: string) => void;
+  /** «Живая сцена»: короткие реакции других героев в той же реплике. */
+  onToggleLiveScene?: (enabled: boolean) => void;
   /** Кто из состава сейчас в сцене. */
   presentIds?: string[];
   /** Идёт генерация — кнопки хода заблокированы. */
@@ -366,6 +368,7 @@ export function DirectorPanel({
   onOpenInspector,
   onRequestTurn,
   onTogglePresence,
+  onToggleLiveScene,
   presentIds,
   sending = false,
 }: Props) {
@@ -877,7 +880,27 @@ export function DirectorPanel({
               )}
             </div>
 
-            {participantCharacters.some((item) => !isPresent(item.id)) && (
+            {participantCharacters.length > 1 && onToggleLiveScene && (
+                <label className="mt-3 flex cursor-pointer items-start gap-2.5 rounded-2xl border border-white/[0.08] bg-[#121622]/70 p-2.5">
+                  <input
+                    type="checkbox"
+                    checked={session.liveScene !== false}
+                    onChange={(event) => onToggleLiveScene(event.target.checked)}
+                    className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent)]"
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-xs font-semibold text-content">
+                      Живая сцена
+                    </span>
+                    <span className="mt-0.5 block text-[11px] leading-relaxed text-content-muted">
+                      Отвечает по-прежнему один герой, но в конце реплики он может
+                      дать 1–2 короткие реакции остальных — так сцена звучит живее.
+                    </span>
+                  </span>
+                </label>
+              )}
+
+              {participantCharacters.some((item) => !isPresent(item.id)) && (
               <p className="mt-2 text-[11px] leading-relaxed text-content-muted">
                 За кадром персонаж не молчит вечно: модель вернёт его сама, когда
                 это будет уместно по сюжету. Вручную — тумблером рядом с именем.

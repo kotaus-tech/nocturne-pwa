@@ -353,6 +353,33 @@ describe("групповая сцена: выбор говорящего", () =>
     expect(result.changed).toEqual([]);
   });
 
+  it("живая сцена разрешает короткие реакции других героев, а выключенная — нет", () => {
+    const base = {
+      id: "s-1",
+      characterId: "c-1",
+      characterIds: ["c-2", "c-3"],
+      title: "Ветка",
+      directorNotes: "",
+      currentStats: { ...DEFAULT_STATS },
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const group = { others: [cast[1], cast[2]] };
+
+    const enabled = buildSystemPrompt(cast[0], base, player, [], false, group);
+    const disabled = buildSystemPrompt(
+      cast[0],
+      { ...base, liveScene: false },
+      player,
+      [],
+      false,
+      group
+    );
+
+    expect(enabled).toContain("ЖИВАЯ СЦЕНА");
+    expect(disabled).not.toContain("ЖИВАЯ СЦЕНА");
+  });
+
   it("в промпт роутера попадает не больше шести связей", () => {
     const relations = Array.from({ length: 9 }, (_, index) => ({
       id: `r-${index}`,

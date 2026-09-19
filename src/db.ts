@@ -555,6 +555,7 @@ export function sanitizeSession(raw: Partial<ChatSession>): ChatSession {
     ),
     absentReasons: sanitizeAbsentReasons(raw?.absentReasons),
     relations: sanitizeSceneRelations(raw?.relations),
+    liveScene: raw?.liveScene !== false,
     participantStats: sanitizeParticipantStats(raw?.participantStats),
     memoryExtractedCount: Math.max(
       0,

@@ -2091,6 +2091,12 @@ export function ChatView({
           if (!target) return;
           void applyPresence(target, isPresent, reason);
         }}
+        onToggleLiveScene={(enabled) => {
+          void db.sessions.update(session.id, {
+            liveScene: enabled,
+            updatedAt: Date.now(),
+          });
+        }}
         presentIds={presentCharacters.map((item) => item.id)}
         sending={sending}
         onOpenInspector={() => setInspectorOpen(true)}

@@ -341,13 +341,26 @@ export async function updatePinnedSessionsOrder(orderedIds: string[]): Promise<v
 
 // -------------------- Нормализаторы данных --------------------
 
+/**
+ * Число с защитой от NaN/Infinity. Через `typeof x === "number"` проходил NaN,
+ * а запись с NaN в индексе Dexie не показывается в orderBy — так «исчезали»
+ * созданные персонажи. Всегда возвращаем конечное число.
+ */
+function finiteNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function finiteStat(value: unknown, fallback: number): number {
+  return Math.min(100, Math.max(0, finiteNumber(value, fallback)));
+}
+
 export function sanitizeStats(rawStats?: Partial<RelationshipStats>): RelationshipStats {
   return {
-    trust: typeof rawStats?.trust === "number" ? Math.min(100, Math.max(0, rawStats.trust)) : DEFAULT_STATS.trust,
-    affection: typeof rawStats?.affection === "number" ? Math.min(100, Math.max(0, rawStats.affection)) : DEFAULT_STATS.affection,
-    closeness: typeof rawStats?.closeness === "number" ? Math.min(100, Math.max(0, rawStats.closeness)) : DEFAULT_STATS.closeness,
-    tension: typeof rawStats?.tension === "number" ? Math.min(100, Math.max(0, rawStats.tension)) : DEFAULT_STATS.tension,
-    conflict: typeof rawStats?.conflict === "number" ? Math.min(100, Math.max(0, rawStats.conflict)) : DEFAULT_STATS.conflict,
+    trust: finiteStat(rawStats?.trust, DEFAULT_STATS.trust),
+    affection: finiteStat(rawStats?.affection, DEFAULT_STATS.affection),
+    closeness: finiteStat(rawStats?.closeness, DEFAULT_STATS.closeness),
+    tension: finiteStat(rawStats?.tension, DEFAULT_STATS.tension),
+    conflict: finiteStat(rawStats?.conflict, DEFAULT_STATS.conflict),
     statusTitle: typeof rawStats?.statusTitle === "string" && rawStats.statusTitle.trim() ? rawStats.statusTitle : DEFAULT_STATS.statusTitle,
     customStats: rawStats?.customStats && typeof rawStats.customStats === "object" ? rawStats.customStats : {},
   };
@@ -367,8 +380,8 @@ export function sanitizeDiary(rawDiary?: unknown): DiaryEntry[] {
   if (!Array.isArray(rawDiary)) return [];
   return rawDiary.map((item, idx) => ({
     id: typeof item?.id === "string" ? item.id : newId(),
-    timestamp: typeof item?.timestamp === "number" ? item.timestamp : Date.now(),
-    entryNumber: typeof item?.entryNumber === "number" ? item.entryNumber : idx + 1,
+    timestamp: finiteNumber(item?.timestamp, Date.now()),
+    entryNumber: finiteNumber(item?.entryNumber, idx + 1),
     thought: typeof item?.thought === "string" ? item.thought : "",
     mood: typeof item?.mood === "string" ? item.mood : undefined,
   }));
@@ -378,7 +391,7 @@ export function sanitizeStoryLog(rawLog?: unknown): StoryLogEntry[] {
   if (!Array.isArray(rawLog)) return [];
   return rawLog.map((item) => ({
     id: typeof item?.id === "string" ? item.id : newId(),
-    timestamp: typeof item?.timestamp === "number" ? item.timestamp : Date.now(),
+    timestamp: finiteNumber(item?.timestamp, Date.now()),
     text: typeof item?.text === "string" ? item.text : "",
   }));
 }
@@ -389,7 +402,7 @@ export function sanitizeExtractedFacts(rawFacts?: unknown): ExtractedFact[] {
     id: typeof item?.id === "string" ? item.id : newId(),
     keys: Array.isArray(item?.keys) ? item.keys.filter((k: unknown) => typeof k === "string") : ["Заметка"],
     content: typeof item?.content === "string" ? item.content : "",
-    createdAt: typeof item?.createdAt === "number" ? item.createdAt : Date.now(),
+    createdAt: finiteNumber(item?.createdAt, Date.now()),
     isPinned: Boolean(item?.isPinned),
   }));
 }
@@ -419,7 +432,7 @@ export function sanitizeCharacter(raw: Partial<Character>): Character {
     firstMessage: typeof raw?.firstMessage === "string" ? raw.firstMessage : "*Смотрит на тебя в тишине...*",
     initialStats: sanitizeStats(raw?.initialStats),
     lorebook: sanitizeLorebook(raw?.lorebook),
-    createdAt: typeof raw?.createdAt === "number" ? raw.createdAt : Date.now(),
+    createdAt: finiteNumber(raw?.createdAt, Date.now()),
   };
 }
 
@@ -476,8 +489,8 @@ export function sanitizeSession(raw: Partial<ChatSession>): ChatSession {
     storyLog: sanitizeStoryLog(raw?.storyLog),
     directorNotes: typeof raw?.directorNotes === "string" ? raw.directorNotes : "",
     wallpaperUrl: typeof raw?.wallpaperUrl === "string" ? raw.wallpaperUrl : undefined,
-    wallpaperDim: typeof raw?.wallpaperDim === "number" ? raw.wallpaperDim : 0.55,
-    wallpaperBlur: typeof raw?.wallpaperBlur === "number" ? raw.wallpaperBlur : 0,
+    wallpaperDim: finiteNumber(raw?.wallpaperDim, 0.55),
+    wallpaperBlur: finiteNumber(raw?.wallpaperBlur, 0),
     dynamicEvents: Boolean(raw?.dynamicEvents),
     suspenseMode: Boolean(raw?.suspenseMode),
     naturalSpeech: Boolean(raw?.naturalSpeech),
@@ -489,9 +502,9 @@ export function sanitizeSession(raw: Partial<ChatSession>): ChatSession {
     extractedFacts: sanitizeExtractedFacts(raw?.extractedFacts),
     currentStats: sanitizeStats(raw?.currentStats),
     isPinned: Boolean(raw?.isPinned),
-    pinOrder: typeof raw?.pinOrder === "number" ? raw.pinOrder : 0,
-    createdAt: typeof raw?.createdAt === "number" ? raw.createdAt : Date.now(),
-    updatedAt: typeof raw?.updatedAt === "number" ? raw.updatedAt : Date.now(),
+    pinOrder: finiteNumber(raw?.pinOrder, 0),
+    createdAt: finiteNumber(raw?.createdAt, Date.now()),
+    updatedAt: finiteNumber(raw?.updatedAt, Date.now()),
   };
 }
 
@@ -527,7 +540,7 @@ export function sanitizeMessage(raw: any): Message {
     innerThought: typeof raw?.innerThought === "string" ? raw.innerThought : undefined,
     statsSnapshot: raw?.statsSnapshot ? sanitizeStats(raw.statsSnapshot) : undefined,
     imageUrl: typeof raw?.imageUrl === "string" ? raw.imageUrl : undefined,
-    timestamp: typeof raw?.timestamp === "number" ? raw.timestamp : Date.now(),
+    timestamp: finiteNumber(raw?.timestamp, Date.now()),
   };
 }
 

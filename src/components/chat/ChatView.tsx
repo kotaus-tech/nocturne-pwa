@@ -33,6 +33,7 @@ import { buildSystemPrompt } from "../../services/promptBuilder";
 import {
   buildAssistantLabeler,
   buildCharacterIndex,
+  matchLeftCharacters,
   matchReturnedCharacters,
   nextSpeaker,
   pendingSpeakers,
@@ -293,6 +294,18 @@ export function ChatView({
       session?.activeCharacterIds?.join(","),
       session?.absentReasons ? Object.values(session.absentReasons).join("|") : "",
     ]
+  );
+
+  /**
+   * Имена остальных героев сцены: память ведётся от лица основного персонажа,
+   * но групповой контекст ей тоже нужен.
+   */
+  const othersInScene = useMemo(
+    () =>
+      participants
+        .filter((item) => item.id !== character?.id)
+        .map((item) => item.name),
+    [participants, character?.id]
   );
 
   const presentCharacters = presence.present;
@@ -1021,14 +1034,15 @@ export function ChatView({
 
         if (parsed.metaWarning) showMetaNotice(parsed.metaWarning);
 
-        // Ответ мог вернуть кого-то из «за кадра» — вводим его обратно в сцену.
-        if (parsed.returnedNames?.length) {
-          await returnToScene(
-            matchReturnedCharacters(
-              parsed.returnedNames,
+        // Сцена двигается сама: кто-то мог вернуться, а кто-то — уйти.
+        if (parsed.returnedNames?.length || parsed.left?.length) {
+          await applySceneChanges({
+            returning: matchReturnedCharacters(
+              parsed.returnedNames ?? [],
               absentCharacters.map((item) => item.character)
-            )
-          );
+            ),
+            leaving: matchLeftCharacters(parsed.left ?? [], presentCharacters),
+          });
         }
 
         const newStats = parsed.stats ?? speakerStats;
@@ -1164,22 +1178,43 @@ export function ChatView({
   }
 
   /**
-   * Модель вернула кого-то в сцену сама (мета-поле `returned`): снимаем
-   * «за кадром», чистим причину отлучки и сообщаем игроку.
+   * Сцена живёт сама: модель может вернуть героя из-за кадра (мета-поле
+   * `returned`) или, наоборот, увести его по сюжету (`left`). Оба изменения
+   * применяем одним обновлением ветки и показываем игроку тостом.
    */
-  async function returnToScene(targets: Character[]) {
-    if (!session || targets.length === 0) return;
+  async function applySceneChanges(input: {
+    returning?: Character[];
+    leaving?: { character: Character; reason?: string }[];
+  }) {
+    if (!session) return;
+
+    const returning = input.returning ?? [];
+    const leaving = input.leaving ?? [];
+
+    if (returning.length === 0 && leaving.length === 0) return;
 
     const presentIds = new Set(presentCharacters.map((item) => item.id));
-    const returning = new Set(targets.map((item) => item.id));
+    const returningIds = new Set(returning.map((item) => item.id));
+    const leavingIds = new Set(leaving.map((item) => item.character.id));
 
-    // Порядок остаётся порядком состава, вернувшиеся встают на своё место.
-    const nextIds = participants
+    // Порядок остаётся порядком состава: вернувшиеся встают на своё место.
+    let nextIds = participants
       .map((item) => item.id)
-      .filter((id) => presentIds.has(id) || returning.has(id));
+      .filter(
+        (id) => (presentIds.has(id) || returningIds.has(id)) && !leavingIds.has(id)
+      );
+
+    // Сцена не должна опустеть: последнего героя за кадр не уводим.
+    if (nextIds.length === 0) nextIds = presentIds.size > 0 ? [...presentIds] : nextIds;
+    if (nextIds.length === 0) return;
 
     const nextReasons = { ...(session.absentReasons ?? {}) };
-    for (const id of returning) delete nextReasons[id];
+    for (const id of returningIds) delete nextReasons[id];
+    for (const item of leaving) {
+      const reason = item.reason?.trim().slice(0, 120);
+      if (reason) nextReasons[item.character.id] = reason;
+      else delete nextReasons[item.character.id];
+    }
 
     await db.sessions.update(session.id, {
       activeCharacterIds: nextIds,
@@ -1187,15 +1222,29 @@ export function ChatView({
       updatedAt: Date.now(),
     });
 
-    if (session.showRelationshipToasts !== false) {
+    if (session.showRelationshipToasts === false) return;
+
+    if (returning.length > 0) {
       showToast({
         title:
-          targets.length === 1
-            ? `${targets[0].name} снова в сцене`
-            : `В сцену вернулись: ${targets.map((item) => item.name).join(", ")}`,
+          returning.length === 1
+            ? `${returning[0].name} снова в сцене`
+            : `В сцену вернулись: ${returning.map((item) => item.name).join(", ")}`,
         type: "status",
       });
+      return;
     }
+
+    const [first] = leaving;
+    showToast({
+      title:
+        leaving.length === 1
+          ? `${first.character.name} выходит из сцены${
+              first.reason ? ` (${first.reason})` : ""
+            }`
+          : `За кадром: ${leaving.map((item) => item.character.name).join(", ")}`,
+      type: "status",
+    });
   }
 
   function handleTogglePresence(target: Character, isPresent: boolean) {
@@ -1344,14 +1393,15 @@ export function ChatView({
 
       if (parsed.metaWarning) showMetaNotice(parsed.metaWarning);
 
-      // Перегенерация тоже может вернуть персонажа из-за кадра.
-      if (parsed.returnedNames?.length) {
-        await returnToScene(
-          matchReturnedCharacters(
-            parsed.returnedNames,
+      // Перегенерация тоже двигает сцену: возвращает и уводит героев.
+      if (parsed.returnedNames?.length || parsed.left?.length) {
+        await applySceneChanges({
+          returning: matchReturnedCharacters(
+            parsed.returnedNames ?? [],
             absentCharacters.map((item) => item.character)
-          )
-        );
+          ),
+          leaving: matchLeftCharacters(parsed.left ?? [], presentCharacters),
+        });
       }
 
       const newStats = parsed.stats ?? speakerStats;
@@ -1434,7 +1484,8 @@ export function ChatView({
         character.name,
         userProfile.name,
         transcript,
-        existingFacts
+        existingFacts,
+        othersInScene
       );
 
       const existingDiary = session.diary || [];
@@ -1515,7 +1566,8 @@ export function ChatView({
         apiConfig,
         character.name,
         userProfile.name,
-        sourceText
+        sourceText,
+        othersInScene
       );
 
       if (freshSummary && freshSummary.trim().length > 0) {
@@ -1549,7 +1601,8 @@ export function ChatView({
         apiConfig,
         character.name,
         userProfile.name,
-        transcript
+        transcript,
+        othersInScene
       );
 
       if (rawEpisodes.length > 0) {

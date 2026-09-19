@@ -282,6 +282,25 @@ export function matchReturnedCharacters(
   return found;
 }
 
+/**
+ * Сопоставляет «кто ушёл» из мета-поля `left` с героями, которые сейчас
+ * в сцене: причина из мета-блока едет вместе с найденным персонажем.
+ */
+export function matchLeftCharacters(
+  entries: { name: string; reason?: string }[],
+  candidates: Character[]
+): { character: Character; reason?: string }[] {
+  const result: { character: Character; reason?: string }[] = [];
+
+  for (const entry of entries) {
+    const [match] = matchReturnedCharacters([entry.name], candidates);
+    if (!match || result.some((item) => item.character.id === match.id)) continue;
+    result.push({ character: match, reason: entry.reason });
+  }
+
+  return result;
+}
+
 export function findMentionedCharacter(
   text: string,
   present: Character[]

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseMetaBlock, parseReturnedNames } from "../src/services/metaParser";
+import {
+  parseLeftScene,
+  parseMetaBlock,
+  parseReturnedNames,
+} from "../src/services/metaParser";
 import { DEFAULT_STATS } from "../src/types";
 import type { RelationshipStats } from "../src/types";
 
@@ -146,6 +150,43 @@ describe("parseMetaBlock: возвращение персонажей в сце�
 
   it("без поля returned ничего не выдумывает", () => {
     expect(withBase('```meta\n{"feelingHint":"Тепло"}\n```').returnedNames).toBeUndefined();
+  });
+});
+
+describe("parseMetaBlock: уход героя за кадр", () => {
+  it("читает словарь «кто и почему ушёл» из мета-блока", () => {
+    const result = withBase(
+      '*Рин хватает куртку.*\n\n```meta\n{"left":{"Рин":"ушла за сигаретами"}}\n```'
+    );
+
+    expect(result.text).toBe("*Рин хватает куртку.*");
+    expect(result.left).toEqual([{ name: "Рин", reason: "ушла за сигаретами" }]);
+  });
+
+  it("принимает список имён и отдельные причины", () => {
+    expect(parseLeftScene(["Ая", "Кай"])).toEqual([
+      { name: "Ая" },
+      { name: "Кай" },
+    ]);
+    expect(parseLeftScene([{ name: "Ая", reason: "ушла в душ" }])).toEqual([
+      { name: "Ая", reason: "ушла в душ" },
+    ]);
+    expect(parseLeftScene("Ая, Кай")).toEqual([{ name: "Ая" }, { name: "Кай" }]);
+    expect(parseLeftScene(undefined)).toEqual([]);
+    expect(parseLeftScene([42])).toEqual([]);
+  });
+
+  it("поддерживает локальный тег left с причиной", () => {
+    const result = parseMetaBlock(
+      '<left names="Рин" reason="ушла в магазин" />\n— Я быстро.'
+    );
+
+    expect(result.left).toEqual([{ name: "Рин", reason: "ушла в магазин" }]);
+    expect(result.text).not.toContain("<left");
+  });
+
+  it("без поля left ничего не выдумывает", () => {
+    expect(withBase('```meta\n{"feelingHint":"Тепло"}\n```').left).toBeUndefined();
   });
 });
 

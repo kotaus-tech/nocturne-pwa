@@ -12,6 +12,11 @@ export interface ParsedResponse {
    */
   returnedNames?: string[];
   /**
+   * Кто ушёл из сцены по ходу истории (мета-поле `left`): герой может уйти
+   * сам, и чат уберёт его за кадр до подходящего момента возвращения.
+   */
+  left?: { name: string; reason?: string }[];
+  /**
    * Заполняется, если мета-блок был найден, но не разобрался:
    * блок убран из текста, а шкалы остались без изменений.
    */
@@ -36,7 +41,8 @@ export const META_PROTOCOL_INSTRUCTION = `### META-ПРОТОКОЛ СИСТЕМ
 }
 \`\`\`
 
-Необязательное поле "returned": ["Имя"] — кого из персонажей за кадром этот ответ вернул в сцену (нужно только в групповых сценах, когда кто-то был в отлучке).`;
+Необязательное поле "returned": ["Имя"] — кого из персонажей за кадром этот ответ вернул в сцену (нужно только в групповых сценах, когда кто-то был в отлучке).
+Необязательное поле "left": {"Имя": "короткая причина"} — кто ушёл из сцены по ходу этого ответа (ушёл по делам, вышел, уехал). Не отправляй героев за кадр без причины и не уводи всех сразу.`;
 
 // ─────────────────────────────────────────────────────────────
 // Разбор ограждённых блоков (```lang ... ```)
@@ -60,6 +66,10 @@ const META_KEYS = [
   "returnedNames",
   "returned_names",
   "вернулся",
+  "left",
+  "leftNames",
+  "left_names",
+  "ушли",
 ];
 
 /** Блоки ```...``` с точными границами: любой другой код в ответе не трогаем. */
@@ -152,6 +162,47 @@ export function parseReturnedNames(value: unknown): string[] {
   }
 
   return names;
+}
+
+/**
+ * Приводит мета-поле `left` к списку «кто ушёл и почему». Принимает словарь
+ * `{"Имя": "причина"}`, строку, список имён или список объектов с name/reason.
+ */
+export function parseLeftScene(value: unknown): { name: string; reason?: string }[] {
+  const entries: { name: string; reason?: string }[] = [];
+
+  const push = (name: unknown, reason?: unknown) => {
+    if (typeof name !== "string") return;
+
+    for (const part of name.split(/[,;]/)) {
+      const clean = part.trim();
+      if (!clean || entries.some((item) => item.name === clean)) continue;
+      const cleanReason =
+        typeof reason === "string" && reason.trim()
+          ? reason.trim().slice(0, 120)
+          : undefined;
+      entries.push(cleanReason ? { name: clean, reason: cleanReason } : { name: clean });
+    }
+  };
+
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    for (const [name, reason] of Object.entries(value as Record<string, unknown>)) {
+      push(name, reason);
+    }
+    return entries;
+  }
+
+  const list = Array.isArray(value) ? value : value === undefined ? [] : [value];
+
+  for (const item of list) {
+    if (typeof item === "string") push(item);
+    else if (item && typeof item === "object") {
+      const record = item as Record<string, unknown>;
+      push(record.name ?? record.character ?? record["имя"], record.reason ?? record.why);
+    }
+  }
+
+  return entries;
 }
 
 /** Возвращает объект метаданных либо null, если это не мета-блок. */
@@ -401,6 +452,16 @@ export function parseMetaBlock(
     text = text.replace(/<returned\s+[^>]*?>/i, "");
   }
 
+  // Локальный стандарт: <left names="Ая" reason="ушла в магазин" />
+  const leftMatch = raw.match(
+    /<left\s+[^>]*?names?\s*=\s*["']([^"']+)["'][^>]*?(?:reason\s*=\s*["']([^"']*)["'][^>]*?)?\/?>/i
+  );
+  let left = leftMatch ? parseLeftScene({ [leftMatch[1]]: leftMatch[2] }) : [];
+
+  if (leftMatch) {
+    text = text.replace(/<left\s+[^>]*?>/i, "");
+  }
+
   // ───────────────────────────────────────────────────────────
   // Облачные метаданные перекрывают разобранные теги
   // ───────────────────────────────────────────────────────────
@@ -424,6 +485,12 @@ export function parseMetaBlock(
 
     const cloudNames = parseReturnedNames(returned);
     if (cloudNames.length > 0) returnedNames = cloudNames;
+
+    const cloudLeft =
+      metaJson.left ?? metaJson.leftNames ?? metaJson.left_names ?? metaJson["ушли"];
+
+    const cloudLeftNames = parseLeftScene(cloudLeft);
+    if (cloudLeftNames.length > 0) left = cloudLeftNames;
   }
 
   return {
@@ -432,6 +499,7 @@ export function parseMetaBlock(
     feelingHint,
     stats: newStats,
     returnedNames: returnedNames.length > 0 ? returnedNames : undefined,
+    left: left.length > 0 ? left : undefined,
     metaWarning,
   };
 }

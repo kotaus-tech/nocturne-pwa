@@ -1,5 +1,6 @@
 import type { ApiConfig } from "../types";
 import { callLLM, type ChatTurn } from "./apiClient";
+import { extractJsonBlock } from "./jsonRepair";
 
 export interface MemoryFact {
   keys: string[];
@@ -39,60 +40,65 @@ function cleanModelOutput(raw: string): string {
  * Безопасный парсер JSON, устойчивый к неэкранированным переносам строк,
  * тегам reasoning-моделей и лишнему тексту от LLM
  */
-function safeParseJson(raw: string): any {
-  let cleaned = cleanModelOutput(raw);
+export function safeParseJson(raw: string): any {
+  const cleaned = cleanModelOutput(raw);
+  const extracted = extractJsonBlock(cleaned);
 
-  const firstBrace = cleaned.search(/[\{\[]/);
-  const lastBrace = Math.max(cleaned.lastIndexOf("}"), cleaned.lastIndexOf("]"));
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
-    cleaned = cleaned.substring(firstBrace, lastBrace + 1);
-  }
-
-  try {
-    return JSON.parse(cleaned);
-  } catch {
+  if (extracted) {
     try {
-      const sanitized = cleaned.replace(/"([^"\\]*(\\.[^"\\]*)*)"/gs, (match) => {
-        return match
-          .replace(/\n/g, "\\n")
-          .replace(/\r/g, "\\r")
-          .replace(/\t/g, "\\t");
-      });
-      return JSON.parse(sanitized);
+      return JSON.parse(extracted.block);
     } catch {
-      let repaired = cleaned;
-      const quoteCount = (repaired.match(/"/g) || []).length;
-      if (quoteCount % 2 !== 0) repaired += '"';
-
-      const openBrackets =
-        (repaired.match(/\[/g) || []).length - (repaired.match(/\]/g) || []).length;
-      for (let i = 0; i < openBrackets; i++) repaired += "]";
-
-      const openBraces =
-        (repaired.match(/\{/g) || []).length - (repaired.match(/\}/g) || []).length;
-      for (let i = 0; i < openBraces; i++) repaired += "}";
-
       try {
-        return JSON.parse(repaired);
+        const sanitized = extracted.block.replace(
+          /"([^"\\]*(\\.[^"\\]*)*)"/gs,
+          (match) =>
+            match.replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t")
+        );
+        return JSON.parse(sanitized);
       } catch {
-        const diaryMatch = cleaned.match(/"diaryThought"\s*:\s*"([\s\S]*?)(?<!\\)"/);
-        const moodMatch = cleaned.match(/"mood"\s*:\s*"([\s\S]*?)(?<!\\)"/);
-        const summaryMatch =
-          cleaned.match(/"summary"\s*:\s*"([\s\S]*?)(?<!\\)"/) ||
-          cleaned.match(/"storyEvent"\s*:\s*"([\s\S]*?)(?<!\\)"/);
+        // Оборванный ответ: extractJsonBlock уже знает, что дописать —
+        // кавычку для незакрытой строки и скобки в порядке вложенности.
+        const repaired = extracted.block + extracted.closers;
 
-        if (summaryMatch || diaryMatch) {
-          return {
-            diaryThought: diaryMatch ? diaryMatch[1].replace(/\\n/g, "\n") : undefined,
-            mood: moodMatch ? moodMatch[1] : undefined,
-            summary: summaryMatch ? summaryMatch[1].replace(/\\n/g, "\n") : undefined,
-            activeFacts: [],
-          };
+        try {
+          return JSON.parse(repaired);
+        } catch {
+          // Ниже — последняя попытка вытащить хотя бы поля.
         }
-        throw new Error("JSON parse totally failed");
       }
     }
   }
+
+  const diaryMatch = cleaned.match(/"diaryThought"\s*:\s*"([\s\S]*?)(?<!\\)"/);
+  const moodMatch = cleaned.match(/"mood"\s*:\s*"([\s\S]*?)(?<!\\)"/);
+  const summaryMatch =
+    cleaned.match(/"summary"\s*:\s*"([\s\S]*?)(?<!\\)"/) ||
+    cleaned.match(/"storyEvent"\s*:\s*"([\s\S]*?)(?<!\\)"/);
+
+  if (summaryMatch || diaryMatch) {
+    return {
+      diaryThought: diaryMatch ? diaryMatch[1].replace(/\\n/g, "\n") : undefined,
+      mood: moodMatch ? moodMatch[1] : undefined,
+      summary: summaryMatch ? summaryMatch[1].replace(/\\n/g, "\n") : undefined,
+      activeFacts: [],
+    };
+  }
+
+  throw new Error("JSON parse totally failed");
+}
+
+/**
+ * Групповая сцена: короткая вставка о том, что в истории были и другие герои.
+ * Память по-прежнему ведётся от лица основного персонажа, но модель видит
+ * состав и не теряет чужие реплики и поступки.
+ */
+function groupCastNote(others?: string[]): string {
+  const cast = (others ?? []).map((name) => name.trim()).filter(Boolean);
+  if (cast.length === 0) return "";
+
+  return `\n\nВАЖНО: это групповая сцена, вместе с тобой в ней были: ${cast.join(
+    ", "
+  )}. Учитывай их слова и поступки: в фактах фиксируй и то, что произошло между героями, а не только между тобой и игроком.`;
 }
 
 /**
@@ -103,7 +109,8 @@ export async function extractMemoriesAndDiary(
   characterName: string,
   userName: string,
   transcript: string,
-  existingFacts: MemoryFact[] = []
+  existingFacts: MemoryFact[] = [],
+  others?: string[]
 ): Promise<MemoryExtractionResult> {
   const pinnedFacts = existingFacts.filter((f) => f.isPinned);
   const unpinnedFacts = existingFacts.filter((f) => !f.isPinned);
@@ -125,7 +132,7 @@ export async function extractMemoriesAndDiary(
 
   const systemPrompt = `Ты — внутренний голос и память персонажа по имени ${characterName}. Твоя цель — анализировать события диалога и возвращать данные строго в формате JSON.`;
 
-  const prompt = `Проанализируй недавний диалог с ${userName}, обнови личный дневник, актуализируй факты и зафиксируй ключевое действие сцены.
+  const prompt = `Проанализируй недавний диалог с ${userName}, обнови личный дневник, актуализируй факты и зафиксируй ключевое действие сцены.${groupCastNote(others)}
 
 ЗАКРЕПЛЁННЫЕ ФАКТЫ (БАЗОВЫЕ — НЕ МЕНЯТЬ И НЕ ДУБЛИРОВАТЬ):
 ${pinnedFactsFormatted}
@@ -216,11 +223,12 @@ export async function directCompressStoryToSummary(
   apiConfig: ApiConfig,
   characterName: string,
   userName: string,
-  rawStoryText: string
+  rawStoryText: string,
+  others?: string[]
 ): Promise<string> {
   const systemPrompt = `Ты — литературный редактор и внутренняя память персонажа по имени ${characterName}. Твоя задача — составить связное фактическое изложение истории без цензуры и штампов.`;
 
-  const prompt = `Перед тобой хроника всех накопившихся событий и эпизодов общения с ${userName}:
+  const prompt = `Перед тобой хроника всех накопившихся событий и эпизодов общения с ${userName}:${groupCastNote(others)}
 
 ${rawStoryText}
 
@@ -260,9 +268,18 @@ export async function extractFullChronicleFromChat(
   apiConfig: ApiConfig,
   characterName: string,
   userName: string,
-  transcript: string
+  transcript: string,
+  others?: string[]
 ): Promise<string[]> {
-  const systemPrompt = `Ты — архивариус и хроникёр диалога между персонажами ${characterName} и ${userName}. Твоя задача — разбить историю на последовательные хронологические сюжетные эпизоды и вернуть результат строго в JSON.`;
+  const castNote =
+    (others ?? []).filter((name) => name.trim()).length > 0
+      ? ` В истории участвуют несколько героев: ${(others ?? [])
+          .map((name) => name.trim())
+          .filter(Boolean)
+          .join(", ")} — упоминай их по именам.`
+      : "";
+
+  const systemPrompt = `Ты — архивариус и хроникёр диалога между персонажами ${characterName} и ${userName}. Твоя задача — разбить историю на последовательные хронологические сюжетные эпизоды и вернуть результат строго в JSON.${castNote}`;
 
   const prompt = `Перед тобой полная история сообщений с момента знакомства до текущего момента:
 

@@ -2,6 +2,7 @@ import { newId } from "../utils/id";
 import type { ApiConfig, Character } from "../types";
 import { DEFAULT_STATS } from "../types";
 import { readJsonResponse, resolveEndpoints } from "./apiClient";
+import { extractJsonBlock } from "./jsonRepair";
 
 export interface TagOption {
   id: string;
@@ -155,52 +156,6 @@ export const TAG_CATEGORIES: TagCategory[] = [
 /** Ответ модели, который не удалось превратить в JSON. */
 export class ModelJsonError extends Error {}
 
-/**
- * Вырезает из текста первый JSON-объект или массив и запоминает, чем его
- * закрывать, если модель оборвала ответ на середине.
- *
- * Скобки считаем с учётом строк: так JSON внутри пояснений и markdown не
- * ломает разбор, а вложенные массивы закрываются в правильном порядке.
- */
-function extractJsonBlock(text: string): { block: string; closers: string } | null {
-  const start = text.search(/[[{]/);
-  if (start === -1) return null;
-
-  const stack: string[] = [];
-  let inString = false;
-  let escaped = false;
-
-  for (let index = start; index < text.length; index += 1) {
-    const char = text[index];
-
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === '"') inString = false;
-      continue;
-    }
-
-    if (char === '"') {
-      inString = true;
-      continue;
-    }
-
-    if (char === "{" || char === "[") {
-      stack.push(char === "{" ? "}" : "]");
-      continue;
-    }
-
-    if (char === "}" || char === "]") {
-      stack.pop();
-      if (stack.length === 0) {
-        return { block: text.slice(start, index + 1), closers: "" };
-      }
-    }
-  }
-
-  const closers = `${inString ? '"' : ""}${stack.reverse().join("")}`;
-  return { block: text.slice(start), closers };
-}
 
 /**
  * Разбирает ответ модели в JSON. Терпим к markdown-обёртке, пояснениям вокруг

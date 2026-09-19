@@ -14,7 +14,10 @@ import {
 } from "../src/services/groupScene";
 import { buildRoutingPrompt, parseRoutingAnswer } from "../src/services/groupRouter";
 import { buildSystemPrompt } from "../src/services/promptBuilder";
-import { matchReturnedCharacters } from "../src/services/groupScene";
+import {
+  matchLeftCharacters,
+  matchReturnedCharacters,
+} from "../src/services/groupScene";
 import {
   GROUP_SIZE_MAX,
   GROUP_SIZE_MIN,
@@ -269,6 +272,29 @@ describe("групповая сцена: выбор говорящего", () =>
     expect(matchReturnedCharacters([], [cast[1]])).toEqual([]);
     expect(matchReturnedCharacters(["а"], [cast[1]])).toEqual([]);
     expect(matchReturnedCharacters(["Рин"], [cast[1], cast[1]])).toHaveLength(1);
+  });
+
+  it("уводит за кадр только тех, кто есть в сцене, и сохраняет причину", () => {
+    const result = matchLeftCharacters(
+      [
+        { name: "Рин", reason: "ушла за сигаретами" },
+        { name: "Незнакомец", reason: "нет такого" },
+      ],
+      [cast[1], cast[2]]
+    );
+
+    expect(result).toEqual([
+      { character: cast[1], reason: "ушла за сигаретами" },
+    ]);
+  });
+
+  it("не уводит одного и того же героя дважды", () => {
+    const result = matchLeftCharacters(
+      [{ name: "Рин" }, { name: "Рина" }],
+      [cast[1]]
+    );
+
+    expect(result).toHaveLength(1);
   });
 
   it("в промпт роутера попадает не больше шести связей", () => {

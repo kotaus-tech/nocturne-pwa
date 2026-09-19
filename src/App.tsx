@@ -531,6 +531,7 @@ export default function App() {
 
           {tab === "characters" && (
             <CharactersPage
+              onRevealCreated={() => setFavoritesOnly(false)}
               onOpenSession={setActiveSessionId}
               favoritesOnly={favoritesOnly}
               createSignal={createSignal}

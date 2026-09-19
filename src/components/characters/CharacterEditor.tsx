@@ -451,6 +451,11 @@ export function CharacterEditor({
   };
 
   const canSave = Boolean(draft.name.trim() && draft.firstMessage.trim());
+  const saveHint = draft.name.trim()
+    ? draft.firstMessage.trim()
+      ? ""
+      : "Для сохранения нужно первое приветственное сообщение — оно на вкладке «Основное»."
+    : "Для сохранения нужно имя персонажа.";
 
   const handleSave = async () => {
     if (!canSave || saving) return;
@@ -903,14 +908,21 @@ export function CharacterEditor({
             )}
 
             <div className="flex items-center justify-between">
-              <span className="text-[11px] sm:text-xs text-content-muted">
-                Имя и приветствие обязательны
+              <span
+                className={
+                  saveHint
+                    ? "pr-3 text-[11px] sm:text-xs text-warning"
+                    : "pr-3 text-[11px] sm:text-xs text-content-muted"
+                }
+              >
+                {saveHint || "Имя и приветствие обязательны"}
               </span>
 
               <button
                 type="button"
                 disabled={!canSave || saving}
                 onClick={() => void handleSave()}
+                title={saveHint || undefined}
                 className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2 sm:px-5 sm:py-2.5 text-xs sm:text-sm font-semibold text-on-accent shadow-[0_0_20px_rgba(139,92,246,0.25)] hover:bg-accent-hover disabled:opacity-40"
               >
                 {saving ? (

@@ -12,7 +12,7 @@ import {
   Pin,
   Upload,
 } from "lucide-react";
-import { db, toggleCharacterFavorite } from "../../db";
+import { db, sanitizeCharacter, toggleCharacterFavorite } from "../../db";
 import { CharacterEditor } from "./CharacterEditor";
 import { CharacterSheet } from "./CharacterSheet";
 import { CharacterImportModal } from "./CharacterImportModal";
@@ -23,6 +23,8 @@ import type { Character } from "../../types";
 import { cn } from "../../utils/cn";
 
 interface CharactersPageProps {
+  /** Создали персонажа в режиме «Избранное» — просьба показать библиотеку целиком. */
+  onRevealCreated?: () => void;
   onOpenSession: (sessionId: string) => void;
   favoritesOnly: boolean;
   createSignal: number;
@@ -44,6 +46,7 @@ function normalizeSearch(value: string): string {
 }
 
 export function CharactersPage({
+  onRevealCreated,
   onOpenSession,
   favoritesOnly,
   createSignal,
@@ -137,7 +140,24 @@ export function CharactersPage({
   }, [characters, normalizedQuery, favoritesOnly, sortOrder]);
 
   const saveCharacter = async (character: Character) => {
-    await db.characters.put(character);
+    const isNew = !editing;
+
+    // createdAt обязан быть числом: Dexie не показывает записи без ключа индекса
+    // в orderBy("createdAt"), поэтому без страховки персонаж «терялся» в списке.
+    await db.characters.put(
+      sanitizeCharacter({
+        ...character,
+        createdAt: Number.isFinite(character.createdAt)
+          ? character.createdAt
+          : Date.now(),
+      })
+    );
+
+    // Персонаж создан в разделе «Избранное» — показываем его, а не пустой список.
+    if (isNew && favoritesOnly && !character.isFavorite) {
+      onRevealCreated?.();
+    }
+
     setEditorOpen(false);
     setEditing(null);
   };

@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
   Sparkles,
   Dices,
@@ -37,6 +37,8 @@ interface Props {
    * персонажей: без него модалка остаётся одиночной, как раньше.
    */
   onApplyGroup?: (group: GeneratedGroup) => void | Promise<void>;
+  /** С каким режимом открывать: из «Групповой сцены» логично сразу группа. */
+  initialMode?: "single" | "group";
 }
 
 type Gender = "female" | "male" | "any";
@@ -61,8 +63,9 @@ export function CharacterGeneratorModal({
   onClose,
   onApply,
   onApplyGroup,
+  initialMode = "single",
 }: Props) {
-  const [mode, setMode] = useState<"single" | "group">("single");
+  const [mode, setMode] = useState<"single" | "group">(initialMode);
   const [groupSize, setGroupSize] = useState(GROUP_SIZE_MIN);
   const [activeCat, setActiveCat] = useState("archetype");
   const [gender, setGender] = useState<Gender>("female");
@@ -70,6 +73,12 @@ export function CharacterGeneratorModal({
   const [customIdea, setCustomIdea] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Каждое открытие начинается с того режима, ради которого модалку позвали.
+  useEffect(() => {
+    if (!open) return;
+    setMode(initialMode);
+  }, [open, initialMode]);
 
   const ideaId = useId();
   const categoryHeadingId = useId();

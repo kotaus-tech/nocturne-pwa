@@ -671,6 +671,7 @@ export function CharactersPage({
         onClose={() => setGroupGeneratorOpen(false)}
         onApply={handleApplySingle}
         onApplyGroup={handleApplyGroup}
+        initialMode="group"
       />
 
       <CharacterImportModal

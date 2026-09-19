@@ -35,6 +35,7 @@ import { AmbientPlayer } from "./components/chat/AmbientPlayer";
 import { Avatar } from "./components/common/Avatar";
 import { PwaBanners } from "./components/common/PwaBanners";
 import { PersonaSwitcher } from "./components/common/PersonaSwitcher";
+import { GlobalSearchModal } from "./components/common/GlobalSearchModal";
 import { db, ensurePersonas, getUserProfile } from "./db";
 import { ensureSeedData } from "./seed";
 import { initPwa } from "./services/pwa";
@@ -46,6 +47,7 @@ export default function App() {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [createSignal, setCreateSignal] = useState(0);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [ready, setReady] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   // Персона для сайдбара: liveQuery, чтобы имя и аватар менялись сразу
@@ -103,6 +105,19 @@ export default function App() {
 
     const disposePwa = initPwa();
     return disposePwa;
+  }, []);
+
+  // ⌘K / Ctrl+K открывает поиск по всему миру из любого раздела.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
   const handleNavigate = (newTab: TabKey) => {
@@ -475,7 +490,7 @@ export default function App() {
             <div className="flex items-center gap-2.5 sm:gap-3">
               <button
                 type="button"
-                onClick={() => handleNavigate("characters")}
+                onClick={() => setSearchOpen(true)}
                 className="hidden sm:flex items-center gap-2 rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-1.5 text-xs text-content-muted transition-colors hover:border-white/[0.15] hover:text-content"
               >
                 <Search size={14} />
@@ -558,6 +573,19 @@ export default function App() {
           onBack={() => setActiveSessionId(null)}
         />
       )}
+
+      <GlobalSearchModal
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onOpenSession={(sessionId) => {
+          setSearchOpen(false);
+          setActiveSessionId(sessionId);
+        }}
+        onNavigate={(nextTab) => {
+          setSearchOpen(false);
+          handleNavigate(nextTab);
+        }}
+      />
 
       <PwaBanners />
     </div>

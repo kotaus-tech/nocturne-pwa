@@ -6,7 +6,6 @@ import {
   BookOpen,
   Users,
   Sparkles,
-  UserCircle2,
   BrainCircuit,
   NotebookPen,
   ShieldCheck,
@@ -110,6 +109,16 @@ function stripMeta(text: string): string {
     .trim();
 }
 
+/** Русское склонение: 1 сообщение, 2 сообщения, 5 сообщений. */
+function pluralMessages(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+
+  if (mod10 === 1 && mod100 !== 11) return "сообщение";
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "сообщения";
+  return "сообщений";
+}
+
 function StoryCard({
   session,
   character,
@@ -172,8 +181,8 @@ function StoryCard({
             <h3 className="truncate text-sm font-semibold text-zinc-100 group-hover:text-accent">
               {charName}
             </h3>
-            <span className="text-[11px] font-semibold tabular-nums text-content-muted">
-              1
+            <span className="shrink-0 text-[11px] font-semibold tabular-nums text-content-muted">
+              {messageCount === undefined ? "…" : `${messageCount} сообщ.`}
             </span>
           </div>
           <p className="mt-1 line-clamp-1 text-xs leading-relaxed text-content-secondary">
@@ -185,7 +194,9 @@ function StoryCard({
           <span className="flex items-center gap-1.5 truncate">
             <MessagesSquare size={13} className="shrink-0 text-accent/80" />
             <span>
-              {messageCount ?? 1} сообщений · {statusTitle}
+              {messageCount === undefined
+                ? "Загрузка…"
+                : `${messageCount} ${pluralMessages(messageCount)} · ${statusTitle}`}
             </span>
           </span>
           <ArrowRight
@@ -631,7 +642,7 @@ export function HomePage({ onNavigate, onOpenSession }: HomePageProps) {
                 />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-semibold text-zinc-100">
-                    {data.profile.name || "Алекс"}
+                    {data.profile.name || "Странник"}
                   </p>
                   <p className="truncate text-xs text-content-muted">
                     Главный герой своих историй
@@ -723,13 +734,23 @@ export function HomePage({ onNavigate, onOpenSession }: HomePageProps) {
               </section>
             )}
 
-            <div className="flex items-center justify-between rounded-2xl border border-white/[0.07] bg-[#121620]/90 px-4 py-3 text-xs">
-              <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onNavigate("backup")}
+              title="Резервные копии и хранилище"
+              className="flex w-full items-center justify-between rounded-2xl border border-white/[0.07] bg-[#121620]/90 px-4 py-3 text-left text-xs transition-colors hover:border-white/[0.14] hover:bg-[#161b26]"
+            >
+              <span className="flex items-center gap-2">
                 <ShieldCheck size={16} className="text-success" />
-                <span className="text-content-secondary">AI профиль сохранён:</span>
-              </div>
-              <span className="font-semibold text-accent">dexie</span>
-            </div>
+                <span className="text-content-secondary">
+                  Всё хранится только у вас
+                </span>
+              </span>
+              <span className="flex items-center gap-1 font-semibold text-accent">
+                <span>Бэкап</span>
+                <ArrowRight size={13} />
+              </span>
+            </button>
           </aside>
         )}
       </div>

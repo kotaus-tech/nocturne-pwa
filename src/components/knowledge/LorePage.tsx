@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { BookOpen, Search, Check, Tag, Plus } from "lucide-react";
+import { BookOpen, Search, Check } from "lucide-react";
 import { db } from "../../db";
 import { Avatar } from "../common/Avatar";
 import type { LorebookEntry, Character } from "../../types";

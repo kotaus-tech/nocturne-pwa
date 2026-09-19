@@ -1,12 +1,17 @@
 {
-  "name": "react-vite-tailwind",
+  "name": "nocturne-pwa",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "NOCTURNE — личное офлайн-пространство для ролевых историй с AI",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "clsx": "2.1.1",

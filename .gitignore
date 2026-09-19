@@ -32,3 +32,14 @@ pnpm-debug.log*
 
 # Сборщики контекста для ИИ (если используете Repomix локально)
 repomix-output.xml
+
+# Артефакты Netlify Edge Functions
+.netlify
+.netlify/
+edge-functions-dist
+
+# Резервные копии исходников
+*.bak
+*.bak.*
+*.orig
+*.rej

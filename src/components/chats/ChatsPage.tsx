@@ -5,7 +5,6 @@ import {
   MessagesSquare,
   Upload,
   Pin,
-  Sparkles,
 } from "lucide-react";
 import { db, updatePinnedSessionsOrder } from "../../db";
 import { SessionRow } from "./SessionRow";

@@ -1,15 +1,11 @@
 import { useState, useMemo } from "react";
 import {
-  FileText,
   Copy,
   Check,
   MessagesSquare,
   Cpu,
-  Layers,
-  Sparkles,
   Terminal,
   Activity,
-  Maximize2,
   Info,
 } from "lucide-react";
 import { Modal } from "../common/Modal";

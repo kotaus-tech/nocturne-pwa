@@ -25,7 +25,6 @@ import { cn } from "../../utils/cn";
 interface CharactersPageProps {
   onOpenSession: (sessionId: string) => void;
   favoritesOnly: boolean;
-  onFavoritesOnlyChange: (value: boolean) => void;
   createSignal: number;
 }
 
@@ -47,7 +46,6 @@ function normalizeSearch(value: string): string {
 export function CharactersPage({
   onOpenSession,
   favoritesOnly,
-  onFavoritesOnlyChange,
   createSignal,
 }: CharactersPageProps) {
   const characters = useLiveQuery(

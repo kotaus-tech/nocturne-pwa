@@ -1,14 +1,11 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import {
-  UserCircle2,
   ImagePlus,
   Save,
   Check,
   Loader2,
   AlertCircle,
   Sparkles,
-  Shield,
-  Layers,
 } from "lucide-react";
 import { getUserProfile, setUserProfile } from "../../db";
 import type { UserProfile } from "../../types";

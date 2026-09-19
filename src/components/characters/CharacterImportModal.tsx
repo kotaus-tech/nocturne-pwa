@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect, useId } from "react";
 import {
   Upload,
-  User,
   MessagesSquare,
   BookOpen,
   BrainCircuit,
@@ -9,7 +8,6 @@ import {
   AlertCircle,
   Loader2,
   Sparkles,
-  Check,
   RotateCcw,
 } from "lucide-react";
 import { Modal } from "../common/Modal";
@@ -35,7 +33,8 @@ export function CharacterImportModal({
   onSuccess,
   initialFile,
 }: CharacterImportModalProps) {
-  const [file, setFile] = useState<File | null>(initialFile || null);
+  // Содержимое файла читается в preview; здесь храним только сам выбор.
+  const [, setFile] = useState<File | null>(initialFile || null);
   const [parsing, setParsing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [preview, setPreview] = useState<ParsedCharacterPreview | null>(null);

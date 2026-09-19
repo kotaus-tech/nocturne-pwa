@@ -2,16 +2,13 @@ import { useState, useRef, useEffect, useId } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import {
   Upload,
-  FileText,
   Check,
   AlertCircle,
   Loader2,
   Sparkles,
   UserPlus,
   MessagesSquare,
-  ArrowRight,
   Heart,
-  Sliders,
 } from "lucide-react";
 import { Modal } from "../common/Modal";
 import { Avatar } from "../common/Avatar";
@@ -22,7 +19,6 @@ import {
   saveImportedSession,
   type ParsedChatPreview,
 } from "../../utils/chatExport";
-import type { Character } from "../../types";
 import { cn } from "../../utils/cn";
 
 interface ChatImportModalProps {
@@ -42,7 +38,8 @@ export function ChatImportModal({
 }: ChatImportModalProps) {
   const characters = useLiveQuery(() => db.characters.toArray(), []);
 
-  const [file, setFile] = useState<File | null>(initialFile || null);
+  // Содержимое файла читается в preview; здесь храним только сам выбор.
+  const [, setFile] = useState<File | null>(initialFile || null);
   const [parsing, setParsing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [preview, setPreview] = useState<ParsedChatPreview | null>(null);

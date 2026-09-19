@@ -512,7 +512,6 @@ export default function App() {
             <CharactersPage
               onOpenSession={setActiveSessionId}
               favoritesOnly={favoritesOnly}
-              onFavoritesOnlyChange={setFavoritesOnly}
               createSignal={createSignal}
             />
           )}

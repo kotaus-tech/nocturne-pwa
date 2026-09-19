@@ -6,9 +6,6 @@ import {
   Pin,
   Trash2,
   Plus,
-  Loader2,
-  Sparkles,
-  Users,
 } from "lucide-react";
 import { db } from "../../db";
 import { Avatar } from "../common/Avatar";

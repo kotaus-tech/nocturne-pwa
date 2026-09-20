@@ -18,11 +18,18 @@ export async function createSession(character: Character, title?: string): Promi
   };
   await db.sessions.add(session);
 
+  // Альтернативные приветствия карточки становятся свайпами первой реплики:
+  // игрок может перебрать варианты открытия сцены, не открывая редактор.
+  const greetings = [
+    character.firstMessage,
+    ...(character.alternateGreetings ?? []),
+  ].filter((text, index, list) => text.trim().length > 0 && list.indexOf(text) === index);
+
   const firstMsg: Message = {
     id: newId(),
     sessionId: session.id,
     sender: "assistant",
-    swipes: [character.firstMessage],
+    swipes: greetings.length > 0 ? greetings : [character.firstMessage],
     currentSwipeIndex: 0,
     statsSnapshot: session.currentStats,
     timestamp: now,

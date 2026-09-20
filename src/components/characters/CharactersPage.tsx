@@ -12,10 +12,16 @@ import {
   Pin,
   Upload,
 } from "lucide-react";
-import { db, sanitizeCharacter, toggleCharacterFavorite } from "../../db";
+import {
+  db,
+  getUserProfile,
+  sanitizeCharacter,
+  toggleCharacterFavorite,
+} from "../../db";
 import { CharacterEditor } from "./CharacterEditor";
 import { CharacterSheet } from "./CharacterSheet";
 import { CharacterImportModal } from "./CharacterImportModal";
+import { supportsCardImport } from "../../utils/characterCardFile";
 import { CharacterGeneratorModal } from "./CharacterGeneratorModal";
 import { GroupSceneModal } from "./GroupSceneModal";
 import {
@@ -106,6 +112,9 @@ export function CharactersPage({
   const [groupGeneratorOpen, setGroupGeneratorOpen] = useState(false);
   const [draggedFile, setDraggedFile] = useState<File | null>(null);
   const [isWindowDragOver, setIsWindowDragOver] = useState(false);
+
+  // Имя активной персоны: им заменяем {{user}} при импорте карточек.
+  const userProfile = useLiveQuery(() => getUserProfile(), []);
 
   const id = useId();
 
@@ -273,7 +282,7 @@ export function CharactersPage({
     e.preventDefault();
     setIsWindowDragOver(false);
     const dropped = e.dataTransfer.files?.[0];
-    if (dropped && dropped.name.endsWith(".json")) {
+    if (dropped && supportsCardImport(dropped)) {
       setDraggedFile(dropped);
       setImportModalOpen(true);
     }
@@ -294,10 +303,10 @@ export function CharactersPage({
               <Upload size={32} />
             </div>
             <p className="text-base font-bold text-zinc-100">
-              Отпустите JSON-файл для импорта персонажа
+              Отпустите файл для импорта персонажа
             </p>
             <p className="text-xs text-content-secondary">
-              Загрузится анкета со всеми ветками, дневниками и воспоминаниями
+              Архив NOCTURNE (.json), карточка Character Card (.json) или PNG с карточкой
             </p>
           </div>
         </div>
@@ -682,6 +691,7 @@ export function CharactersPage({
         open={importModalOpen}
         onClose={() => setImportModalOpen(false)}
         initialFile={draggedFile}
+        userName={userProfile?.name}
         onSuccess={async (characterId) => {
           setImportModalOpen(false);
           const importedChar = await db.characters.get(characterId);

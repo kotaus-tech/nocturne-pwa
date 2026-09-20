@@ -8,6 +8,8 @@ import {
   Copy,
   Download,
   Upload,
+  FileJson,
+  ImageDown,
   Loader2,
   AlertCircle,
   MessagesSquare,
@@ -23,6 +25,10 @@ import {
   deleteCharacterCascade,
 } from "../../utils/sessionActions";
 import { exportCharacterFullBundle } from "../../utils/characterExport";
+import {
+  exportCharacterCardJson,
+  exportCharacterCardPng,
+} from "../../utils/characterCardFile";
 import { SessionRow } from "../chats/SessionRow";
 import { Badge } from "../common/Badge";
 import { FavoriteButton } from "../common/FavoriteButton";
@@ -61,9 +67,9 @@ export function CharacterSheet({
   const [groupOpen, setGroupOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
-  const [pending, setPending] = useState<"create" | "delete" | "duplicate" | "export" | null>(
-    null
-  );
+  const [pending, setPending] = useState<
+    "create" | "delete" | "duplicate" | "export" | "card" | "cardPng" | null
+  >(null);
   const [operationError, setOperationError] = useState<string | null>(null);
 
   if (!character) return null;
@@ -137,6 +143,39 @@ export function CharacterSheet({
     } catch (cause) {
       setOperationError(
         cause instanceof Error ? cause.message : "Не удалось экспортировать архив персонажа."
+      );
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const handleCardExport = () => {
+    if (!character || pending) return;
+    setOperationError(null);
+
+    try {
+      exportCharacterCardJson(character);
+    } catch (cause) {
+      setOperationError(
+        cause instanceof Error
+          ? cause.message
+          : "Не удалось экспортировать карточку персонажа."
+      );
+    }
+  };
+
+  const handleCardPngExport = async () => {
+    if (!character || pending) return;
+    setPending("cardPng");
+    setOperationError(null);
+
+    try {
+      await exportCharacterCardPng(character);
+    } catch (cause) {
+      setOperationError(
+        cause instanceof Error
+          ? cause.message
+          : "Не удалось подготовить PNG-карточку."
       );
     } finally {
       setPending(null);
@@ -328,7 +367,7 @@ export function CharacterSheet({
                 )}
               </div>
 
-              <div className="flex items-center gap-4 pt-2 text-xs font-medium text-content-muted">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-2 text-xs font-medium text-content-muted">
                 <button
                   type="button"
                   onClick={() => void handleDuplicate()}
@@ -351,6 +390,31 @@ export function CharacterSheet({
                     <Download size={14} />
                   )}
                   <span>Полный архив (.json)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCardExport}
+                  className="flex items-center gap-1.5 transition-colors hover:text-accent"
+                  title="Character Card V2 (.json) — понимают SillyTavern, Risu, Chub, JanitorAI"
+                >
+                  <FileJson size={14} />
+                  <span>Карточка V2 (.json)</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={pending === "cardPng"}
+                  onClick={() => void handleCardPngExport()}
+                  className="flex items-center gap-1.5 transition-colors hover:text-accent disabled:opacity-50"
+                  title="Вложить карточку в PNG с текущим аватаром"
+                >
+                  {pending === "cardPng" ? (
+                    <Loader2 size={14} className="animate-spin text-accent" />
+                  ) : (
+                    <ImageDown size={14} />
+                  )}
+                  <span>Карточка в PNG</span>
                 </button>
 
                 <button

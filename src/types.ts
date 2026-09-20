@@ -65,6 +65,11 @@ export interface Character {
   systemPrompt: string;
   
   firstMessage: string;
+  /**
+   * Альтернативные первые реплики (из карточек Character Card).
+   * В новой ветке они становятся свайпами стартового сообщения.
+   */
+  alternateGreetings?: string[];
   initialStats: RelationshipStats;
   lorebook: LorebookEntry[];
   createdAt: number;

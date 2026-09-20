@@ -408,6 +408,31 @@ export function sanitizeExtractedFacts(rawFacts?: unknown): ExtractedFact[] {
   }));
 }
 
+/**
+ * Альтернативные приветствия карточки: только непустые строки, без дублей и
+ * без повтора основного приветствия — иначе в свайпах появится клон реплики.
+ */
+export function sanitizeAlternateGreetings(
+  raw?: unknown,
+  firstMessage?: string
+): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+
+  const main = (firstMessage ?? "").trim();
+  const seen = new Set<string>(main ? [main] : []);
+  const out: string[] = [];
+
+  for (const value of raw) {
+    if (typeof value !== "string") continue;
+    const text = value.trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    out.push(text);
+  }
+
+  return out.length > 0 ? out : undefined;
+}
+
 export function sanitizeCharacter(raw: Partial<Character>): Character {
   return {
     id: typeof raw?.id === "string" && raw.id.trim() ? raw.id : newId(),
@@ -431,6 +456,10 @@ export function sanitizeCharacter(raw: Partial<Character>): Character {
     scenario: typeof raw?.scenario === "string" ? raw.scenario : "",
     systemPrompt: typeof raw?.systemPrompt === "string" ? raw.systemPrompt : "",
     firstMessage: typeof raw?.firstMessage === "string" ? raw.firstMessage : "*Смотрит на тебя в тишине...*",
+    alternateGreetings: sanitizeAlternateGreetings(
+      raw?.alternateGreetings,
+      typeof raw?.firstMessage === "string" ? raw.firstMessage : undefined
+    ),
     initialStats: sanitizeStats(raw?.initialStats),
     lorebook: sanitizeLorebook(raw?.lorebook),
     createdAt: finiteNumber(raw?.createdAt, Date.now()),

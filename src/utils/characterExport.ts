@@ -5,6 +5,8 @@ import {
   sanitizeMessage,
 } from "../db";
 import { newId } from "./id";
+import { downloadBlob, safeFileName } from "./download";
+import type { CardPreviewInfo, NormalizedCard } from "../services/characterCard";
 import type { Character, ChatSession, Message } from "../types";
 
 export interface CharacterExportBundle {
@@ -36,6 +38,13 @@ export interface ParsedCharacterPreview {
     diaryCount: number;
     loreCount: number;
   };
+  /** Заполняется только при импорте карточки Character Card. */
+  cardInfo?: CardPreviewInfo;
+  /**
+   * Сама карточка до превращения в персонажа. Нужна, чтобы прогнать её через
+   * модель (перевод, чистка) и собрать превью заново.
+   */
+  card?: NormalizedCard;
 }
 
 /** Экспортирует персонажа вместе со всеми связанными ветками, историей сообщений, памятью и дневниками */
@@ -84,23 +93,13 @@ export async function exportCharacterFullBundle(characterId: string): Promise<vo
     },
   };
 
-  const safeName = (character.name || "character")
-    .replace(/[\\/:*?"<>|]/g, "")
-    .trim()
-    .slice(0, 30);
-
+  const safeName = safeFileName(character.name, "character");
   const dateStr = new Date().toISOString().slice(0, 10);
   const blob = new Blob([JSON.stringify(bundle, null, 2)], {
     type: "application/json",
   });
 
-  const objectUrl = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = objectUrl;
-  link.download = `nocturne-character-${safeName}-${dateStr}.json`;
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(objectUrl);
+  downloadBlob(blob, `nocturne-character-${safeName}-${dateStr}.json`);
 }
 
 /** Валидирует файл архива персонажа и формирует превью данных без записи в базу данных */
@@ -135,7 +134,9 @@ export async function parseCharacterBundle(file: File): Promise<ParsedCharacterP
     sessionsRaw = [];
     messagesRaw = [];
   } else {
-    throw new Error("Файл не содержит валидных данных персонажа NOCTURNE.");
+    throw new Error(
+      "Файл не похож ни на архив NOCTURNE, ни на карточку Character Card (V1/V2/V3)."
+    );
   }
 
   const character = sanitizeCharacter(characterRaw);

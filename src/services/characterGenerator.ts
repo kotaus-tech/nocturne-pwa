@@ -1,7 +1,12 @@
 import { newId } from "../utils/id";
 import type { ApiConfig, Character } from "../types";
 import { DEFAULT_STATS } from "../types";
-import { readJsonResponse, resolveEndpoints } from "./apiClient";
+import {
+  fetchFromProvider,
+  formatApiError,
+  readJsonResponse,
+  resolveEndpoints,
+} from "./apiClient";
 import { extractJsonBlock } from "./jsonRepair";
 
 export interface TagOption {
@@ -642,21 +647,29 @@ async function requestModelJson(
 
   if (apiConfig.mode === "gemini") {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${apiConfig.model || "gemini-2.0-flash"}:generateContent?key=${apiConfig.apiKey}`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: systemInstruction }] }],
-        generationConfig: {
-          temperature: 0.85,
-          maxOutputTokens: maxTokens,
-          responseMimeType: "application/json",
-        },
-      }),
-    });
+    const res = await fetchFromProvider(
+      url,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: systemInstruction }] }],
+          generationConfig: {
+            temperature: 0.85,
+            maxOutputTokens: maxTokens,
+            responseMimeType: "application/json",
+          },
+        }),
+      },
+      apiConfig,
+      { useProxy: false }
+    );
+
     if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Gemini API Error: ${err}`);
+      const errText = await res.text().catch(() => "");
+      throw new Error(
+        formatApiError(null, res.status, errText, apiConfig.baseUrl, apiConfig.model)
+      );
     }
     const data = await readJsonResponse(res);
     rawJson = extractModelText(data);
@@ -689,24 +702,34 @@ async function requestModelJson(
       bodyPayload.response_format = { type: "json_object" };
     }
 
-    let res = await fetch(primaryUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(bodyPayload),
-    });
-
-    if (!res.ok && res.status === 404 && fallbackUrl) {
-      const fallbackRes = await fetch(fallbackUrl, {
+    let res = await fetchFromProvider(
+      primaryUrl,
+      {
         method: "POST",
         headers,
         body: JSON.stringify(bodyPayload),
-      });
+      },
+      apiConfig
+    );
+
+    if (!res.ok && res.status === 404 && fallbackUrl) {
+      const fallbackRes = await fetchFromProvider(
+        fallbackUrl,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify(bodyPayload),
+        },
+        apiConfig
+      );
       if (fallbackRes.ok) res = fallbackRes;
     }
 
     if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`API Error: ${err}`);
+      const errText = await res.text().catch(() => "");
+      throw new Error(
+        formatApiError(null, res.status, errText, apiConfig.baseUrl, apiConfig.model)
+      );
     }
     const data = await readJsonResponse(res);
     rawJson = extractModelText(data);

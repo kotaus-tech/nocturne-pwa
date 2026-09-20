@@ -604,6 +604,29 @@ async function resilientFetch(
   }
 }
 
+/**
+ * Сетевой запрос к провайдеру для тех, кто собирает запрос сам (генераторы
+ * персонажа и группы). Умеет то же, что и обычная генерация: если браузер
+ * заблокировал прямой запрос (CORS), повторяет его через резервный прокси
+ * `/api/llm-proxy`, а ошибку объясняет человеческим текстом.
+ */
+export async function fetchFromProvider(
+  url: string,
+  options: RequestInit,
+  config: ApiConfig,
+  { useProxy }: { useProxy?: boolean } = {}
+): Promise<Response> {
+  const allowProxy = useProxy ?? !isLocalEndpoint(config.baseUrl);
+
+  try {
+    return await resilientFetch(url, options, allowProxy);
+  } catch (cause) {
+    throw new Error(
+      formatApiError(cause, undefined, undefined, config.baseUrl, config.model)
+    );
+  }
+}
+
 async function callOpenAICompatibleStream(
   config: ApiConfig,
   systemPrompt: string,

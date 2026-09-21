@@ -430,9 +430,16 @@ export function DirectorPanel({
   const [realisticPacing, setRealisticPacing] = useState(session.realisticPacing !== false);
   const [expandedMemory, setExpandedMemory] = useState<Record<string, boolean>>({});
   const [newMemoryNote, setNewMemoryNote] = useState<Record<string, string>>({});
+  // Санитизация намерения обрезает пробелы при сохранении. Отдельный draft
+  // не даёт этому промежуточному сохранению перехватывать пробел после слова.
+  const [intentionDrafts, setIntentionDrafts] = useState<Record<string, string>>({});
   const [offscreenIntervalDraft, setOffscreenIntervalDraft] = useState(() =>
     String(clampOffscreenInterval(session.offscreenTickInterval))
   );
+
+  useEffect(() => {
+    setIntentionDrafts({});
+  }, [session.id]);
 
   useEffect(() => {
     setOffscreenIntervalDraft(
@@ -1220,10 +1227,21 @@ export function DirectorPanel({
                                 Активное намерение
                               </label>
                               <textarea
-                                value={memory.intention?.text ?? ""}
+                                value={intentionDrafts[member.id] ?? memory.intention?.text ?? ""}
                                 maxLength={MAX_INTENTION_LENGTH}
+                                onFocus={() =>
+                                  setIntentionDrafts((state) =>
+                                    state[member.id] !== undefined
+                                      ? state
+                                      : { ...state, [member.id]: memory.intention?.text ?? "" }
+                                  )
+                                }
                                 onChange={(event) => {
                                   const text = event.target.value;
+                                  setIntentionDrafts((state) => ({
+                                    ...state,
+                                    [member.id]: text,
+                                  }));
                                   void updateMemory(member.id, {
                                     intention: text.trim()
                                       ? {
@@ -1235,6 +1253,14 @@ export function DirectorPanel({
                                       : null,
                                   });
                                 }}
+                                onBlur={() =>
+                                  setIntentionDrafts((state) => {
+                                    if (state[member.id] === undefined) return state;
+                                    const next = { ...state };
+                                    delete next[member.id];
+                                    return next;
+                                  })
+                                }
                                 placeholder="Нет активного намерения"
                                 aria-label={`Намерение персонажа ${member.name}`}
                                 rows={2}

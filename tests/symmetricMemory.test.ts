@@ -23,6 +23,7 @@ import {
   buildOffscreenPatch,
   isOffscreenTickDue,
   parseOffscreenTickResult,
+  resolveTickInterval,
 } from "../src/services/offscreenTick";
 import { reduceScenePatches } from "../src/services/sessionPatch";
 import { parseMetaBlock } from "../src/services/metaParser";
@@ -160,6 +161,14 @@ describe("симметричная память участников", () => {
 });
 
 describe("offscreen tick", () => {
+  it("ограничивает пользовательский интервал границами 4–20", () => {
+    expect(resolveTickInterval({ offscreenTickInterval: undefined })).toBe(6);
+    expect(resolveTickInterval({ offscreenTickInterval: 1 })).toBe(4);
+    expect(resolveTickInterval({ offscreenTickInterval: 12.6 })).toBe(13);
+    expect(resolveTickInterval({ offscreenTickInterval: 99 })).toBe(20);
+    expect(resolveTickInterval({ offscreenTickInterval: Number.NaN })).toBe(6);
+  });
+
   it("становится eligible по интервалу или скачку времени, но не для present", () => {
     const absent = emptyParticipantMemory("c-2");
     const messages = Array.from({ length: 6 }, (_, index) =>

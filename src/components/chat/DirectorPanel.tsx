@@ -55,6 +55,9 @@ import {
   MAX_INTENTION_LENGTH,
   MAX_PRIVATE_NOTE_LENGTH,
   MAX_PRIVATE_NOTES,
+  OFFSCREEN_TICK_INTERVAL,
+  OFFSCREEN_TICK_INTERVAL_MAX,
+  OFFSCREEN_TICK_INTERVAL_MIN,
   moveItem,
 } from "../../services/groupScene";
 import { newId } from "../../utils/id";
@@ -103,6 +106,16 @@ interface Props {
   /** Идёт генерация — кнопки хода заблокированы. */
   sending?: boolean;
   messageCount: number;
+}
+
+function clampOffscreenInterval(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return OFFSCREEN_TICK_INTERVAL;
+  }
+  return Math.min(
+    OFFSCREEN_TICK_INTERVAL_MAX,
+    Math.max(OFFSCREEN_TICK_INTERVAL_MIN, Math.round(value))
+  );
 }
 
 const THOUGHT_MODES: {
@@ -417,6 +430,28 @@ export function DirectorPanel({
   const [realisticPacing, setRealisticPacing] = useState(session.realisticPacing !== false);
   const [expandedMemory, setExpandedMemory] = useState<Record<string, boolean>>({});
   const [newMemoryNote, setNewMemoryNote] = useState<Record<string, string>>({});
+  const [offscreenIntervalDraft, setOffscreenIntervalDraft] = useState(() =>
+    String(clampOffscreenInterval(session.offscreenTickInterval))
+  );
+
+  useEffect(() => {
+    setOffscreenIntervalDraft(
+      String(clampOffscreenInterval(session.offscreenTickInterval))
+    );
+  }, [session.id, session.offscreenTickInterval]);
+
+  const commitOffscreenInterval = (rawValue: string) => {
+    const parsed = Number(rawValue);
+    const next = clampOffscreenInterval(
+      rawValue.trim() === "" || !Number.isFinite(parsed)
+        ? session.offscreenTickInterval
+        : parsed
+    );
+    setOffscreenIntervalDraft(String(next));
+    if (next !== clampOffscreenInterval(session.offscreenTickInterval)) {
+      onUpdateOffscreenInterval?.(next);
+    }
+  };
 
   const [dim, setDim] = useState(session.wallpaperDim ?? 0.55);
   const [blur, setBlur] = useState(session.wallpaperBlur ?? 0);
@@ -1042,13 +1077,31 @@ export function DirectorPanel({
                     </span>
                     <input
                       type="number"
-                      min={4}
-                      max={20}
+                      min={OFFSCREEN_TICK_INTERVAL_MIN}
+                      max={OFFSCREEN_TICK_INTERVAL_MAX}
                       step={1}
-                      value={session.offscreenTickInterval ?? 6}
-                      onChange={(event) =>
-                        onUpdateOffscreenInterval(Number(event.target.value))
-                      }
+                      inputMode="numeric"
+                      value={offscreenIntervalDraft}
+                      onChange={(event) => {
+                        const rawValue = event.target.value;
+                        // Не отправляем пустую строку или промежуточное
+                        // значение вроде «2» в редьюсер: иначе min=4 тут же
+                        // возвращает число и мобильная клавиатура не даёт
+                        // набрать 20.
+                        if (!/^\\d*$/.test(rawValue)) return;
+                        setOffscreenIntervalDraft(rawValue);
+
+                        const parsed = Number(rawValue);
+                        if (
+                          rawValue !== "" &&
+                          Number.isFinite(parsed) &&
+                          parsed >= OFFSCREEN_TICK_INTERVAL_MIN &&
+                          parsed <= OFFSCREEN_TICK_INTERVAL_MAX
+                        ) {
+                          onUpdateOffscreenInterval(parsed);
+                        }
+                      }}
+                      onBlur={() => commitOffscreenInterval(offscreenIntervalDraft)}
                       className="input-field input-field--compact w-20 text-center"
                       aria-label="Интервал жизни за кадром"
                     />

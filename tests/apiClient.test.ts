@@ -139,8 +139,10 @@ describe("RU OpenRouter", () => {
       () => {}
     );
 
-    expect(calls[0]).toBe("https://api.ru-openrouter.ru/v1/chat/completions");
-    expect(calls[1]).toContain("/api/llm-proxy?target=");
+    // RU OpenRouter сразу идёт через same-origin proxy, поэтому браузер не
+    // получает даже первой CORS-ошибки от прямого запроса.
+    expect(calls[0]).toContain("/api/llm-proxy?target=");
+    expect(calls).toHaveLength(1);
     expect(reply.text).toContain("Ответ через прокси.");
   });
 
@@ -201,7 +203,7 @@ describe("RU OpenRouter", () => {
         [{ role: "user", content: "привет" }],
         () => {}
       )
-    ).rejects.toThrow(/резервный прокси/i);
+    ).rejects.toThrow(/прокси/i);
   });
 
   it("ошибку самого провайдера через прокси не подменяет", async () => {
@@ -313,8 +315,9 @@ describe("проверка соединения", () => {
     expect(result.message).toBe("Связь есть, всё работает.");
     expect(result.model).toBe("openai/gpt-4o-mini");
     expect(typeof result.ms).toBe("number");
-    // Проверка идёт тем же путём, что и генерация: адрес чата провайдера.
-    expect(calls[0]).toBe("https://api.ru-openrouter.ru/v1/chat/completions");
+    // Проверка идёт тем же безопасным same-origin proxy-путём, что и генерация.
+    expect(calls[0]).toContain("/api/llm-proxy?target=");
+    expect(calls).toHaveLength(1);
   });
 
   it("убирает служебную обвязку из ответа", async () => {

@@ -12,6 +12,8 @@ import {
   intentionSurvivesShift,
   MAX_SCENE_RELATIONS,
   OFFSCREEN_MIN_TICKS_BETWEEN_SIGNIFICANT,
+  OFFSCREEN_TICK_INTERVAL_MAX,
+  OFFSCREEN_TICK_INTERVAL_MIN,
   mergeSceneRelations,
   notesSignature,
   sanitizeIntention,
@@ -382,10 +384,16 @@ function applyPatchToDraft(
     if (patch.settingsPatch.offscreenLifeEnabled !== undefined) {
       draft.settings.offscreenLifeEnabled = patch.settingsPatch.offscreenLifeEnabled;
     }
-    if (patch.settingsPatch.offscreenTickInterval !== undefined) {
+    if (
+      patch.settingsPatch.offscreenTickInterval !== undefined &&
+      Number.isFinite(patch.settingsPatch.offscreenTickInterval)
+    ) {
       draft.settings.offscreenTickInterval = Math.min(
-        20,
-        Math.max(4, Math.round(patch.settingsPatch.offscreenTickInterval))
+        OFFSCREEN_TICK_INTERVAL_MAX,
+        Math.max(
+          OFFSCREEN_TICK_INTERVAL_MIN,
+          Math.round(patch.settingsPatch.offscreenTickInterval)
+        )
       );
     }
   }

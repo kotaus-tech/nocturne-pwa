@@ -496,7 +496,7 @@ export async function readJsonResponse(res: Response, url?: string): Promise<any
   }
 }
 
-/** Путь резервного прокси: совпадает с edge-функцией Netlify (netlify.toml). */
+/** Same-origin путь прокси: совпадает с Edge Function Netlify (netlify.toml). */
 export const LLM_PROXY_PATH = "/api/llm-proxy";
 
 /**
@@ -522,7 +522,7 @@ function hostOf(url: string): string {
 
 function proxyUnavailableMessage(url: string): string {
   return (
-    `Браузер заблокировал прямой запрос к ${hostOf(url)} (CORS), а резервный прокси ` +
+    `Браузер заблокировал прямой запрос к ${hostOf(url)} (CORS), а прокси ` +
     `${LLM_PROXY_PATH} на этом домене не отвечает.\n` +
     "Откройте приложение на Netlify-домене (там работает edge-функция) или запустите " +
     "локально: npm run dev поднимает прокси вместе с сервером."
@@ -545,11 +545,73 @@ function proxyUpstreamFailedMessage(url: string, status: number, details?: strin
   );
 }
 
+function isRuOpenRouterUrl(url: string): boolean {
+  try {
+    return new URL(url).hostname === RU_OPENROUTER_HOST;
+  } catch {
+    return false;
+  }
+}
+
+async function fetchThroughProxy(url: string, options: RequestInit): Promise<Response> {
+  const proxied = `${LLM_PROXY_PATH}?target=${encodeURIComponent(url)}`;
+
+  let res: Response;
+  try {
+    res = await fetch(proxied, options);
+  } catch (proxyErr) {
+    if (options.signal?.aborted) throw proxyErr;
+    throw new ProxyChannelError(proxyUnavailableMessage(url));
+  }
+
+  const contentType = res.headers.get("content-type") ?? "";
+  const body = !res.ok || contentType.includes("text/html")
+    ? await res.clone().text().catch(() => "")
+    : "";
+
+  // Если вместо Edge Function хостинг отдаёт SPA/404, прямой CORS-запрос
+  // не должен быть единственным сообщением, которое видит пользователь.
+  if (contentType.includes("text/html")) {
+    throw new ProxyChannelError(proxyUnavailableMessage(url));
+  }
+
+  if (!res.ok) {
+    if (!contentType.includes("json")) {
+      throw new ProxyChannelError(proxyUnavailableMessage(url));
+    }
+
+    if (body.includes("Host not allowed")) {
+      throw new ProxyChannelError(proxyHostBlockedMessage(url));
+    }
+
+    if (body.includes("Proxy fetch failed") || body.includes("target parameter")) {
+      const details = (() => {
+        try {
+          return JSON.parse(body)?.details as string | undefined;
+        } catch {
+          return undefined;
+        }
+      })();
+
+      throw new ProxyChannelError(proxyUpstreamFailedMessage(url, res.status, details));
+    }
+  }
+
+  return res;
+}
+
 async function resilientFetch(
   url: string,
   options: RequestInit,
   allowProxy: boolean
 ): Promise<Response> {
+  // RU OpenRouter не получает прямой browser-запрос: это исключает CORS до
+  // начала запроса и делает Netlify/Vite proxy основным каналом, а не поздним
+  // recovery после уже показанной браузером ошибки.
+  if (allowProxy && isRuOpenRouterUrl(url)) {
+    return fetchThroughProxy(url, options);
+  }
+
   try {
     return await fetch(url, options);
   } catch (err) {
@@ -557,47 +619,7 @@ async function resilientFetch(
     if (options.signal?.aborted) throw err;
 
     if (allowProxy && err instanceof TypeError) {
-      const proxied = `${LLM_PROXY_PATH}?target=${encodeURIComponent(url)}`;
-
-      let res: Response;
-      try {
-        res = await fetch(proxied, options);
-      } catch (proxyErr) {
-        if (options.signal?.aborted) throw proxyErr;
-        throw new ProxyChannelError(proxyUnavailableMessage(url));
-      }
-
-      // Прокси есть не на каждом хостинге: вместо функции прилетает страница
-      // 404 самим хостингом, а не ответ провайдера.
-      if (!res.ok) {
-        const contentType = res.headers.get("content-type") ?? "";
-        const body = await res
-          .clone()
-          .text()
-          .catch(() => "");
-
-        if (!contentType.includes("json")) {
-          throw new ProxyChannelError(proxyUnavailableMessage(url));
-        }
-
-        if (body.includes("Host not allowed")) {
-          throw new ProxyChannelError(proxyHostBlockedMessage(url));
-        }
-
-        if (body.includes("Proxy fetch failed") || body.includes("target parameter")) {
-          const details = (() => {
-            try {
-              return JSON.parse(body)?.details as string | undefined;
-            } catch {
-              return undefined;
-            }
-          })();
-
-          throw new ProxyChannelError(proxyUpstreamFailedMessage(url, res.status, details));
-        }
-      }
-
-      return res;
+      return fetchThroughProxy(url, options);
     }
 
     throw err;
@@ -606,9 +628,9 @@ async function resilientFetch(
 
 /**
  * Сетевой запрос к провайдеру для тех, кто собирает запрос сам (генераторы
- * персонажа и группы). Умеет то же, что и обычная генерация: если браузер
- * заблокировал прямой запрос (CORS), повторяет его через резервный прокси
- * `/api/llm-proxy`, а ошибку объясняет человеческим текстом.
+ * персонажа и группы). Для RU OpenRouter использует тот же same-origin proxy,
+ * что и обычная генерация, а для остальных внешних провайдеров при CORS
+ * повторяет запрос через `/api/llm-proxy`.
  */
 export async function fetchFromProvider(
   url: string,

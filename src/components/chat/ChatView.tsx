@@ -48,6 +48,8 @@ import {
   matchReturnedCharacters,
   nextSpeaker,
   notesSignature,
+  OFFSCREEN_TICK_INTERVAL_MAX,
+  OFFSCREEN_TICK_INTERVAL_MIN,
   pendingSpeakers,
   resolveParticipants,
   resolvePresence,
@@ -2901,8 +2903,13 @@ export function ChatView({
           });
         }}
         onUpdateOffscreenInterval={(interval) => {
+          if (!Number.isFinite(interval)) return;
+          const normalizedInterval = Math.min(
+            OFFSCREEN_TICK_INTERVAL_MAX,
+            Math.max(OFFSCREEN_TICK_INTERVAL_MIN, Math.round(interval))
+          );
           void commitPatch({
-            settingsPatch: { offscreenTickInterval: interval },
+            settingsPatch: { offscreenTickInterval: normalizedInterval },
             sourceKind: "user_turn",
             sourceSnapshotAt: Date.now(),
           });

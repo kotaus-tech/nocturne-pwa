@@ -1088,7 +1088,7 @@ export function DirectorPanel({
                         // значение вроде «2» в редьюсер: иначе min=4 тут же
                         // возвращает число и мобильная клавиатура не даёт
                         // набрать 20.
-                        if (!/^\\d*$/.test(rawValue)) return;
+                        if (!/^\d*$/.test(rawValue)) return;
                         setOffscreenIntervalDraft(rawValue);
 
                         const parsed = Number(rawValue);

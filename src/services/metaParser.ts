@@ -1,5 +1,10 @@
-import type { RelationshipStats } from "../types";
+import type { RelationshipDelta, RelationshipStats, SceneShift } from "../types";
 import { DEFAULT_STATS } from "../types";
+
+/** Скоупы намерения, которые мы принимаем из мета-блока. */
+const INTENTION_SCOPE_VALUES = ["location", "time", "scene", "persistent"] as const;
+/** Допустимые значения скачка времени. */
+const SCENE_SHIFT_TIME_VALUES = ["hours", "day", "days"] as const;
 
 export interface ParsedResponse {
   text: string;
@@ -21,6 +26,19 @@ export interface ParsedResponse {
    * ходу сцены, а панель режиссёра показывает, что изменилось.
    */
   relations?: { from: string; to?: string; text: string }[];
+  /**
+   * Скачок времени и/или локации (мета-поле `sceneShift`): модель сообщает
+   * о нём, только если её собственный текст реально содержит таймскип или
+   * смену места действия. Оба подполя независимы.
+   */
+  sceneShift?: SceneShift;
+  /**
+   * Новое устойчивое намерение говорящего персонажа (мета-поле `intention`).
+   * Одно на персонажа: новое замещает старое.
+   */
+  intention?: { text: string; scope: (typeof INTENTION_SCOPE_VALUES)[number] };
+  /** Текущее намерение персонажа выполнено/отменено — его нужно очистить. */
+  resolvedIntention?: boolean;
   /**
    * Заполняется, если мета-блок был найден, но не разобрался:
    * блок убран из текста, а шкалы остались без изменений.
@@ -48,7 +66,13 @@ export const META_PROTOCOL_INSTRUCTION = `### META-ПРОТОКОЛ СИСТЕМ
 
 Необязательное поле "returned": ["Имя"] — кого из персонажей за кадром этот ответ вернул в сцену (нужно только в групповых сценах, когда кто-то был в отлучке).
 Необязательное поле "relations": [{"from": "Имя", "to": "Имя", "text": "как изменилось отношение"}] — только если по ходу ответа отношение между героями правда изменилось.
-Необязательное поле "left": {"Имя": "короткая причина"} — кто ушёл из сцены по ходу этого ответа (ушёл по делам, вышел, уехал). Не отправляй героев за кадр без причины и не уводи всех сразу.`;
+Необязательное поле "left": {"Имя": "короткая причина"} — кто ушёл из сцены по ходу этого ответа (ушёл по делам, вышел, уехал). Не отправляй героев за кадр без причины и не уводи всех сразу.
+Необязательное поле "sceneShift": {"time": "hours"|"day"|"days"|null, "locationChanged": true|false} — ТОЛЬКО если в этом ответе произошёл явный скачок времени («прошло несколько часов», «наступил следующий день») или смена места действия («вышли на балкон»). Если ничего подобного нет — не пиши это поле вообще.
+Необязательное поле "intention": {"text": "короткий план (до 200 знаков)", "scope": "location"|"time"|"scene"|"persistent"} — новое устойчивое намерение говорящего персонажа, если по ходу ответа у него появился значимый план, не исчерпываемый этой репликой. Разовые сиюминутные реакции намерением не являются.
+Необязательное поле "resolvedIntention": true — если текущее намерение персонажа по ходу этого ответа выполнено или потеряло смысл.
+
+Если используется поле "sceneShift", оно должно отражать только явный скачок времени или смену места, описанные в художественном тексте. Не добавляй его при обычном продолжении сцены.
+Если используется поле "intention", это один новый устойчивый план говорящего, а не краткая реакция на текущую фразу. Все приватные мысли и заметки этого персонажа остаются только в его внутреннем слое и не раскрываются другим героям.`;
 
 // ─────────────────────────────────────────────────────────────
 // Разбор ограждённых блоков (```lang ... ```)
@@ -78,6 +102,11 @@ const META_KEYS = [
   "ушли",
   "relations",
   "связи",
+  "sceneShift",
+  "scene_shift",
+  "intention",
+  "resolvedIntention",
+  "resolved_intention",
 ];
 
 /** Блоки ```...``` с точными границами: любой другой код в ответе не трогаем. */
@@ -367,6 +396,14 @@ function buildStats(
     customStats: current.customStats || {},
   };
 
+  // Опциональное влечение (генератор V2): переносится из базовых шкал и
+  // обновляется моделью так же, как остальные. У V1-персонажей поля нет —
+  // и тогда оно не появляется, поведение прежнее.
+  if (typeof current.attraction === "number" && Number.isFinite(current.attraction)) {
+    const nextAttraction = coerceStat(source.attraction, current.attraction);
+    stats.attraction = nextAttraction !== null ? nextAttraction : current.attraction;
+  }
+
   for (const key of STAT_KEYS) {
     const next = coerceStat(source[key], stats[key]);
     if (next !== null) stats[key] = next;
@@ -381,6 +418,126 @@ function buildStats(
   }
 
   return stats;
+}
+
+/**
+ * Сдвиг шкал за один ответ: состояние после минус состояние до.
+ *
+ * Нулевые изменения в результат не попадают — пустой объект означает
+ * «ответ ничего не поменял», и панель аналитики не показывает лишнего.
+ * Влечение учитывается, только если оно было до ответа: у V1-персонажей
+ * этой шкалы нет, и дельта по ней не появляется.
+ */
+export function computeStatsDelta(
+  before: RelationshipStats,
+  after: RelationshipStats
+): RelationshipDelta {
+  const delta: RelationshipDelta = {};
+
+  for (const key of STAT_KEYS) {
+    const diff = (after[key] ?? 0) - (before[key] ?? 0);
+    if (diff !== 0) delta[key] = diff;
+  }
+
+  if (
+    typeof before.attraction === "number" &&
+    typeof after.attraction === "number"
+  ) {
+    const diff = after.attraction - before.attraction;
+    if (diff !== 0) delta.attraction = diff;
+  }
+
+  const customBefore = before.customStats ?? {};
+  const customAfter = after.customStats ?? {};
+  const custom: Record<string, number> = {};
+
+  for (const key of new Set([
+    ...Object.keys(customBefore),
+    ...Object.keys(customAfter),
+  ])) {
+    const diff = (customAfter[key] ?? 0) - (customBefore[key] ?? 0);
+    if (diff !== 0) custom[key] = diff;
+  }
+
+  if (Object.keys(custom).length > 0) delta.customStats = custom;
+
+  return delta;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Скачок сцены и намерения (симметричная память)
+// ─────────────────────────────────────────────────────────────
+
+function isShiftTime(value: unknown): value is SceneShift["time"] {
+  return (
+    typeof value === "string" &&
+    (SCENE_SHIFT_TIME_VALUES as readonly string[]).includes(value)
+  );
+}
+
+function isIntentionScope(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    (INTENTION_SCOPE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Приводит мета-поле `sceneShift` к строгой форме. Мусорные значения
+ * отбрасываются целиком: лучше пропустить сдвиг, чем выдумать его.
+ */
+export function parseSceneShiftValue(rawShift: unknown): SceneShift | undefined {
+  if (!rawShift || typeof rawShift !== "object" || Array.isArray(rawShift)) {
+    return undefined;
+  }
+
+  const shift = rawShift as Record<string, unknown>;
+  const time = isShiftTime(shift.time) ? shift.time : null;
+  const locationChanged = shift.locationChanged === true;
+
+  if (time === null && !locationChanged) return undefined;
+  return { time, locationChanged };
+}
+
+/** Разбирает атрибуты тега `<sceneShift time="hours" location="true" />`. */
+export function parseSceneShiftAttrs(attrs: string): SceneShift | undefined {
+  const timeMatch = attrs.match(/(?:^|\s)time\s*=\s*["']([^"']*)["']/i);
+  const locationMatch = attrs.match(
+    /(?:^|\s)(?:location|locationChanged)\s*=\s*["']([^"']*)["']/i
+  );
+
+  const time = timeMatch && isShiftTime(timeMatch[1].trim())
+    ? (timeMatch[1].trim() as SceneShift["time"])
+    : null;
+  const locationChanged = locationMatch
+    ? /^(1|true|yes|да)$/i.test(locationMatch[1].trim())
+    : false;
+
+  if (time === null && !locationChanged) return undefined;
+  return { time, locationChanged };
+}
+
+/**
+ * Приводит мета-поле `intention` к намерению. Текст обязателен, скоуп
+ * из белого списка (неизвестный считается сценическим — самым короткоживущим).
+ */
+export function parseIntentionValue(
+  rawIntention: unknown
+): ParsedResponse["intention"] | undefined {
+  if (!rawIntention || typeof rawIntention !== "object" || Array.isArray(rawIntention)) {
+    return undefined;
+  }
+
+  const candidate = rawIntention as Record<string, unknown>;
+  const text =
+    typeof candidate.text === "string" ? candidate.text.trim().slice(0, 200) : "";
+  if (!text) return undefined;
+
+  const scope = isIntentionScope(candidate.scope)
+    ? (candidate.scope as (typeof INTENTION_SCOPE_VALUES)[number])
+    : "scene";
+
+  return { text, scope };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -554,6 +711,44 @@ export function parseMetaBlock(
     text = text.replace(/<relation\s+[^>]*?\/?>/gi, "");
   }
 
+  // Локальный стандарт: <sceneShift time="hours" location="true" />
+  const shiftMatch = text.match(/<sceneShift\s+([^>]*?)\/?>/i);
+  let sceneShift: SceneShift | undefined;
+
+  if (shiftMatch) {
+    sceneShift = parseSceneShiftAttrs(shiftMatch[1]);
+    text = text.replace(/<sceneShift\s+[^>]*?\/?>/i, "");
+  }
+
+  // Локальный стандарт: <intention scope="persistent">текст плана</intention>
+  const intentionMatch = text.match(
+    /<intention(?:\s+([^>]*))?>[\s\S]*?<\/intention>/i
+  );
+  let intention: ParsedResponse["intention"] | undefined;
+
+  if (intentionMatch) {
+    const attrs = intentionMatch[1] ?? "";
+    const body = (intentionMatch[0] as string)
+      .replace(/<intention(?:\s+[^>]*)?>/i, "")
+      .replace(/<\/intention>$/i, "")
+      .trim();
+    const scopeMatch = attrs.match(/(?:^|\s)scope\s*=\s*["']([^"']*)["']/i);
+
+    intention = parseIntentionValue({
+      text: body,
+      scope: scopeMatch ? scopeMatch[1].trim() : "scene",
+    });
+    text = text.replace(/<intention(?:\s+[^>]*)?>[\s\S]*?<\/intention>/i, "");
+  }
+
+  // Локальный стандарт: <resolvedIntention/>
+  const resolvedMatch = text.match(/<resolvedIntention\s*\/?>/i);
+  let resolvedIntention = Boolean(resolvedMatch);
+
+  if (resolvedMatch) {
+    text = text.replace(/<resolvedIntention\s*\/?>/i, "");
+  }
+
   // ───────────────────────────────────────────────────────────
   // Облачные метаданные перекрывают разобранные теги
   // ───────────────────────────────────────────────────────────
@@ -588,6 +783,18 @@ export function parseMetaBlock(
       metaJson.relations ?? metaJson["связи"]
     );
     if (cloudRelations.length > 0) relations = cloudRelations;
+
+    const cloudShift = parseSceneShiftValue(
+      metaJson.sceneShift ?? metaJson.scene_shift
+    );
+    if (cloudShift) sceneShift = cloudShift;
+
+    const cloudIntention = parseIntentionValue(metaJson.intention);
+    if (cloudIntention) intention = cloudIntention;
+
+    if (metaJson.resolvedIntention === true || metaJson.resolved_intention === true) {
+      resolvedIntention = true;
+    }
   }
 
   return {
@@ -598,6 +805,9 @@ export function parseMetaBlock(
     returnedNames: returnedNames.length > 0 ? returnedNames : undefined,
     left: left.length > 0 ? left : undefined,
     relations: relations.length > 0 ? relations : undefined,
+    sceneShift,
+    intention,
+    resolvedIntention: resolvedIntention || undefined,
     metaWarning,
   };
 }

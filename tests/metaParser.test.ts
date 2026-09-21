@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  computeStatsDelta,
   parseLeftScene,
   parseMetaBlock,
   parseReturnedNames,
@@ -300,5 +301,68 @@ describe("parseMetaBlock: обычный текст", () => {
 
   it("на пустой строке возвращает пустой результат", () => {
     expect(parseMetaBlock("")).toEqual({ text: "" });
+  });
+});
+
+describe("computeStatsDelta: сдвиг шкал за ответ", () => {
+  it("считает разницу после минус до по каждой шкале", () => {
+    const before: RelationshipStats = { ...DEFAULT_STATS, trust: 50, conflict: 10 };
+    const after: RelationshipStats = { ...DEFAULT_STATS, trust: 54, conflict: 7 };
+
+    const delta = computeStatsDelta(before, after);
+
+    expect(delta.trust).toBe(4);
+    expect(delta.conflict).toBe(-3);
+  });
+
+  it("нулевые изменения не попадают в дельту", () => {
+    const stats: RelationshipStats = { ...DEFAULT_STATS };
+
+    expect(computeStatsDelta(stats, { ...stats })).toEqual({});
+    expect(computeStatsDelta(stats, { ...stats, statusTitle: "Другой статус" })).toEqual({});
+  });
+
+  it("влечение учитывается только если оно было до ответа", () => {
+    const before: RelationshipStats = { ...DEFAULT_STATS, attraction: 40 };
+    const after: RelationshipStats = { ...DEFAULT_STATS, attraction: 47 };
+
+    expect(computeStatsDelta(before, after).attraction).toBe(7);
+
+    // У V1-персонажей шкалы нет — и в дельте она не появляется.
+    const withoutAttraction: RelationshipStats = { ...DEFAULT_STATS };
+    expect(computeStatsDelta(withoutAttraction, { ...DEFAULT_STATS }).attraction).toBeUndefined();
+  });
+
+  it("дополнительные показатели сравниваются по объединению ключей", () => {
+    const before: RelationshipStats = {
+      ...DEFAULT_STATS,
+      customStats: { Ревность: 20, Азарт: 5 },
+    };
+    const after: RelationshipStats = {
+      ...DEFAULT_STATS,
+      customStats: { Ревность: 30, Любопытство: 8 },
+    };
+
+    const delta = computeStatsDelta(before, after);
+
+    // Ревность выросла, Азарт исчез (считаем как спад до нуля), Любопытство появилось.
+    expect(delta.customStats).toEqual({ Ревность: 10, Азарт: -5, Любопытство: 8 });
+  });
+
+  it("типичный ход: дельта строится из снапшотов до и после ответа", () => {
+    // Ответ модели сдвинул доверие на +2 дельтой из мета-блока.
+    const before: RelationshipStats = { ...DEFAULT_STATS, trust: 50, affection: 30 };
+    const parsed = parseMetaBlock(
+      'Реплика.\n```meta\n{"stats": {"trust": "+2", "affection": "30"}}\n```',
+      before
+    );
+
+    expect(parsed.stats).toBeDefined();
+
+    const delta = computeStatsDelta(before, parsed.stats!);
+
+    expect(delta.trust).toBe(2);
+    expect(delta.affection).toBeUndefined();
+    expect(delta).toEqual({ trust: 2 });
   });
 });

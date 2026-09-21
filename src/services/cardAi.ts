@@ -1,7 +1,7 @@
 import type { ApiConfig } from "../types";
 import { callLLM, type ChatTurn } from "./apiClient";
 import { safeParseJson } from "./memoryEngine";
-import { isCyrillicDominant, normalizeEscapes, tidyText } from "./cardText";
+import { DEFAULT_USER_NAME, isCyrillicDominant, normalizeEscapes, tidyText } from "./cardText";
 import type { NormalizedCard } from "./characterCard";
 
 /**
@@ -33,7 +33,7 @@ const REQUEST_MAX_TOKENS = 8_192;
 const EMPTY_RETRY_COUNT = 3;
 
 export type CardPassMode = "translate" | "polish" | "compress";
-export type CardAiMode = CardPassMode | "repair" | "enrich" | "audit";
+export type CardAiMode = CardPassMode | "repair" | "enrich";
 
 export interface CardAiProgress {
   mode: CardAiMode;
@@ -41,6 +41,21 @@ export interface CardAiProgress {
   total: number;
   /** Человеческая подпись этапа: её показывает окно импорта. */
   stage?: string;
+}
+
+/**
+ * Итог прохода модели по тексту карточки.
+ *
+ * `changed` — сколько полей действительно поменялось. `sent` и `answered` —
+ * сколько кусков ушло модели и сколько вернулось пригодными. Если ушло много,
+ * а вернулось ноль — модель отказалась или ответила не в том формате, и окно
+ * импорта скажет об этом честно вместо «перевод не потребовался».
+ */
+export interface CardPassResult {
+  card: NormalizedCard;
+  changed: number;
+  sent: number;
+  answered: number;
 }
 
 export interface CardAiOptions {
@@ -141,16 +156,62 @@ export function splitTextForModel(text: string, limit = CHUNK_CHARS): string[] {
     return groups;
   }
 
-  // Один абзац не влезает: режем по фразам.
-  const sentences = source.split(/(?<=[.!?…])\s+/);
+  // Один абзац не влезает: режем по строкам, внутри строк — по фразам,
+  // а нечитаемые стены текста без знаков препинания — по словам.
+  const fragments: { text: string; sep: string }[] = [];
+
+  for (const line of source.split(/\r?\n/)) {
+    const trimmedLine = line.trim();
+    if (!trimmedLine) continue;
+
+    const sentences = trimmedLine.split(/(?<=[.!?…])\s+/).filter(Boolean);
+
+    sentences.forEach((sentence, sentenceIndex) => {
+      // Разделитель перед фрагментом: новая строка — перенос,
+      // продолжение строки — пробел, самый первый фрагмент — ничего.
+      const sentenceSep =
+        fragments.length === 0 ? "" : sentenceIndex === 0 ? "\n" : " ";
+
+      if (sentence.length <= limit) {
+        fragments.push({ text: sentence, sep: sentenceSep });
+        return;
+      }
+
+      // Фраза длиннее лимита: рубим по границе слов.
+      let rest = sentence;
+      let isFirstChunk = true;
+
+      while (rest.length > limit) {
+        let cut = rest.lastIndexOf(" ", limit);
+        if (cut <= 0) cut = limit;
+
+        fragments.push({
+          text: rest.slice(0, cut).trim(),
+          sep: isFirstChunk ? sentenceSep : " ",
+        });
+
+        rest = rest.slice(cut).trimStart();
+        isFirstChunk = false;
+      }
+
+      if (rest.trim()) {
+        fragments.push({
+          text: rest.trim(),
+          sep: isFirstChunk ? sentenceSep : " ",
+        });
+      }
+    });
+  }
+
   const groups: string[] = [];
   let current = "";
 
-  for (const sentence of sentences) {
-    const candidate = current ? `${current} ${sentence}` : sentence;
+  for (const { text, sep } of fragments) {
+    const candidate = current ? `${current}${sep}${text}` : text;
+
     if (candidate.length > limit && current) {
       groups.push(current);
-      current = sentence;
+      current = text;
     } else {
       current = candidate;
     }
@@ -335,11 +396,12 @@ async function mapWithConcurrency<T, R>(
 const TRANSLATE_SYSTEM = `Ты — профессиональный литературный переводчик карточек персонажей для ролевых игр. Переводишь с английского на русский.
 
 ПРАВИЛА:
-1. Переводи точно: без пропусков, без сокращений и без добавлений от себя.
+1. Переводи точно: без пропусков, без сокращений и без добавлений от себя. Каждый фрагмент списка переводится целиком и возвращается отдельной записью — не объединяй и не разбивай фрагменты.
 2. Сохраняй разметку: абзацы, переносы строк, списки, «*действия в звёздочках*», прямую речь через тире (— Реплика).
 3. Сохраняй характер и голос: грубость, сарказм, стёб, нежность, эротика — не смягчай, не цензурируй, не облагораживай.
 4. Обращения к игроку и местоимения передавай естественно по-русски, без рабского следования оригиналу.
 5. Никаких примечаний переводчика, пояснений и комментариев: только перевод.
+6. Служебные макросы {{user}}, {{char}}, {{...}}, <user>, <char>, <START> не переводи и не меняй: переноси их в перевод как есть. Если вместо них уже стоят имена — переводи имена естественно.
 
 АДАПТАЦИЯ ИМЁН И НАЗВАНИЙ (обязательно):
 - Реальные имена, города и страны — общепринятая русская форма: Arthur → Артур, London → Лондон.
@@ -347,46 +409,70 @@ const TRANSLATE_SYSTEM = `Ты — профессиональный литера
 - Латиницу оставляй только там, где адаптировать действительно нечего.
 - Ключи-триггеры (короткие метки для поиска) переведи и дай в естественных русских формах, включая падежные варианты: «Varamis, Varamis'а» → «Варамис, Варамиса».
 
-ФОРМАТ ОТВЕТА — строго JSON, без пояснений и без обёрток:
+ФОРМАТ ОТВЕТА — строго JSON, без пояснений и без обёрток. Для каждого входного id верни ровно одну запись с тем же id, ничего не обрезая:
 {"items":[{"id":"как во входе","text":"перевод"}]}`;
 
-const POLISH_SYSTEM = `Ты — редактор карточек персонажей. Тебе дают куски текста карточки, и ты убираешь из них мусор.
+/**
+ * Системный промпт чистки: подставляем реальные имена, чтобы модель
+ * заменяла плейсхолдеры осмысленно, а не вырезала их вместе с фразой.
+ */
+export function polishSystem(cardName: string, userName: string): string {
+  const charLabel = cardName.trim() || "персонаж";
+  const userLabel = userName.trim() || DEFAULT_USER_NAME;
+
+  return `Ты — редактор карточек персонажей для ролевых игр. Тебе дают куски текста карточки. Убери из них мусор, не трогая содержание.
 
 ЧТО УДАЛЯТЬ:
-- changelog и заметки автора: «Update: …», «17/07 Update», «fixed typos», «added greeting»;
-- рекламу и приглашения: Discord, Patreon, Ko-fi, Boosty, Telegram, Twitter, ссылки на скачивание лорбука;
-- HTML-теги, остатки вёрстки, невидимые символы, разделители из одних тире или звёзд;
-- плейсхолдеры вида {{user}}, {{char}}, <user> и подобные;
-- дубли одного и того же абзаца и пустые абзацы.
+- записи автора и changelog: «Update: …», «17/07 Update», «fixed typos», «added greeting», номера версий;
+- рекламу и приглашения: Discord, Patreon, Ko-fi, Boosty, Telegram, Twitter, ссылки на скачивание лорбука или других персонажей;
+- HTML-теги и остатки вёрстки, невидимые символы, разделители из одних тире или звёзд;
+- дубли абзацев и пустые абзацы.
+
+ПЛЕЙСХОЛДЕРЫ — заменять, а не вырезать:
+- {{user}}, <user>, {{user_name}} и похожие замени на имя игрока «${userLabel}» в подходящей падежной форме;
+- {{char}}, <char>, {{char_name}} и похожие замени на имя персонажа «${charLabel}» в подходящей падежной форме;
+- если предложение начинается с плейсхолдера, сохрани предложение целиком, просто подставив имя.
 
 ЧТО НЕ ТРОГАТЬ:
-- смысл, факты, характер и стиль персонажа;
-- длину текста: не сокращай содержание, если оно не мусор;
-- оформление: *действия*, тире в диалогах, абзацы.
+- смысл, факты, характер и голос персонажа: грубость, стёб, нежность, эротика остаются как есть;
+- длину текста: не сокращай содержание, если оно не мусор, и не дописывай от себя;
+- оформление: *действия в звёздочках*, прямую речь через тире, абзацы.
 
-Если чистить нечего — верни текст как есть.
+Если чистить нечего — верни текст как есть, без изменений.
 
-ФОРМАТ ОТВЕТА — строго JSON:
+ФОРМАТ ОТВЕТА — строго JSON, без пояснений и без обёрток:
 {"items":[{"id":"как во входе","text":"исправленный текст"}]}`;
+}
 
-function compressSystem(limit: number): string {
-  return `Ты — редактор карточек персонажей. Тебе дают раздутый текст карточки, его нужно сжать примерно до ${limit} символов.
+/**
+ * Сжатие с относительной целью: «сожми примерно на 40%».
+ *
+ * Абсолютный лимит на запрос здесь не работает: поле нарезано на куски,
+ * и «сожми до 2500 символов» для куска в 3000 не сжимает почти ничего,
+ * а для куска в 1000 — не имеет смысла. Относительная цель масштабируется
+ * на любой размер и любую модель.
+ */
+function compressSystem(): string {
+  return `Ты — редактор карточек персонажей для ролевых игр. Тебе дают раздутые куски текста карточки. Сожми каждый примерно на 40% по объёму, сохранив всё важное.
 
 ПРАВИЛА:
 1. Сохрани все ключевые факты: внешность, характер, речь, прошлое, цели, отношения, важные детали мира.
 2. Выбрось повторы, воду, канцелярит и разжёвывание очевидного.
 3. Сохрани голос персонажа и оформление: *действия в звёздочках*, тире в диалогах.
 4. Не добавляй новых фактов и не придумывай продолжение.
-5. Пиши по-русски, связно, без вступлений вида «вот сжатый текст».
+5. Пиши на языке исходного текста, связно, без вступлений вида «вот сжатый текст».
 
-ФОРМАТ ОТВЕТА — строго JSON:
+ФОРМАТ ОТВЕТА — строго JSON, без пояснений и без обёрток:
 {"items":[{"id":"как во входе","text":"сжатый текст"}]}`;
 }
 
-function systemForMode(mode: CardPassMode, limit: number): string {
+function systemForMode(
+  mode: CardPassMode,
+  polishNames: { cardName: string; userName: string }
+): string {
   if (mode === "translate") return TRANSLATE_SYSTEM;
-  if (mode === "polish") return POLISH_SYSTEM;
-  return compressSystem(limit);
+  if (mode === "polish") return polishSystem(polishNames.cardName, polishNames.userName);
+  return compressSystem();
 }
 
 export interface ModelItem {
@@ -470,16 +556,37 @@ async function runBatch(
   mode: CardPassMode,
   batch: Batch,
   options: CardAiOptions,
-  limit: number
+  polishNames: { cardName: string; userName: string }
 ): Promise<Map<string, string>> {
-  const raw = await callModelText(
-    withCardTokens(options.apiConfig),
-    systemForMode(mode, limit),
-    [{ role: "user", content: buildItemsRequest(batch.items) }],
-    options.signal
-  );
+  const config = withCardTokens(options.apiConfig);
+  const system = systemForMode(mode, polishNames);
+  const turns: ChatTurn[] = [{ role: "user", content: buildItemsRequest(batch.items) }];
 
-  return parseModelItems(raw);
+  const raw = await callModelText(config, system, turns, options.signal);
+  let parsed = parseModelItems(raw);
+
+  // Модель ответила не по форме (пояснения вместо JSON, отказ, другой
+  // язык ответа): переспрашиваем один раз с жёстким напоминанием формата.
+  if (parsed.size === 0 && batch.items.length > 0) {
+    const retry = await callModelText(
+      config,
+      system,
+      [
+        ...turns,
+        { role: "assistant", content: raw },
+        {
+          role: "user",
+          content:
+            'Это не тот формат. Верни строго JSON без пояснений и обёрток: {"items":[{"id":"...","text":"..."}]} — ровно по одной записи на каждый входной id.',
+        },
+      ],
+      options.signal
+    );
+
+    parsed = parseModelItems(retry);
+  }
+
+  return parsed;
 }
 
 /**
@@ -493,21 +600,23 @@ export async function runCardPass(
   card: NormalizedCard,
   mode: CardPassMode,
   options: CardAiOptions
-): Promise<{ card: NormalizedCard; changed: number }> {
+): Promise<CardPassResult> {
   const slots = collectSlots(card).filter((slot) =>
     mode === "translate" ? slot.parts.some((part) => needsTranslation(part)) : true
   );
 
-  if (slots.length === 0) return { card, changed: 0 };
+  if (slots.length === 0) return { card, changed: 0, sent: 0, answered: 0 };
 
   const batches = planBatches(slots);
   const results = new Map<string, string>();
   let done = 0;
 
+  const polishNames = { cardName: card.name, userName: DEFAULT_USER_NAME };
+
   // Пачки независимы, поэтому пускаем их параллельно: длинная карточка
   // обрабатывается в разы быстрее, чем по очереди.
   await mapWithConcurrency(batches, BATCH_CONCURRENCY, async (batch) => {
-    const parsed = await runBatch(mode, batch, options, LONG_FIELD_CHARS);
+    const parsed = await runBatch(mode, batch, options, polishNames);
 
     for (const [id, text] of parsed) results.set(id, text);
 
@@ -515,8 +624,11 @@ export async function runCardPass(
     options.onProgress?.({ mode, current: done, total: batches.length });
   });
 
+  const sent = slots.reduce((total, slot) => total + slot.parts.length, 0);
+
   let next = card;
   let changed = 0;
+  let answered = 0;
 
   for (const slot of slots) {
     const was = tidyText(slot.parts.join(slot.joinWith));
@@ -524,6 +636,9 @@ export async function runCardPass(
     const parts = slot.parts.map((part, partIndex) => {
       const id = slot.parts.length > 1 ? `${slot.id}#${partIndex}` : slot.id;
       const value = results.get(id);
+
+      if (value) answered += 1;
+
       return value ? normalizeEscapes(value) : part;
     });
 
@@ -537,28 +652,42 @@ export async function runCardPass(
     next = applySlot(next, slot.target, value);
   }
 
-  return { card: next, changed };
+  return { card: next, changed, sent, answered };
 }
 
-/** Переводить ли этот текст: кириллический текст модель не трогаем. */
+/**
+ * Переводить ли этот текст: кириллический текст модель не трогаем.
+ *
+ * Одного сравнения «кого больше» мало: при чистке `{{user}}` заменяется на
+ * имя персоны игрока, и в коротких английских полях с кучей обращений русское
+ * имя перевешивает остаток английских слов — поле ошибочно выглядит русским.
+ * Поэтому заметный объём латиницы (абзац английской прозы) считаем признаком
+ * перевода независимо от вкраплений кириллицы.
+ */
+const SIGNIFICANT_LATIN_CHARS = 40;
+
 export function needsTranslation(text: string): boolean {
   const trimmed = text.trim();
   if (trimmed.length < 2) return false;
   if (!/[A-Za-zА-Яа-яЁё]/.test(trimmed)) return false;
+
+  const latin = trimmed.match(/[A-Za-z]/g)?.length ?? 0;
+  if (latin >= SIGNIFICANT_LATIN_CHARS) return true;
+
   return !isCyrillicDominant(trimmed);
 }
 
 export async function translateCard(
   card: NormalizedCard,
   options: CardAiOptions
-): Promise<{ card: NormalizedCard; changed: number }> {
+): Promise<CardPassResult> {
   return runCardPass(card, "translate", options);
 }
 
 export async function polishCard(
   card: NormalizedCard,
   options: CardAiOptions
-): Promise<{ card: NormalizedCard; changed: number }> {
+): Promise<CardPassResult> {
   return runCardPass(card, "polish", options);
 }
 
@@ -581,42 +710,99 @@ export function shouldCompressCard(card: NormalizedCard): boolean {
   return cardTextLength(card) > HUGE_CARD_CHARS;
 }
 
-/** Сжимает только раздутые поля — короткие не трогаем. */
+/** Один раздутый кусок текста, который уйдёт в сжатие. */
+interface CompressJob {
+  id: string;
+  text: string;
+  target: SlotTarget;
+  partIndex: number;
+}
+
+/**
+ * Сжимает только раздутые куски — короткие не трогаем вовсе.
+ *
+ * Раньше при любом длинном куске модели отдавалось всё поле целиком,
+ * и короткие части переписывались без нужды. Теперь каждый кусок
+ * длиннее порога сжимается отдельно и встаёт ровно на своё место.
+ */
 export async function compressCard(
   card: NormalizedCard,
   options: CardAiOptions
-): Promise<{ card: NormalizedCard; changed: number }> {
-  const slots = collectSlots(card).filter((slot) =>
-    slot.parts.some((part) => part.length > LONG_FIELD_CHARS)
-  );
+): Promise<CardPassResult> {
+  const slots = collectSlots(card);
+  const jobs: CompressJob[] = [];
 
-  if (slots.length === 0) return { card, changed: 0 };
+  slots.forEach((slot) => {
+    slot.parts.forEach((part, partIndex) => {
+      if (part.length <= LONG_FIELD_CHARS) return;
 
-  const batches = planBatches(slots);
+      jobs.push({
+        id: slot.parts.length > 1 ? `${slot.id}#${partIndex}` : slot.id,
+        text: part,
+        target: slot.target,
+        partIndex,
+      });
+    });
+  });
+
+  if (jobs.length === 0) return { card, changed: 0, sent: 0, answered: 0 };
+
+  // Собираем куски в запросы по лимиту символов — как обычный проход,
+  // но без привязки к слотам: куски уже независимы.
+  const packed: Batch[] = [];
+  let current: Batch = { items: [], refs: [] };
+  let size = 0;
+
+  jobs.forEach((job, jobIndex) => {
+    if (size + job.text.length > BATCH_CHARS && current.items.length > 0) {
+      packed.push(current);
+      current = { items: [], refs: [] };
+      size = 0;
+    }
+
+    current.items.push({ id: job.id, text: job.text });
+    current.refs.push({ slotIndex: jobIndex, partIndex: 0 });
+    size += job.text.length;
+  });
+
+  if (current.items.length > 0) packed.push(current);
+
   const results = new Map<string, string>();
   let done = 0;
 
-  await mapWithConcurrency(batches, BATCH_CONCURRENCY, async (batch) => {
-    const parsed = await runBatch("compress", batch, options, LONG_FIELD_CHARS);
+  await mapWithConcurrency(packed, BATCH_CONCURRENCY, async (batch) => {
+    const parsed = await runBatch("compress", batch, options, {
+      cardName: card.name,
+      userName: DEFAULT_USER_NAME,
+    });
 
     for (const [id, text] of parsed) results.set(id, text);
 
     done += 1;
-    options.onProgress?.({ mode: "compress", current: done, total: batches.length });
+    options.onProgress?.({ mode: "compress", current: done, total: packed.length });
   });
 
   let next = card;
   let changed = 0;
+  let answered = 0;
 
   for (const slot of slots) {
-    const was = tidyText(slot.parts.join(slot.joinWith));
+    let touched = false;
 
     const parts = slot.parts.map((part, partIndex) => {
       const id = slot.parts.length > 1 ? `${slot.id}#${partIndex}` : slot.id;
       const value = results.get(id);
-      return value ? normalizeEscapes(value) : part;
+
+      if (!value) return part;
+
+      answered += 1;
+      touched = true;
+      return normalizeEscapes(value);
     });
 
+    if (!touched) continue;
+
+    const was = tidyText(slot.parts.join(slot.joinWith));
     const value = tidyText(parts.join(slot.joinWith));
     if (!value) continue;
 
@@ -625,35 +811,48 @@ export async function compressCard(
     next = applySlot(next, slot.target, value);
   }
 
-  return { card: next, changed };
+  return { card: next, changed, sent: jobs.length, answered };
 }
 
 // -------------------- Исправление карточки --------------------
 
-const REPAIR_SYSTEM = `Ты — редактор карточек персонажей. Тебе дают карточку, импортированную из чужого клиента. Приведи её в порядок.
+const REPAIR_SYSTEM = `Ты — редактор карточек персонажей для ролевых игр. Тебе дают карточку, импортированную из чужого клиента. Приведи её в порядок.
 
-ЧТО ДЕЛАТЬ:
-1. Если поля перепутаны — расставь их правильно:
-   - description — внешность, тело, одежда, возраст, раса;
-   - personality — характер, речь, привычки, вкусы, слабости;
-   - scenario — прошлое, сеттинг, цели, связи, завязка;
-   - systemPrompt — технические правила для модели, а не описание персонажа;
-   - exampleMessages — примеры реплик;
-   - firstMessage — первая реплика персонажа.
-2. Удали мусор: changelog, «Update:», рекламу, Discord и Patreon, ссылки, HTML-теги, невидимые символы, лишние обратные слэши, символы \\n, плейсхолдеры {{user}} и {{char}}, дубли и обрывки текста.
-3. Если поле пустое, но факты для него есть в других полях карточки — заполни его этими фактами. НИЧЕГО НЕ ВЫДУМЫВАЙ: нет данных — оставь поле пустым.
-4. Не меняй смысл, стиль и длину там, где править нечего. Не переписывай текст целиком ради перестраховки.
+НАЗНАЧЕНИЕ ПОЛЕЙ:
+- description — внешность, тело, одежда, возраст, раса, манера двигаться;
+- personality — характер, привычки, манера речи, вкусы, слабости, интимная сфера;
+- scenario — прошлое, мир и сеттинг, цели, связи, завязка сюжета;
+- systemPrompt — технические правила для модели (стиль ответов, запреты), а не описание персонажа;
+- postHistoryInstructions — короткие финальные напоминания модели;
+- exampleMessages — примеры реплик и диалогов;
+- firstMessage — первая реплика персонажа игроку.
 
-ФОРМАТ ОТВЕТА — строго JSON, только изменённые поля:
-{"fields":{"description":"...","personality":"...","scenario":"...","systemPrompt":"...","exampleMessages":"...","firstMessage":"..."},"notes":["что исправил одной короткой фразой"]}`;
+ПРАВИЛА:
+1. Если содержимое лежит не в своём поле — перенеси его в подходящее. Текст при этом не теряй и не сокращай.
+2. Удали мусор: changelog и «Update:», рекламу (Discord, Patreon, Ko-fi и т.п.), ссылки, HTML-теги, невидимые символы, лишние обратные слэши и литеральные \\n, дубли и оборванные обрывки.
+3. Плейсхолдеры {{user}} и {{char}} замени на имя игрока и имя персонажа в подходящей падежной форме — не вырезай фразы вместе с ними.
+4. Не дублируй один и тот же текст в несколько полей: каждый факт должен жить в одном месте.
+5. Если поле пустое и фактов для него в карточке нет — оставь его пустым. НИЧЕГО НЕ ВЫДУМЫВАЙ.
+6. Не переписывай то, что и так на месте: смысл, стиль и язык сохраняй.
+
+ФОРМАТ ОТВЕТА — строго JSON, только изменённые поля, без пояснений и обёрток:
+{"fields":{"description":"...","personality":"...","scenario":"...","systemPrompt":"...","postHistoryInstructions":"...","exampleMessages":"...","firstMessage":"..."},"notes":["что исправил, одной короткой фразой"]}
+Если менять нечего — верни {"fields":{},"notes":[]}.`;
 
 function repairUserPrompt(card: NormalizedCard): string {
-  const lines = TEXT_FIELDS.map(
-    (field) => `${FIELD_LABELS[field]}: ${(card[field] ?? "").trim() || "— пусто —"}`
-  );
+  const lines = [
+    `Имя персонажа: ${card.name}`,
+    `Имя игрока: ${DEFAULT_USER_NAME}`,
+    "",
+    "Дальше — поля карточки. В скобках назначение поля, после двоеточия — содержимое.",
+  ];
+
+  for (const field of TEXT_FIELDS) {
+    lines.push(`${field} (${FIELD_LABELS[field]}): ${(card[field] ?? "").trim() || "— пусто —"}`);
+  }
 
   if (card.alternateGreetings.length > 0) {
-    lines.push(`альтернативные приветствия: ${card.alternateGreetings.join(" | ")}`);
+    lines.push(`alternateGreetings (альтернативные приветствия): ${card.alternateGreetings.join(" | ")}`);
   }
 
   return lines.join("\n\n");
@@ -669,6 +868,7 @@ const REPAIR_FIELDS: TextFieldKey[] = [
   "personality",
   "scenario",
   "systemPrompt",
+  "postHistoryInstructions",
   "exampleMessages",
   "firstMessage",
 ];
@@ -692,10 +892,10 @@ export function parseRepair(raw: string): CardRepair {
     const value = (rawFields as Record<string, unknown>)?.[field];
     if (typeof value !== "string") continue;
 
-    const text = tidyText(normalizeEscapes(value));
-    if (!text) continue;
-
-    fields[field] = text;
+    // Пустая строка — осмысленный ответ: модель перенесла содержимое в
+    // правильное поле и это нужно очистить. Неопубликованное поле (нет ключа)
+    // не трогаем — его здесь нет.
+    fields[field] = tidyText(normalizeEscapes(value));
   }
 
   const notes = Array.isArray(record.notes)
@@ -721,8 +921,15 @@ export async function repairCard(
 ): Promise<{ card: NormalizedCard; notes: string[] }> {
   options.onProgress?.({ mode: "repair", current: 1, total: 1, stage: "Исправляем поля" });
 
+  // Ответ модели может содержать несколько полей целиком: на большой карточке
+  // 8192 токенов не хватает, поэтому бюджет растёт вместе с размером карточки.
+  const repairTokens = Math.max(
+    REQUEST_MAX_TOKENS,
+    Math.min(16_384, Math.ceil(cardTextLength(card) / 2))
+  );
+
   const raw = await callModelText(
-    withCardTokens(options.apiConfig),
+    { ...options.apiConfig, maxTokens: repairTokens },
     REPAIR_SYSTEM,
     [{ role: "user", content: repairUserPrompt(card) }],
     options.signal
@@ -735,8 +942,9 @@ export async function repairCard(
 
   let next = card;
   for (const field of changed) {
-    const value = fields[field];
-    if (value) next = { ...next, [field]: value };
+    // Пустая строка тоже применяется: так модель очищает поле, из которого
+    // содержимое уехало в правильное место.
+    next = { ...next, [field]: fields[field] ?? "" };
   }
 
   return {
@@ -870,172 +1078,19 @@ export async function enrichCard(
   return { card: next, filled };
 }
 
-// -------------------- Проверка полей --------------------
-
-export interface CardAuditIssue {
-  field: string;
-  problem: string;
-  suggestion: string;
-}
-
-export interface CardAudit {
-  issues: CardAuditIssue[];
-  /** Поля, которые пусты (считаем локально — это не требует модели). */
-  emptyFields: string[];
-  summary: string;
-}
-
-const AUDIT_SYSTEM = `Ты — редактор карточек персонажей. Проверь карточку и найди проблемы.
-
-ЧТО ИСКАТЬ:
-1. Перепутанные поля: во внешности лежит характер, в характере — предыстория, в сценарии — технические инструкции.
-2. Остатки мусора: HTML-теги, разметка, changelog, «Update:», реклама, ссылки, Discord и Patreon, плейсхолдеры {{user}} и {{char}}, символы \\n, обрывки вёрстки.
-3. Бессмыслица: незакрытые скобки, оборванные фразы, дубли абзацев, текст не на том языке.
-4. Противоречия внутри карточки: возраст, пол и внешность не сходятся с описанием.
-
-ПРАВИЛА:
-- Сообщай только реальные проблемы, не придирайся к стилю.
-- suggestion — короткая конкретная правка (одно предложение).
-- Если проблем нет — верни пустой список issues и напиши в summary, что карточка в порядке.
-- Не переписывай карточку, только находи проблемы.
-
-ФОРМАТ ОТВЕТА — строго JSON:
-{"issues":[{"field":"...","problem":"...","suggestion":"..."}],"summary":"..."}`;
-
-const AUDIT_FIELDS: { key: TextFieldKey | "alternateGreetings" | "book"; label: string }[] = [
-  { key: "description", label: "внешность и описание" },
-  { key: "personality", label: "характер" },
-  { key: "scenario", label: "сценарий и завязка" },
-  { key: "systemPrompt", label: "системные правила" },
-  { key: "exampleMessages", label: "примеры реплик" },
-  { key: "firstMessage", label: "первое сообщение" },
-  { key: "alternateGreetings", label: "альтернативные приветствия" },
-  { key: "book", label: "лорбук" },
-];
-
-/** Пустые поля считаем сами: модели незачем тратить на это токены. */
-export function findEmptyFields(card: NormalizedCard): string[] {
-  const empty: string[] = [];
-
-  for (const { key, label } of AUDIT_FIELDS) {
-    if (key === "alternateGreetings") {
-      if (card.alternateGreetings.length === 0) empty.push(label);
-      continue;
-    }
-
-    if (key === "book") {
-      if (card.book.length === 0) empty.push(label);
-      continue;
-    }
-
-    if (!(card[key] ?? "").trim()) empty.push(label);
-  }
-
-  return empty;
-}
-
-function auditUserPrompt(card: NormalizedCard): string {
-  const lines = AUDIT_FIELDS.map(({ key, label }) => {
-    if (key === "alternateGreetings") {
-      return `${label}: ${card.alternateGreetings.join(" | ") || "—"}`;
-    }
-
-    if (key === "book") {
-      const entries = card.book
-        .map((entry) => `[${[...entry.keys, ...entry.secondaryKeys].join(", ")}] ${entry.content}`)
-        .join("\n");
-      return `${label}:\n${entries || "—"}`;
-    }
-
-    return `${label}: ${(card[key] ?? "").trim() || "—"}`;
-  });
-
-  return lines.join("\n\n");
-}
-
-export function parseAudit(raw: string): { issues: CardAuditIssue[]; summary: string } {
-  let parsed: unknown;
-  try {
-    parsed = safeParseJson(raw);
-  } catch {
-    return { issues: [], summary: "Модель вернула непонятный ответ — проверка не удалась." };
-  }
-
-  if (!parsed || typeof parsed !== "object") {
-    return { issues: [], summary: "Модель вернула непонятный ответ — проверка не удалась." };
-  }
-
-  const record = parsed as Record<string, unknown>;
-  const issues: CardAuditIssue[] = [];
-
-  if (Array.isArray(record.issues)) {
-    for (const item of record.issues) {
-      if (!item || typeof item !== "object") continue;
-
-      const entry = item as Record<string, unknown>;
-      const field = typeof entry.field === "string" ? entry.field.trim() : "";
-      const problem = typeof entry.problem === "string" ? entry.problem.trim() : "";
-      const suggestion = typeof entry.suggestion === "string" ? entry.suggestion.trim() : "";
-
-      if (!problem) continue;
-      issues.push({ field: field || "карточка", problem, suggestion });
-    }
-  }
-
-  return {
-    issues: issues.slice(0, 8),
-    summary: typeof record.summary === "string" ? record.summary.trim() : "",
-  };
-}
-
-/** Проверяет карточку: перепутанные поля, остатки мусора, пустые места. */
-export async function auditCard(
-  card: NormalizedCard,
-  options: CardAiOptions
-): Promise<CardAudit> {
-  options.onProgress?.({ mode: "audit", current: 1, total: 1, stage: "Проверяем поля" });
-
-  let raw = "";
-
-  try {
-    raw = await callModelText(
-      withCardTokens(options.apiConfig),
-      AUDIT_SYSTEM,
-      [{ role: "user", content: auditUserPrompt(card) }],
-      options.signal
-    );
-  } catch (cause) {
-    if (!isAbortError(cause) && !options.signal?.aborted) {
-      // Проверка — дело необязательное: карточка уже импортирована и правки
-      // применены. Молча падать из-за неё нельзя.
-      return {
-        issues: [],
-        emptyFields: findEmptyFields(card),
-        summary: cause instanceof Error ? cause.message : "Проверка не удалась.",
-      };
-    }
-    throw cause;
-  }
-
-  const { issues, summary } = parseAudit(raw);
-
-  return { issues, summary, emptyFields: findEmptyFields(card) };
-}
-
 // -------------------- Один проход «привести в порядок» --------------------
 
 export interface FixCardResult {
   card: NormalizedCard;
   notes: string[];
-  audit: CardAudit | null;
 }
 
 /**
  * Приводит карточку в порядок за одно нажатие.
  *
- * Порядок важен: снимаем мусор по тексту, потом расставляем перепутанные поля
- * и пустые места, затем дополняем метаданные и только в конце проверяем —
- * чтобы отчёт показывал то, что осталось, а не то, что мы уже исправили.
+ * Порядок важен: огромную карточку сначала сжимаем, потом снимаем мусор
+ * по тексту, расставляем перепутанные поля и пустые места и в конце
+ * дополняем метаданные.
  */
 export async function fixCard(
   card: NormalizedCard,
@@ -1043,6 +1098,16 @@ export async function fixCard(
 ): Promise<FixCardResult> {
   const notes: string[] = [];
   let next = card;
+
+  // Огромную карточку сначала сжимаем: чистка и исправление на раздутых
+  // полях работают хуже и чаще обрываются на середине ответа.
+  if (shouldCompressCard(next)) {
+    const compressed = await compressCard(next, options);
+    next = compressed.card;
+    if (compressed.changed > 0) {
+      notes.push(`Сжаты раздутые поля: ${compressed.changed}.`);
+    }
+  }
 
   const polished = await polishCard(next, options);
   next = polished.card;
@@ -1058,11 +1123,9 @@ export async function fixCard(
     notes.push(`Дополнено по фактам карточки: ${enriched.filled.join(", ")}.`);
   }
 
-  const audit = await auditCard(next, options);
-
-  if (notes.length === 0 && audit.issues.length === 0) {
+  if (notes.length === 0) {
     notes.push("Карточка уже в порядке — правок не потребовалось.");
   }
 
-  return { card: next, notes, audit };
+  return { card: next, notes };
 }

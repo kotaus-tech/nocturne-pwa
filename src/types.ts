@@ -2,6 +2,8 @@
 // ТИПЫ ДАННЫХ ДЛЯ ANIMA RP / NOCTURNE
 // =============================================================
 
+import type { CharacterBlueprintV2 } from "./services/v2/v2types";
+
 export interface UserProfile {
   name: string;
   avatarUrl: string;
@@ -20,6 +22,12 @@ export interface RelationshipStats {
   closeness: number;    // 0–100 (Близость / Раскрепощенность)
   tension: number;      // 0–100 (Напряжение / Саспенс)
   conflict: number;     // 0–100 (Конфликт / Злость)
+  /**
+   * Опциональная шкала влечения (генератор V2). Независима от остальных:
+   * высокое влечение ≠ доверие, высокая привязанность ≠ близость.
+   * У персонажей без V2 отсутствует, и вся статистика ведёт себя как раньше.
+   */
+  attraction?: number;
   statusTitle: string;  // "Нерушимая связь", "Незнакомцы" и т.д.
   customStats?: Record<string, number>;
 }
@@ -32,6 +40,12 @@ export const DEFAULT_STATS: RelationshipStats = {
   conflict: 0,
   statusTitle: "Знакомство",
 };
+
+/**
+ * Изменение шкал отношений за один ответ: новое значение минус прежнее.
+ * Нулевые изменения не записываются — поле хранит только реальные сдвиги.
+ */
+export type RelationshipDelta = Partial<Omit<RelationshipStats, "statusTitle">>;
 
 export interface LorebookEntry {
   id: string;
@@ -73,6 +87,14 @@ export interface Character {
   initialStats: RelationshipStats;
   lorebook: LorebookEntry[];
   createdAt: number;
+
+  /**
+   * Character DNA: полный расширенный blueprint генератора V2.
+   * Отсутствует у персонажей V1 и старых карточек — они работают как раньше.
+   */
+  blueprintV2?: CharacterBlueprintV2;
+  /** Маркер версии генератора: 2 = Character DNA. */
+  generatorVersion?: number;
 }
 
 export interface Message {
@@ -83,10 +105,30 @@ export interface Message {
   characterId?: string;
   /** Снимок имени автора на момент ответа (переживает удаление/переименование персонажа). */
   characterName?: string;
+  /** Реплика адресована конкретному персонажу (выбор адресата в поле ввода). */
+  addressedTo?: string;
+  /** Каноническое имя поля адресата для dirty-flag и дистанционной переписки. */
+  targetCharacterId?: string;
+  /** Снимок физически присутствующих в момент создания сообщения. */
+  presentCharacterIds?: string[];
+  /** Дистанционный контакт отсутствующего персонажа: влияет только на отображение. */
+  remoteKind?: RemoteKind;
+  /**
+   * Инлайн-реакция «живой сцены»: сформулирована моделью другого персонажа,
+   * поэтому не влияет на шкалы/связи/память «сказавшего» и не считается его ходом.
+   */
+  isLiveSceneEcho?: boolean;
+  /** Ответ отсутствующего персонажа в уже открытой дистанционной ветке. */
+  isRemoteReply?: boolean;
   swipes: string[];
   currentSwipeIndex: number;
   innerThought?: string;
   statsSnapshot?: RelationshipStats;
+  /**
+   * Насколько шкалы сдвинулись этим ответом (после минус до). Считается в
+   * момент применения ответа и переживает свайпы и перегенерации.
+   */
+  statsDelta?: RelationshipDelta;
   imageUrl?: string;
   timestamp: number;
 }
@@ -120,6 +162,136 @@ export type ThoughtMode =
   | "tactical"
   | "instinct";
 
+// ─────────────────────────────────────────────────────────────
+// Симметричная память и внекадровая жизнь (групповые сцены)
+// ─────────────────────────────────────────────────────────────
+
+/** Скоуп намерения: при каком сдвиге сцены план автоматически устаревает. */
+export type IntentionScope = "location" | "time" | "scene" | "persistent";
+
+/**
+ * Текущее активное намерение персонажа. Ровно одно на персонажа: новое
+ * замещает старое, чтобы не плодить забытые несбывшиеся планы.
+ */
+export interface Intention {
+  /** Краткая формулировка плана (≤200 символов). */
+  text: string;
+  scope: IntentionScope;
+  /** Сообщение, на котором намерение возникло (пустая строка = ручное/неизвестное). */
+  createdAtMessageId: string;
+  /** Служебная метка: намерение сформировано offscreen-тиком за кадром. */
+  origin?: "offscreen" | "scene";
+}
+
+/**
+ * Личная память участника сцены. Симметрична для всех, включая лидера ветки:
+ * хранится единым реестром `session.participantMemory` по `characterId`.
+ * Отсутствие записи трактуется как «пустое» состояние.
+ */
+export interface ParticipantMemory {
+  /** Ключ записи — id персонажа, дублируется для безопасной сериализации. */
+  characterId: string;
+  /**
+   * Личные заметки: субъективные мысли, выводы, подозрения, секреты,
+   * прожитый за кадром опыт. Каждая строка — самостоятельная мысль
+   * от собственного лица персонажа. Не более MAX_PRIVATE_NOTES штук.
+   */
+  privateNotes: string[];
+  intention: Intention | null;
+  /**
+   * Последнее сообщение (по id, не по индексу — безопасность перемотки),
+   * после которого для персонажа проводилась плановая экстракция памяти.
+   */
+  lastExtractedMessageId: string | null;
+  /**
+   * Сообщение, на котором персонаж ушёл за кадр. Нужно для расчёта числа
+   * ходов отсутствия и решения о запуске offscreen-тика. Обнуляется при возврате.
+   */
+  absentSinceMessageId: string | null;
+  /** Счётчик тиков подряд без значимого события — жёсткий кулдаун. */
+  ticksSinceLastSignificant: number;
+  /** Сколько значимых offscreen-событий прошло с последнего дистанционного контакта. */
+  significantSinceLastContact: number;
+  /**
+   * Служебный указатель: сообщение, на котором был выполнен последний
+   * offscreen-тик. Нужно, чтобы отсчитывать следующий интервал тиков
+   * не от момента ухода за кадр, а от прошлой проверки.
+   */
+  lastTickAtMessageId?: string | null;
+}
+
+/** Канал дистанционного контакта отсутствующего персонажа. */
+export type RemoteKind = "sms" | "call_missed" | "social_post" | "message";
+
+/** Скачок времени и/или локации внутри сцены (мета-поле `sceneShift`). */
+export interface SceneShift {
+  /** Насколько прыгнуло время; null = время не прыгнуло. */
+  time: "hours" | "day" | "days" | null;
+  /** Сменилось ли место действия. */
+  locationChanged: boolean;
+}
+
+/** Источник формирования патча состояния сессии. */
+export type ScenePatchSourceKind =
+  | "user_turn"
+  | "regenerate"
+  | "offscreen_tick"
+  | "memory_extraction";
+
+/**
+ * Единая декларативная шина изменений состояния ветки за один логический шаг.
+ * Ни один код-путь не пишет описанные здесь механики в базу напрямую —
+ * только через формирование патча и единый редьюсер (см. sessionPatch.ts).
+ */
+export interface SceneSessionPatch {
+  presencePatch?: {
+    activeCharacterIds?: string[];
+    absentReasons?: Record<string, string>;
+  };
+  /** Изменение состава через панель режиссёра. */
+  compositionPatch?: {
+    characterIds: string[];
+    isGroup?: boolean;
+  };
+  /** Полная замена связей — используется только ручным редактором. */
+  relationsReplace?: SceneRelation[];
+  /** Входящие связи по именам — применяются через mergeSceneRelations. */
+  relationsPatch?: { from: string; to?: string; text: string }[];
+  statsPatch?: {
+    leader?: RelationshipStats;
+    participants?: Record<string, RelationshipStats>;
+  };
+  /** Обновлённая нейтральная хроника (заменяет текущую целиком). */
+  summaryPatch?: string;
+  /** Настройки режиссёра, связанные с этой шиной состояния. */
+  settingsPatch?: {
+    liveScene?: boolean;
+    offscreenLifeEnabled?: boolean;
+    offscreenTickInterval?: number;
+  };
+  participantMemoryPatch?: Record<string, Partial<ParticipantMemory>>;
+  /** Сигнал скачка времени/локации — инвалидирует намерения по скоупу. */
+  sceneShiftPatch?: SceneShift | null;
+  remoteMessagePatch?: {
+    characterId: string;
+    text: string;
+    kind: RemoteKind;
+  };
+  /**
+   * Подпись заметок, на которых строился патч: если к моменту применения
+   * заметки персонажа уже изменились другим источником — патч по заметкам
+   * отбрасывается, а не применяется вслепую поверх.
+   */
+  baseNotesSignature?: string;
+  /** Аналогичная защита для устойчивого намерения персонажа. */
+  baseIntentionSignature?: string;
+  /** Для offscreen-патча: субъект и его статус на момент запуска тика. */
+  offscreenSubjectId?: string;
+  offscreenWasAbsent?: boolean;
+  sourceKind: ScenePatchSourceKind;
+  sourceSnapshotAt: number;
+}
+
 /** Микро-связь внутри группы: кто как относится к кому. */
 export interface SceneRelation {
   id: string;
@@ -148,6 +320,18 @@ export interface ChatSession {
   relations?: SceneRelation[];
   /** Шкалы отношений дополнительных участников, по их id. */
   participantStats?: Record<string, RelationshipStats>;
+  /**
+   * Личная память каждого участника сцены (включая лидера), по его id.
+   * Симметричный внутренний слой: заметки, намерения, указатели экстракции.
+   */
+  participantMemory?: Record<string, ParticipantMemory>;
+  /**
+   * «Жизнь за кадром»: отсутствующие персонажи развиваются фоновыми тиками.
+   * По умолчанию включено, выключается тумблером в панели режиссёра.
+   */
+  offscreenLifeEnabled?: boolean;
+  /** Интервал в ходах сцены между offscreen-тиками (настраивается режиссёром). */
+  offscreenTickInterval?: number;
   /**
    * «Живая сцена»: другие герои могут коротко отреагировать в той же реплике.
    * По умолчанию включено, выключается тумблером в панели режиссёра.

@@ -2,20 +2,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { NormalizedCard } from "../src/services/characterCard";
 import {
   HUGE_CARD_CHARS,
-  auditCard,
   fixCard,
   parseRepair,
   repairCard,
   cardTextLength,
   compressCard,
   enrichCard,
-  findEmptyFields,
   needsTranslation,
-  parseAudit,
   parseEnrichment,
   parseModelItems,
   planBatches,
   polishCard,
+  polishSystem,
   shouldCompressCard,
   splitTextForModel,
   translateCard,
@@ -170,6 +168,14 @@ describe("нужно ли переводить", () => {
     expect(needsTranslation("Она ледяная королева, сдержанная и спокойная")).toBe(false);
     expect(needsTranslation("*** --- 42")).toBe(false);
     expect(needsTranslation("a")).toBe(false);
+  });
+
+  it("английский текст с вкраплением русского имени всё равно переводится", () => {
+    // Короткое поле, где {{user}} заменили на русское имя персоны: имя
+    // перевешивает по символам, но английская проза никуда не делась.
+    expect(needsTranslation("Александр meets the ice queen at the old tavern near the river")).toBe(true);
+    // А вот почти чистое обращение без английской прозы — не переводим.
+    expect(needsTranslation("Александр и Розалия")).toBe(false);
   });
 });
 
@@ -409,60 +415,6 @@ describe("дополнение полей", () => {
   });
 });
 
-describe("проверка полей", () => {
-  it("пустые поля находятся без модели", () => {
-    const empty = findEmptyFields({
-      ...ENGLISH_CARD,
-      personality: "",
-      scenario: "",
-      book: [],
-    });
-
-    expect(empty).toContain("характер");
-    expect(empty).toContain("сценарий и завязка");
-    expect(empty).toContain("лорбук");
-    expect(empty).not.toContain("внешность и описание");
-  });
-
-  it("разбирает замечания модели, обрезая список", () => {
-    const issues = Array.from({ length: 12 }, (_, i) => ({
-      field: "поле",
-      problem: `проблема ${i}`,
-      suggestion: `правка ${i}`,
-    }));
-
-    const result = parseAudit(JSON.stringify({ issues, summary: "Всё плохо" }));
-
-    expect(result.issues).toHaveLength(8);
-    expect(result.summary).toBe("Всё плохо");
-  });
-
-  it("непонятный ответ модели объясняется по-человечески", () => {
-    const result = parseAudit("модель недоступна");
-    expect(result.issues).toEqual([]);
-    expect(result.summary).toMatch(/проверка не удалась/i);
-  });
-
-});
-
-describe("проверка карточки моделью", () => {
-  it("возвращает замечания модели вместе с пустыми полями", async () => {
-    mockedCallLLM.mockResolvedValue(
-      JSON.stringify({
-        issues: [{ field: "характер", problem: "Здесь лежит внешность", suggestion: "Поменять местами" }],
-        summary: "Поля перепутаны",
-      })
-    );
-
-    const result = await auditCard({ ...ENGLISH_CARD, personality: "" }, { apiConfig });
-
-    expect(result.issues).toHaveLength(1);
-    expect(result.issues[0].problem).toBe("Здесь лежит внешность");
-    expect(result.summary).toBe("Поля перепутаны");
-    expect(result.emptyFields).toContain("характер");
-  });
-});
-
 describe("исправление карточки (поля перепутаны)", () => {
   it("разбирает ответ модели и применяет только изменённые поля", () => {
     const result = parseRepair(
@@ -475,9 +427,37 @@ describe("исправление карточки (поля перепутаны
     expect(result.notes).toEqual(["поменял местами"]);
   });
 
-  it("пустые правки игнорируются, мусорный ответ не ломает карточку", () => {
-    expect(parseRepair('{"fields":{"description":"   "}}').fields).toEqual({});
+  it("пустая строка — осмысленная правка (очистить поле), мусорный ответ не ломает карточку", () => {
+    // Модель перенесла содержимое в правильное поле и очищает старое место —
+    // пустая строка должна дойти до карточки, иначе текст задвоится.
+    expect(parseRepair('{"fields":{"description":"   "}}').fields).toEqual({ description: "" });
     expect(parseRepair("модель не отвечает").fields).toEqual({});
+  });
+
+  it("очистка поля применяется к карточке", async () => {
+    mockedCallLLM.mockResolvedValue(
+      JSON.stringify({
+        fields: {
+          description: "Серебряные волосы, холодные глаза.",
+          personality: "Сдержанная, язвительная.",
+          scenario: "",
+        },
+        notes: ["предыстория уехала из сценария"],
+      })
+    );
+
+    // В сценарии лежит характер — после исправления сценарий пустеет.
+    const swapped: NormalizedCard = {
+      ...ENGLISH_CARD,
+      description: "Reserved and sharp-tongued.",
+      personality: "Silver hair, cold blue eyes.",
+      scenario: "Personality dump that belongs elsewhere.",
+    };
+
+    const { card } = await repairCard(swapped, { apiConfig });
+
+    expect(card.description).toBe("Серебряные волосы, холодные глаза.");
+    expect(card.scenario).toBe("");
   });
 
   it("модель сама расставляет поля: характер возвращается из внешности", async () => {
@@ -505,7 +485,7 @@ describe("исправление карточки (поля перепутаны
 });
 
 describe("«привести в порядок» одним нажатием", () => {
-  it("проходит чистку, исправление, дополнение и проверку", async () => {
+  it("проходит чистку, исправление и дополнение", async () => {
     const stages: string[] = [];
 
     mockedCallLLM.mockImplementation(async (_config, system, turns) => {
@@ -520,11 +500,6 @@ describe("«привести в порядок» одним нажатием", (
       if (system.includes("часть полей пуста")) {
         stages.push("enrich");
         return JSON.stringify({ tagline: "Ледяная наёмница", genre: "Фэнтези", tags: ["наёмница"] });
-      }
-
-      if (system.includes("Проверь карточку")) {
-        stages.push("audit");
-        return JSON.stringify({ issues: [], summary: "Карточка в порядке" });
       }
 
       // Остальное — проход по тексту (чистка): удаляем «Update».
@@ -549,19 +524,16 @@ describe("«привести в порядок» одним нажатием", (
     expect(stages).toContain("polish");
     expect(stages).toContain("repair");
     expect(stages).toContain("enrich");
-    expect(stages).toContain("audit");
     expect(result.card.systemPrompt).not.toContain("Update");
     expect(result.card.creatorNotes).toBe("Ледяная наёмница");
     expect(result.card.world).toBe("Фэнтези");
     expect(result.notes.some((note) => note.includes("changelog"))).toBe(true);
-    expect(result.audit?.summary).toBe("Карточка в порядке");
   });
 
   it("если правок не было — честно об этом говорит", async () => {
     mockedCallLLM.mockImplementation(async (_config, system, turns) => {
       if (system.includes("Приведи её в порядок")) return JSON.stringify({ fields: {}, notes: [] });
       if (system.includes("часть полей пуста")) return JSON.stringify({});
-      if (system.includes("Проверь карточку")) return JSON.stringify({ issues: [], summary: "Ок" });
 
       const items = JSON.parse(turns[turns.length - 1].content).items;
       return JSON.stringify({ items });
@@ -588,23 +560,12 @@ describe("модель вернула пустой ответ", () => {
   it("ошибка «пустой ответ» от провайдера — тоже повод переспросить", async () => {
     mockedCallLLM
       .mockRejectedValueOnce(new Error("Gemini вернул пустой ответ."))
-      .mockResolvedValueOnce(JSON.stringify({ issues: [], summary: "Ок" }));
+      .mockResolvedValueOnce(JSON.stringify({ items: [{ id: "firstMessage", text: "*смотрит*" }] }));
 
-    const result = await auditCard(ENGLISH_CARD, { apiConfig });
+    const { card } = await polishCard(ENGLISH_CARD, { apiConfig });
 
     expect(mockedCallLLM).toHaveBeenCalledTimes(2);
-    expect(result.summary).toBe("Ок");
-  });
-
-  it("проверка не роняет импорт, если модель не отвечает вовсе", async () => {
-    mockedCallLLM.mockResolvedValue("   ");
-
-    const result = await auditCard(ENGLISH_CARD, { apiConfig });
-
-    expect(mockedCallLLM).toHaveBeenCalledTimes(3);
-    expect(result.issues).toEqual([]);
-    expect(result.summary).toMatch(/пустой ответ|попробуйте/i);
-    expect(result.emptyFields).toEqual([]);
+    expect(card.firstMessage).toBe("*смотрит*");
   });
 
   it("отмена не считается ошибкой и не вызывает повторы", async () => {
@@ -613,10 +574,53 @@ describe("модель вернула пустой ответ", () => {
 
     mockedCallLLM.mockRejectedValue(Object.assign(new Error("aborted"), { name: "AbortError" }));
 
-    await expect(auditCard(ENGLISH_CARD, { apiConfig, signal: controller.signal })).rejects.toThrow(
+    await expect(polishCard(ENGLISH_CARD, { apiConfig, signal: controller.signal })).rejects.toThrow(
       /aborted/i
     );
     expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("модель ответила не по форме или отказалась", () => {
+  it("на мусорный ответ переспрашивает с напоминанием формата и дожимает", async () => {
+    mockedCallLLM
+      .mockResolvedValueOnce("I'm sorry, I can't help with that.")
+      .mockResolvedValueOnce(JSON.stringify({ items: [{ id: "firstMessage", text: "*перевод*" }] }));
+
+    const { card, answered } = await polishCard(ENGLISH_CARD, { apiConfig });
+
+    expect(mockedCallLLM).toHaveBeenCalledTimes(2);
+    // Во втором запросе — напоминание формата вместе с первым ответом модели.
+    const retryTurns = mockedCallLLM.mock.calls[1][2];
+    expect(retryTurns[retryTurns.length - 1].content).toMatch(/строго JSON/);
+    expect(card.firstMessage).toBe("*перевод*");
+    expect(answered).toBeGreaterThan(0);
+  });
+
+  it("если и переспрос не помог — ничего не применяется и отчёт честный", async () => {
+    mockedCallLLM.mockResolvedValue("Я не могу обработать этот контент.");
+
+    const { card, sent, answered, changed } = await translateCard(ENGLISH_CARD, { apiConfig });
+
+    // Модель спрашивали (и переспрашивали), но ни один фрагмент не вернулся.
+    expect(sent).toBeGreaterThan(0);
+    expect(answered).toBe(0);
+    expect(changed).toBe(0);
+    // Карточка не испорчена отказом модели.
+    expect(card.description).toBe(ENGLISH_CARD.description);
+    expect(card.firstMessage).toBe(ENGLISH_CARD.firstMessage);
+  });
+
+  it("частичный ответ виден в отчёте: отвечено меньше, чем отправлено", async () => {
+    mockedCallLLM.mockImplementation(async (_config, _system, turns) => {
+      const items = JSON.parse(turns[turns.length - 1].content).items;
+      return JSON.stringify({ items: items.slice(0, 1).map((i: { id: string }) => ({ id: i.id, text: "перевод" })) });
+    });
+
+    const { sent, answered } = await translateCard(ENGLISH_CARD, { apiConfig });
+
+    expect(sent).toBeGreaterThan(answered);
+    expect(answered).toBe(1);
   });
 });
 
@@ -633,5 +637,144 @@ describe("промпт перевода", () => {
     // И при этом не ломает оформление и характер.
     expect(system).toMatch(/\*действия в звёздочках\*/);
     expect(system).toMatch(/не цензурируй/);
+  });
+});
+
+describe("промпт чистки", () => {
+  it("заменяет плейсхолдеры именами, а не вырезает их", () => {
+    const system = polishSystem("Розалия", "Странник");
+
+    // Имена подставлены.
+    expect(system).toContain("«Розалия»");
+    expect(system).toContain("«Странник»");
+    // Главное требование — заменять, а не удалять.
+    expect(system).toMatch(/заменять, а не вырезать/);
+    expect(system).toMatch(/сохрани предложение целиком/);
+  });
+
+  it("отправляется модели вместе с именем персонажа", async () => {
+    mockedCallLLM.mockImplementation(async (_config, _system, turns) => {
+      const items = JSON.parse(turns[turns.length - 1].content).items;
+      return JSON.stringify({ items });
+    });
+
+    await polishCard(ENGLISH_CARD, { apiConfig });
+
+    const system = mockedCallLLM.mock.calls[0][1];
+    expect(system).toContain("«Rosalia Convallaria»");
+  });
+
+  it("без имени персонажа использует запасное слово", () => {
+    const system = polishSystem("", "");
+    expect(system).toContain("«персонаж»");
+    expect(system).toContain("«игрок»");
+  });
+});
+
+describe("промпт перевода защищает макросы", () => {
+  it("запрещает переводить и менять {{user}} / {{char}}", async () => {
+    replyWithTag("[ru] ");
+    await translateCard(ENGLISH_CARD, { apiConfig });
+
+    const system = mockedCallLLM.mock.calls[0][1];
+    expect(system).toMatch(/макросы/);
+    expect(system).toMatch(/не переводи и не меняй/);
+    // И требует вернуть ровно одну запись на каждый входной id.
+    expect(system).toMatch(/верни ровно одну запись с тем же id/);
+  });
+});
+
+describe("сжатие режет только раздутые куски", () => {
+  it("короткие куски внутри длинного поля остаются нетронутыми", async () => {
+    replyWithTag("[short] ");
+
+    // description: один раздутый кусок и несколько коротких.
+    // Короткие абзацы нарезка объединит, но они должны остаться как были.
+    const shortA = "Короткая заметка о её мече.";
+    const shortB = "Ещё одна короткая деталь гардероба.";
+    const huge = "word ".repeat(2_000); // 10_000 символов
+
+    const card: NormalizedCard = {
+      ...ENGLISH_CARD,
+      description: `${shortA}\n\n${huge}\n\n${shortB}`,
+    };
+
+    const { card: compressed } = await compressCard(card, { apiConfig });
+    const request = lastRequest();
+    const sentTexts = (request.items ?? []).map((item) => item.text);
+
+    // Модели ушёл только раздутый кусок.
+    expect(sentTexts.some((text) => text.length > 2_500)).toBe(true);
+    expect(sentTexts.every((text) => text.length > 2_500)).toBe(true);
+    // Короткие куски не отправлялись и не менялись.
+    expect(request.raw).not.toContain(shortA);
+    expect(request.raw).not.toContain(shortB);
+    expect(compressed.description).toContain(shortA);
+    expect(compressed.description).toContain(shortB);
+    // А раздутый кусок модель сжала.
+    expect(compressed.description).toContain("[short]");
+  });
+
+  it("сжатие не меняет язык текста", () => {
+    // Косвенно проверяем через системный промпт: он больше не требует
+    // писать по-русски, а просит сохранить язык оригинала.
+    replyWithTag("[short] ");
+    return compressCard(
+      { ...ENGLISH_CARD, description: "word ".repeat(2_000) },
+      { apiConfig }
+    ).then(() => {
+      const system = mockedCallLLM.mock.calls[0][1];
+      expect(system).toMatch(/на языке исходного текста/);
+      expect(system).toMatch(/примерно на 40%/);
+    });
+  });
+});
+
+describe("«привести в порядок» сжимает огромную карточку первой", () => {
+  it("огромная карточка проходит сжатие до чистки и исправления", async () => {
+    const stages: string[] = [];
+
+    mockedCallLLM.mockImplementation(async (_config, system, turns) => {
+      if (system.includes("примерно на 40%")) {
+        stages.push("compress");
+        const items = JSON.parse(turns[turns.length - 1].content).items;
+        return JSON.stringify({
+          items: items.map((item: { id: string; text: string }) => ({
+            id: item.id,
+            text: item.text.slice(0, 1_500),
+          })),
+        });
+      }
+
+      if (system.includes("Приведи её в порядок")) {
+        stages.push("repair");
+        return JSON.stringify({ fields: {}, notes: [] });
+      }
+
+      if (system.includes("часть полей пуста")) {
+        stages.push("enrich");
+        return JSON.stringify({});
+      }
+
+      stages.push("polish");
+      const items = JSON.parse(turns[turns.length - 1].content).items;
+      return JSON.stringify({ items });
+    });
+
+    const huge: NormalizedCard = {
+      ...ENGLISH_CARD,
+      creatorNotes: "есть",
+      world: "есть",
+      description: "Абзац о прошлом. ".repeat(2_000),
+    };
+
+    const result = await fixCard(huge, { apiConfig });
+
+    expect(stages[0]).toBe("compress");
+    expect(stages).toContain("polish");
+    expect(stages).toContain("repair");
+    expect(result.notes.some((note) => /сжат/i.test(note))).toBe(true);
+    // Поле действительно стало короче.
+    expect(result.card.description.length).toBeLessThan(huge.description.length);
   });
 });

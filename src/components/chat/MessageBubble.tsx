@@ -16,6 +16,7 @@ import {
   AlertCircle,
   XCircle,
   CheckCircle2,
+  MessageCircle,
 } from "lucide-react";
 import { Avatar } from "../common/Avatar";
 import { renderRoleplayText } from "../../utils/textRenderer";
@@ -73,6 +74,17 @@ export function MessageBubble({
 
   const timeString = formatMessageTime(message.timestamp);
   const senderName = isUser ? userProfile.name : character.name;
+  const isRemote = !isUser && Boolean(message.remoteKind);
+  const remoteLabel =
+    message.remoteKind === "sms"
+      ? "SMS"
+      : message.remoteKind === "call_missed"
+        ? "Пропущенный звонок"
+        : message.remoteKind === "social_post"
+          ? "Публикация"
+          : message.remoteKind === "message"
+            ? "Сообщение из-за кадра"
+            : "";
 
   const isBrandNew =
     !isUser &&
@@ -177,6 +189,12 @@ export function MessageBubble({
           )}
         >
           <span className="font-semibold text-zinc-200">{senderName}</span>
+          {isRemote && remoteLabel && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-sky-300/20 bg-sky-300/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-sky-200">
+              <MessageCircle size={10} />
+              {remoteLabel}
+            </span>
+          )}
           <span className="tabular-nums text-content-muted text-[11px]">{timeString}</span>
         </div>
 
@@ -186,9 +204,11 @@ export function MessageBubble({
             editing && "w-full",
             isOOC
               ? "border border-dashed border-warning/40 bg-surface-2/90 text-zinc-200"
-              : isUser
-                ? "rounded-tr-xs border border-accent/25 bg-[#221b33]/90 text-zinc-100 shadow-[0_2px_16px_rgba(139,92,246,0.1)]"
-                : "rounded-tl-xs border border-white/[0.07] bg-[#121622]/90 text-zinc-100"
+              : isRemote
+                ? "rounded-tl-xs border border-sky-300/25 bg-sky-950/25 text-zinc-100 shadow-[0_2px_16px_rgba(56,189,248,0.08)]"
+                : isUser
+                  ? "rounded-tr-xs border border-accent/25 bg-[#221b33]/90 text-zinc-100 shadow-[0_2px_16px_rgba(139,92,246,0.1)]"
+                  : "rounded-tl-xs border border-white/[0.07] bg-[#121622]/90 text-zinc-100"
           )}
         >
           {isOOC && !editing && (

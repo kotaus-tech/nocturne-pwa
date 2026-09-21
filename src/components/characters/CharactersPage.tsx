@@ -11,6 +11,7 @@ import {
   ChevronDown,
   Pin,
   Upload,
+  Dna,
 } from "lucide-react";
 import {
   db,
@@ -23,6 +24,7 @@ import { CharacterSheet } from "./CharacterSheet";
 import { CharacterImportModal } from "./CharacterImportModal";
 import { supportsCardImport } from "../../utils/characterCardFile";
 import { CharacterGeneratorModal } from "./CharacterGeneratorModal";
+import { GeneratorV2Modal } from "./v2/GeneratorV2Modal";
 import { GroupSceneModal } from "./GroupSceneModal";
 import {
   GROUP_SIZE_MIN,
@@ -110,6 +112,8 @@ export function CharactersPage({
   // Групповая сцена: сначала выбор готовых героев, затем (по желанию) AI-генерация.
   const [groupPickerOpen, setGroupPickerOpen] = useState(false);
   const [groupGeneratorOpen, setGroupGeneratorOpen] = useState(false);
+  // Character DNA: отдельный генератор V2 (не заменяет классический).
+  const [dnaOpen, setDnaOpen] = useState(false);
   const [draggedFile, setDraggedFile] = useState<File | null>(null);
   const [isWindowDragOver, setIsWindowDragOver] = useState(false);
 
@@ -254,6 +258,25 @@ export function CharactersPage({
     onOpenSession(session.id);
   };
 
+  /**
+   * Character DNA (V2): модалка уже собрала полную карточку из blueprint —
+   * сохраняем её целиком и сразу показываем. Классический генератор не задет.
+   */
+  const handleApplyV2 = async (character: Character) => {
+    const saved = sanitizeCharacter({
+      ...character,
+      createdAt: Number.isFinite(character.createdAt) ? character.createdAt : Date.now(),
+    });
+
+    await db.characters.put(saved);
+
+    if (favoritesOnly && !saved.isFavorite) {
+      onRevealCreated?.();
+    }
+
+    setViewing(saved);
+  };
+
   const handleToggleFavorite = (characterId: string) => {
     void toggleCharacterFavorite(characterId).catch((err) => {
       console.error("Favorite toggle failed:", err);
@@ -345,6 +368,16 @@ export function CharactersPage({
           >
             <Users size={16} strokeWidth={1.8} />
             <span>Групповая сцена</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setDnaOpen(true)}
+            title="Расширенный генератор глубоких современных персонажей"
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-accent/40 bg-accent/10 px-4 py-2.5 text-sm font-semibold text-accent transition-all hover:border-accent hover:bg-accent/15"
+          >
+            <Dna size={16} strokeWidth={1.8} />
+            <span>Character DNA</span>
           </button>
 
           <button
@@ -685,6 +718,12 @@ export function CharactersPage({
         onApply={handleApplySingle}
         onApplyGroup={handleApplyGroup}
         initialMode="group"
+      />
+
+      <GeneratorV2Modal
+        open={dnaOpen}
+        onClose={() => setDnaOpen(false)}
+        onApply={handleApplyV2}
       />
 
       <CharacterImportModal

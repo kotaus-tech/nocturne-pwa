@@ -1,6 +1,7 @@
 import { db } from "../db";
 import { newId } from "./id";
 import type { Character, ChatSession, Message, RelationshipStats } from "../types";
+import { emptyParticipantMemory } from "../services/groupScene";
 
 /** Создаёт новую ветку диалога для персонажа с его стартовым сообщением */
 export async function createSession(character: Character, title?: string): Promise<ChatSession> {
@@ -68,12 +69,17 @@ export async function createGroupSession(
     participantStats[item.id] = { ...item.initialStats };
   }
 
+  const participantMemory = Object.fromEntries(
+    participants.map((item) => [item.id, emptyParticipantMemory(item.id)])
+  );
+
   const session: ChatSession = {
     id: newId(),
     characterId: leader.id,
     isGroup: true,
     characterIds: rest.map((item) => item.id),
     participantStats,
+    participantMemory,
     title: options?.title ?? `Групповая сцена: ${names}`,
     directorNotes: "",
     summary: "",
@@ -96,6 +102,7 @@ export async function createGroupSession(
       swipes: [options.opening.trim()],
       currentSwipeIndex: 0,
       statsSnapshot: session.currentStats,
+      presentCharacterIds: [leader.id, ...rest.map((item) => item.id)],
       timestamp: now,
     });
   } else {
@@ -109,6 +116,7 @@ export async function createGroupSession(
         swipes: [item.firstMessage],
         currentSwipeIndex: 0,
         statsSnapshot: participantStats[item.id] ?? { ...item.initialStats },
+        presentCharacterIds: participants.map((participant) => participant.id),
         timestamp: now + index,
       });
     });
@@ -169,9 +177,23 @@ export async function deleteCharacterCascade(characterId: string): Promise<void>
       const nextStats = { ...(s.participantStats ?? {}) };
       delete nextStats[characterId];
 
+      // Личная память удалённого персонажа тоже вычищается из всех веток.
+      const nextMemory = { ...(s.participantMemory ?? {}) };
+      delete nextMemory[characterId];
+      const nextReasons = { ...(s.absentReasons ?? {}) };
+      delete nextReasons[characterId];
+      const nextRelations = (s.relations ?? []).filter(
+        (relation) =>
+          relation.from !== characterId && relation.to !== characterId
+      );
+
       await db.sessions.update(s.id, {
         characterIds: (s.characterIds ?? []).filter((id) => id !== characterId),
+        activeCharacterIds: s.activeCharacterIds?.filter((id) => id !== characterId),
+        absentReasons: nextReasons,
+        relations: nextRelations,
         participantStats: nextStats,
+        participantMemory: nextMemory,
       });
     }
 

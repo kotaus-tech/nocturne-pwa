@@ -25,6 +25,9 @@ import {
   Terminal,
   ShieldAlert,
   Coffee,
+  Brain,
+  Radio,
+  Clock3,
   Crosshair,
   Users,
   X,
@@ -41,8 +44,19 @@ import { Modal } from "../common/Modal";
 import { Avatar } from "../common/Avatar";
 import { AmbientPlayer } from "./AmbientPlayer";
 import { db } from "../../db";
-import type { Character, ChatSession, ThoughtMode } from "../../types";
-import { moveItem } from "../../services/groupScene";
+import type {
+  Character,
+  ChatSession,
+  ParticipantMemory,
+  SceneSessionPatch,
+  ThoughtMode,
+} from "../../types";
+import {
+  MAX_INTENTION_LENGTH,
+  MAX_PRIVATE_NOTE_LENGTH,
+  MAX_PRIVATE_NOTES,
+  moveItem,
+} from "../../services/groupScene";
 import { newId } from "../../utils/id";
 import { WALLPAPER_PRESETS } from "../../utils/wallpaperPresets";
 import { prepareImageFile, WALLPAPER_OPTIONS } from "../../utils/image";
@@ -73,6 +87,17 @@ interface Props {
   onTogglePresence?: (characterId: string, isPresent: boolean, reason?: string) => void;
   /** «Живая сцена»: короткие реакции других героев в той же реплике. */
   onToggleLiveScene?: (enabled: boolean) => void;
+  /** Ручная правка личной памяти участника. */
+  onUpdateParticipantMemory?: (
+    characterId: string,
+    patch: Partial<ParticipantMemory>
+  ) => void | Promise<unknown>;
+  /** Включить/выключить фоновую жизнь отсутствующих участников. */
+  onToggleOffscreenLife?: (enabled: boolean) => void;
+  /** Изменить интервал offscreen-проверок в ходах. */
+  onUpdateOffscreenInterval?: (interval: number) => void;
+  /** Единая шина ручных изменений состава/связей из панели. */
+  onApplyScenePatch?: (patch: SceneSessionPatch) => void | Promise<unknown>;
   /** Кто из состава сейчас в сцене. */
   presentIds?: string[];
   /** Идёт генерация — кнопки хода заблокированы. */
@@ -369,6 +394,10 @@ export function DirectorPanel({
   onRequestTurn,
   onTogglePresence,
   onToggleLiveScene,
+  onUpdateParticipantMemory,
+  onToggleOffscreenLife,
+  onUpdateOffscreenInterval,
+  onApplyScenePatch,
   presentIds,
   sending = false,
 }: Props) {
@@ -386,6 +415,8 @@ export function DirectorPanel({
   const [showDisclaimer, setShowDisclaimer] = useState(false);
   const [showToasts, setShowToasts] = useState(session.showRelationshipToasts !== false);
   const [realisticPacing, setRealisticPacing] = useState(session.realisticPacing !== false);
+  const [expandedMemory, setExpandedMemory] = useState<Record<string, boolean>>({});
+  const [newMemoryNote, setNewMemoryNote] = useState<Record<string, string>>({});
 
   const [dim, setDim] = useState(session.wallpaperDim ?? 0.55);
   const [blur, setBlur] = useState(session.wallpaperBlur ?? 0);
@@ -404,6 +435,10 @@ export function DirectorPanel({
   const participantCharacters = participantIds
     .map((id) => allCharacters?.find((item) => item.id === id))
     .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const memoryCharacters = [
+    character,
+    ...participantCharacters,
+  ].filter((item): item is Character => Boolean(item));
   const availableCharacters = (allCharacters ?? [])
     .filter(
       (item) =>
@@ -428,9 +463,31 @@ export function DirectorPanel({
       );
     }
 
+    const allowedMemoryIds = new Set([session.characterId, ...ids]);
+    const nextMemory = Object.fromEntries(
+      Object.entries(session.participantMemory ?? {}).filter(([id]) =>
+        allowedMemoryIds.has(id)
+      )
+    );
+
+    const patch: SceneSessionPatch = {
+      compositionPatch: { characterIds: ids, isGroup: ids.length > 0 },
+      ...(nextActive
+        ? { presencePatch: { activeCharacterIds: nextActive } }
+        : {}),
+      sourceKind: "user_turn",
+      sourceSnapshotAt: Date.now(),
+    };
+
+    if (onApplyScenePatch) {
+      await onApplyScenePatch(patch);
+      return;
+    }
+
     await db.sessions.update(session.id, {
       characterIds: ids,
       isGroup: ids.length > 0,
+      participantMemory: nextMemory,
       ...(nextActive ? { activeCharacterIds: nextActive } : {}),
       updatedAt: Date.now(),
     });
@@ -453,10 +510,51 @@ export function DirectorPanel({
       ChatSession["relations"]
     >
   ) => {
+    const nextRelations = updater(relations);
+    if (onApplyScenePatch) {
+      await onApplyScenePatch({
+        relationsReplace: nextRelations,
+        sourceKind: "user_turn",
+        sourceSnapshotAt: Date.now(),
+      });
+      return;
+    }
+
     await db.sessions.update(session.id, {
-      relations: updater(relations),
+      relations: nextRelations,
       updatedAt: Date.now(),
     });
+  };
+
+  const memoryFor = (characterId: string): ParticipantMemory => ({
+    characterId,
+    privateNotes: [],
+    intention: null,
+    lastExtractedMessageId: null,
+    absentSinceMessageId: null,
+    ticksSinceLastSignificant: 0,
+    significantSinceLastContact: 0,
+    ...(session.participantMemory?.[characterId] ?? {}),
+  });
+
+  const updateMemory = async (
+    characterId: string,
+    patch: Partial<ParticipantMemory>
+  ) => {
+    await onUpdateParticipantMemory?.(characterId, patch);
+  };
+
+  const addManualNote = async (characterId: string) => {
+    const text = (newMemoryNote[characterId] ?? "").trim();
+    if (!text) return;
+
+    const current = memoryFor(characterId);
+    const notes = [
+      text.slice(0, MAX_PRIVATE_NOTE_LENGTH),
+      ...current.privateNotes,
+    ].slice(0, MAX_PRIVATE_NOTES);
+    await updateMemory(characterId, { privateNotes: notes });
+    setNewMemoryNote((state) => ({ ...state, [characterId]: "" }));
   };
 
   const favoriteCandidates = availableCharacters.filter(
@@ -473,8 +571,10 @@ export function DirectorPanel({
 
   const clearParticipants = async () => {
     await updateParticipants([]);
+    if (onApplyScenePatch) return;
     await db.sessions.update(session.id, {
       participantStats: {},
+      participantMemory: {},
       activeCharacterIds: undefined,
       absentReasons: {},
       relations: [],
@@ -486,9 +586,15 @@ export function DirectorPanel({
     const nextIds = participantIds.filter((item) => item !== id);
     const nextStats = { ...(session.participantStats ?? {}) };
     delete nextStats[id];
+    const nextMemory = { ...(session.participantMemory ?? {}) };
+    delete nextMemory[id];
 
     await updateParticipants(nextIds);
-    await db.sessions.update(session.id, { participantStats: nextStats });
+    if (onApplyScenePatch) return;
+    await db.sessions.update(session.id, {
+      participantStats: nextStats,
+      participantMemory: nextMemory,
+    });
   };
   const [urlDialogOpen, setUrlDialogOpen] = useState(false);
   const [failedWallpaper, setFailedWallpaper] = useState<string | null>(null);
@@ -902,9 +1008,222 @@ export function DirectorPanel({
 
               {participantCharacters.some((item) => !isPresent(item.id)) && (
               <p className="mt-2 text-[11px] leading-relaxed text-content-muted">
-                За кадром персонаж не молчит вечно: модель вернёт его сама, когда
-                это будет уместно по сюжету. Вручную — тумблером рядом с именем.
+                За кадром персонаж продолжает жить независимо от того, кто сейчас
+                говорит в кадре. Фоновая проверка не раскрывает его приватные мысли
+                другим героям и не блокирует основную генерацию.
               </p>
+            )}
+
+            {participantCharacters.length > 0 && onToggleOffscreenLife && (
+              <div className="mt-3 rounded-2xl border border-white/[0.08] bg-[#121622]/70 p-3">
+                <label className="flex cursor-pointer items-start gap-2.5">
+                  <input
+                    type="checkbox"
+                    checked={session.offscreenLifeEnabled !== false}
+                    onChange={(event) => onToggleOffscreenLife(event.target.checked)}
+                    className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent)]"
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5 text-xs font-semibold text-content">
+                      <Radio size={13} className="text-accent" />
+                      Жизнь за кадром
+                    </span>
+                    <span className="mt-0.5 block text-[11px] leading-relaxed text-content-muted">
+                      Отсутствующие персонажи иногда думают, принимают решения и
+                      могут выйти на связь. Проверки редкие и не задерживают ответ.
+                    </span>
+                  </span>
+                </label>
+                {session.offscreenLifeEnabled !== false && onUpdateOffscreenInterval && (
+                  <label className="mt-2.5 flex items-center justify-between gap-3 border-t border-white/[0.06] pt-2.5 text-[11px] text-content-secondary">
+                    <span className="flex items-center gap-1.5">
+                      <Clock3 size={12} className="text-content-muted" />
+                      Проверять каждые ходы
+                    </span>
+                    <input
+                      type="number"
+                      min={4}
+                      max={20}
+                      step={1}
+                      value={session.offscreenTickInterval ?? 6}
+                      onChange={(event) =>
+                        onUpdateOffscreenInterval(Number(event.target.value))
+                      }
+                      className="input-field input-field--compact w-20 text-center"
+                      aria-label="Интервал жизни за кадром"
+                    />
+                  </label>
+                )}
+              </div>
+            )}
+
+            {participantCharacters.length > 0 && onUpdateParticipantMemory && (
+              <section className="mt-4 rounded-2xl border border-white/[0.08] bg-[#121622]/50 p-3">
+                <div className="mb-2.5 flex items-start gap-2">
+                  <Brain size={16} className="mt-0.5 shrink-0 text-accent" />
+                  <div>
+                    <h4 className="text-xs font-semibold text-content">Внутренний мир персонажей</h4>
+                    <p className="mt-0.5 text-[11px] leading-relaxed text-content-muted">
+                      Что каждый персонаж думает и помнит, но не обязан говорить вслух.
+                      Можно исправить модель или добавить мысль вручную.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  {memoryCharacters.map((member) => {
+                    const memory = memoryFor(member.id);
+                    const expanded = expandedMemory[member.id] ?? member.id === session.characterId;
+
+                    return (
+                      <div key={member.id} className="rounded-2xl border border-white/[0.07] bg-[#0f131d]/80">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedMemory((state) => ({
+                              ...state,
+                              [member.id]: !expanded,
+                            }))
+                          }
+                          className="flex w-full items-center gap-2 p-2.5 text-left"
+                          aria-expanded={expanded}
+                        >
+                          <Avatar src={member.avatarUrl} name={member.name} size={26} />
+                          <span className="min-w-0 flex-1 truncate text-xs font-semibold text-content">
+                            {member.name}
+                            {member.id === session.characterId ? " · лидер" : ""}
+                          </span>
+                          <span className="text-[10px] text-content-muted">
+                            {memory.privateNotes.length}/{MAX_PRIVATE_NOTES} заметок
+                          </span>
+                          {expanded ? <ChevronUp size={14} className="text-content-muted" /> : <ChevronDown size={14} className="text-content-muted" />}
+                        </button>
+
+                        {expanded && (
+                          <div className="space-y-2 border-t border-white/[0.06] p-2.5">
+                            {memory.privateNotes.map((note, index) => (
+                              <div key={`${member.id}-${index}`} className="flex items-start gap-1.5">
+                                <input
+                                  value={note}
+                                  maxLength={MAX_PRIVATE_NOTE_LENGTH}
+                                  onChange={(event) => {
+                                    const next = [...memory.privateNotes];
+                                    next[index] = event.target.value;
+                                    void updateMemory(member.id, { privateNotes: next });
+                                  }}
+                                  aria-label={`Личная заметка ${index + 1} персонажа ${member.name}`}
+                                  className="input-field input-field--compact min-w-0 flex-1 text-[11px]"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    void updateMemory(member.id, {
+                                      privateNotes: memory.privateNotes.filter((_, itemIndex) => itemIndex !== index),
+                                    })
+                                  }
+                                  aria-label={`Удалить заметку персонажа ${member.name}`}
+                                  className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-content-muted hover:bg-danger/10 hover:text-danger"
+                                >
+                                  <X size={13} />
+                                </button>
+                              </div>
+                            ))}
+
+                            {memory.privateNotes.length < MAX_PRIVATE_NOTES && (
+                              <div className="flex items-center gap-1.5">
+                                <input
+                                  value={newMemoryNote[member.id] ?? ""}
+                                  maxLength={MAX_PRIVATE_NOTE_LENGTH}
+                                  onChange={(event) =>
+                                    setNewMemoryNote((state) => ({
+                                      ...state,
+                                      [member.id]: event.target.value,
+                                    }))
+                                  }
+                                  onKeyDown={(event) => {
+                                    if (event.key === "Enter") {
+                                      event.preventDefault();
+                                      void addManualNote(member.id);
+                                    }
+                                  }}
+                                  placeholder="Добавить мысль вручную…"
+                                  aria-label={`Добавить мысль для ${member.name}`}
+                                  className="input-field input-field--compact min-w-0 flex-1 text-[11px]"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => void addManualNote(member.id)}
+                                  disabled={!newMemoryNote[member.id]?.trim()}
+                                  className="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2 text-[10px] font-semibold text-accent disabled:opacity-40"
+                                >
+                                  <Plus size={12} />
+                                  Добавить
+                                </button>
+                              </div>
+                            )}
+
+                            <div className="border-t border-white/[0.06] pt-2">
+                              <label className="block text-[10px] font-semibold uppercase tracking-wider text-content-muted">
+                                Активное намерение
+                              </label>
+                              <textarea
+                                value={memory.intention?.text ?? ""}
+                                maxLength={MAX_INTENTION_LENGTH}
+                                onChange={(event) => {
+                                  const text = event.target.value;
+                                  void updateMemory(member.id, {
+                                    intention: text.trim()
+                                      ? {
+                                          text,
+                                          scope: memory.intention?.scope ?? "scene",
+                                          createdAtMessageId: memory.intention?.createdAtMessageId ?? "",
+                                          origin: memory.intention?.origin ?? "scene",
+                                        }
+                                      : null,
+                                  });
+                                }}
+                                placeholder="Нет активного намерения"
+                                aria-label={`Намерение персонажа ${member.name}`}
+                                rows={2}
+                                className="input-field mt-1.5 min-h-0 resize-y text-[11px]"
+                              />
+                              {memory.intention && (
+                                <div className="mt-1.5 flex items-center justify-between gap-2">
+                                  <select
+                                    value={memory.intention.scope}
+                                    onChange={(event) =>
+                                      void updateMemory(member.id, {
+                                        intention: {
+                                          ...memory.intention!,
+                                          scope: event.target.value as NonNullable<typeof memory.intention>["scope"],
+                                        },
+                                      })
+                                    }
+                                    className="input-field input-field--compact text-[11px]"
+                                    aria-label={`Срок намерения ${member.name}`}
+                                  >
+                                    <option value="location">до смены места</option>
+                                    <option value="time">до скачка времени</option>
+                                    <option value="scene">до смены сцены</option>
+                                    <option value="persistent">долгосрочное</option>
+                                  </select>
+                                  <button
+                                    type="button"
+                                    onClick={() => void updateMemory(member.id, { intention: null })}
+                                    className="text-[10px] font-medium text-content-muted hover:text-danger"
+                                  >
+                                    Завершить
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
             )}
 
             {participantCharacters.length === 0 && (

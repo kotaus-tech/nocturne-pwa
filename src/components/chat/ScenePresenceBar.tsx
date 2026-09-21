@@ -8,6 +8,8 @@ interface ScenePresenceBarProps {
   cast: Character[];
   /** Кто сейчас физически в сцене. */
   present: Character[];
+  /** Отсутствующие персонажи с непрочитанным дистанционным контактом. */
+  remoteIds?: string[];
   /** Идёт генерация — переключатели блокируются. */
   disabled?: boolean;
   onToggle: (character: Character, isPresent: boolean) => void;
@@ -21,12 +23,14 @@ interface ScenePresenceBarProps {
 export function ScenePresenceBar({
   cast,
   present,
+  remoteIds = [],
   disabled,
   onToggle,
 }: ScenePresenceBarProps) {
   if (cast.length < 2) return null;
 
   const presentIds = new Set(present.map((item) => item.id));
+  const remoteIdSet = new Set(remoteIds);
 
   return (
     <div
@@ -41,6 +45,7 @@ export function ScenePresenceBar({
 
       {cast.map((character) => {
         const isPresent = presentIds.has(character.id);
+        const hasRemoteContact = remoteIdSet.has(character.id);
 
         return (
           <button
@@ -50,9 +55,11 @@ export function ScenePresenceBar({
             onClick={() => onToggle(character, !isPresent)}
             aria-pressed={isPresent}
             title={
-              isPresent
-                ? `${character.name} в сцене — убрать за кадр`
-                : `${character.name} за кадром — ввести в сцену`
+              hasRemoteContact
+                ? `${character.name}: новое сообщение из-за кадра`
+                : isPresent
+                  ? `${character.name} в сцене — убрать за кадр`
+                  : `${character.name} за кадром — ввести в сцену`
             }
             className={cn(
               "flex shrink-0 items-center gap-1.5 rounded-full border py-0.5 pl-0.5 pr-2.5",
@@ -68,12 +75,19 @@ export function ScenePresenceBar({
                 aria-hidden="true"
                 className={cn(
                   "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#0c0f15]",
-                  isPresent ? "bg-success" : "bg-content-muted"
+                  hasRemoteContact
+                    ? "bg-sky-300 shadow-[0_0_7px_rgba(125,211,252,0.9)]"
+                    : isPresent
+                      ? "bg-success"
+                      : "bg-content-muted"
                 )}
               />
             </span>
 
-            <span className="max-w-[7rem] truncate">{character.name}</span>
+            <span className="max-w-[7rem] truncate">
+              {character.name}
+              {hasRemoteContact ? " · новое сообщение" : ""}
+            </span>
           </button>
         );
       })}

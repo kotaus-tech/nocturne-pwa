@@ -6,6 +6,7 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  Copy,
   Cpu,
   DatabaseBackup,
   DownloadCloud,
@@ -64,6 +65,13 @@ import {
 import { APP_CODENAME, APP_VERSION } from "../../appInfo";
 import { ConfirmDialog } from "../common/ConfirmDialog";
 import { cn } from "../../utils/cn";
+import { copyTextToClipboard } from "../../utils/clipboard";
+
+/**
+ * Команда запуска Ollama с разрешением CORS для командной строки Windows.
+ * Показывается в настройках локального подключения и копируется в один клик.
+ */
+const OLLAMA_CORS_COMMAND = "set OLLAMA_ORIGINS=*\n\nollama serve";
 
 interface SettingsPageProps {
   initialTab?: "api" | "backup";
@@ -295,6 +303,7 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
   const [presetInputOpen, setPresetInputOpen] = useState(false);
   const [newPresetName, setNewPresetName] = useState("");
   const [presetToast, setPresetToast] = useState<string | null>(null);
+  const [ollamaCopied, setOllamaCopied] = useState(false);
 
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [connectionTest, setConnectionTest] = useState<ConnectionTestResult | null>(null);
@@ -318,6 +327,7 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
   const apiRevisionRef = useRef(0);
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ollamaCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -351,6 +361,7 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
       mountedRef.current = false;
       if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      if (ollamaCopyTimerRef.current) clearTimeout(ollamaCopyTimerRef.current);
     };
   }, []);
 
@@ -391,6 +402,22 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
     toastTimerRef.current = setTimeout(() => {
       if (mountedRef.current) setPresetToast(null);
     }, 2500);
+  };
+
+  /** Копирует команду запуска Ollama с CORS одним нажатием. */
+  const handleCopyOllamaCommand = async () => {
+    try {
+      await copyTextToClipboard(OLLAMA_CORS_COMMAND);
+      if (!mountedRef.current) return;
+
+      setOllamaCopied(true);
+      if (ollamaCopyTimerRef.current) clearTimeout(ollamaCopyTimerRef.current);
+      ollamaCopyTimerRef.current = setTimeout(() => {
+        if (mountedRef.current) setOllamaCopied(false);
+      }, 2000);
+    } catch {
+      // Копирование не критично: команду видно на экране и можно выделить вручную.
+    }
   };
 
   const updateApi = (patch: Partial<ApiConfig>, resetModelList = false) => {
@@ -850,16 +877,34 @@ export function SettingsPage({ initialTab = "api" }: SettingsPageProps) {
 
                 <div className="space-y-5">
                   {isLocal && (
-                    <div className="rounded-2xl border border-white/[0.08] bg-[#141824] p-3.5 text-xs leading-relaxed text-zinc-300 space-y-1.5">
-                      <div className="flex items-center gap-2 font-semibold text-accent">
-                        <Server size={15} />
-                        <span>Подключение к Ollama без ключа</span>
+                    <div className="space-y-1.5 rounded-2xl border border-white/[0.08] bg-[#141824] p-3.5 text-xs leading-relaxed text-zinc-300">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 font-semibold text-accent">
+                          <Server size={15} />
+                          <span>Подключение к Ollama без ключа</span>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => void handleCopyOllamaCommand()}
+                          className={cn(
+                            "inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition-colors",
+                            ollamaCopied
+                              ? "border-success/40 bg-success/10 text-success"
+                              : "border-white/[0.08] bg-surface-2 text-content-secondary hover:border-accent/40 hover:text-accent"
+                          )}
+                        >
+                          {ollamaCopied ? <Check size={13} /> : <Copy size={13} />}
+                          <span>{ollamaCopied ? "Скопировано" : "Копировать"}</span>
+                        </button>
                       </div>
+
                       <p>
-                        Для Ollama ключ авторизации не требуется. Если при загрузке моделей возникает ошибка сети, запустите Ollama в терминале с разрешением CORS:
+                        Для Ollama ключ авторизации не требуется. Если при загрузке моделей возникает ошибка сети, запустите Ollama в командной строке с разрешением CORS:
                       </p>
-                      <pre className="rounded-xl bg-black/50 p-2 font-mono text-[11px] text-zinc-200 overflow-x-auto">
-                        OLLAMA_ORIGINS="*" ollama serve
+
+                      <pre className="overflow-x-auto rounded-xl bg-black/50 p-2.5 font-mono text-[11px] leading-relaxed text-zinc-200">
+                        {OLLAMA_CORS_COMMAND}
                       </pre>
                     </div>
                   )}

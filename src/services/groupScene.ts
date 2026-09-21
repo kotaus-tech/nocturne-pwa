@@ -169,8 +169,8 @@ export function messageIndexById(
 
 /**
  * Сколько ходов сцены (завершённых ответов ассистента) прошло после сообщения.
- * Эхо «живой сцены» ходом не считается. Если указатель не найден/пуст —
- * считаем от начала истории.
+ * Эхо «живой сцены» и remote-thread ходами не считаются. Если указатель
+ * не найден/пуст — считаем от начала истории.
  */
 export function sceneTurnsSince(
   messages: Message[],
@@ -185,7 +185,10 @@ export function sceneTurnsSince(
     if (
       message.sender === "assistant" &&
       !message.isLiveSceneEcho &&
-      !message.remoteKind
+      !message.remoteKind &&
+      (!message.characterId ||
+        !message.presentCharacterIds ||
+        message.presentCharacterIds.includes(message.characterId))
     ) {
       turns += 1;
     }
@@ -278,7 +281,8 @@ export function buildTranscriptSince(
   messages: Message[],
   sinceMessageId: string | null | undefined,
   nameFor: (message: Message) => string,
-  maxMessages = 24
+  maxMessages = 24,
+  exclude?: (message: Message) => boolean
 ): string {
   const from = messageIndexById(messages, sinceMessageId);
   const start = from === -1 ? 0 : from + 1;
@@ -289,7 +293,8 @@ export function buildTranscriptSince(
       (message) =>
         message.sender !== "system" &&
         !message.isLiveSceneEcho &&
-        !message.remoteKind
+        !message.remoteKind &&
+        !exclude?.(message)
     )
     .slice(-maxMessages)
     .map(
@@ -311,12 +316,21 @@ export function messageVisibleToCharacter(
   if (message.sender === "system" || message.isLiveSceneEcho) return false;
 
   if (message.sender === "user") {
-    if (
-      message.addressedTo === characterId ||
-      message.targetCharacterId === characterId
-    ) {
-      return true;
+    const targetId = message.targetCharacterId ?? message.addressedTo;
+    if (targetId === characterId) return true;
+
+    // Пользовательская часть remote-thread адресована только отсутствующему
+    // герою. Она не должна становиться знанием присутствующих персонажей.
+    if (message.remoteKind) return false;
+
+    // Для старых записей без remoteKind snapshot показывает, был ли target
+    // физически в комнате. Если target отсутствовал, остальные это сообщение
+    // не слышали; если присутствовал, обычная адресованная реплика остаётся
+    // слышимой остальным участникам по прежнему правилу.
+    if (targetId && message.presentCharacterIds) {
+      if (!message.presentCharacterIds.includes(targetId)) return false;
     }
+
     return message.presentCharacterIds
       ? message.presentCharacterIds.includes(characterId)
       : true;
@@ -326,6 +340,50 @@ export function messageVisibleToCharacter(
   return message.presentCharacterIds
     ? message.presentCharacterIds.includes(characterId)
     : false;
+}
+
+/**
+ * Является ли сообщение частью дистанционной ветки, а не обычной сцены.
+ * Новые записи несут `remoteKind`; для старых сохранений дополнительно
+ * используются snapshot присутствия и канонический target/addressed id.
+ */
+export function isRemoteThreadMessage(
+  message: Message,
+  participants: Character[],
+  present: Character[]
+): boolean {
+  if (message.remoteKind || message.isRemoteReply) return true;
+
+  // Старые ответы отсутствующего героя могли не иметь remoteKind, но при
+  // создании получали snapshot пустой/без собственного id. Это отличает их
+  // от обычного хода в комнате и сохраняет изоляцию после возвращения.
+  if (message.sender === "assistant" && message.characterId) {
+    const authorIsParticipant = participants.some(
+      (item) => item.id === message.characterId
+    );
+    if (authorIsParticipant && message.presentCharacterIds) {
+      return !message.presentCharacterIds.includes(message.characterId);
+    }
+    return false;
+  }
+
+  if (message.sender !== "user") return false;
+
+  const targetId = message.targetCharacterId ?? message.addressedTo;
+  if (!targetId) return false;
+
+  const targetIsParticipant = participants.some((item) => item.id === targetId);
+  if (!targetIsParticipant) return false;
+
+  // Старый remote user-turn мог не иметь `remoteKind`, но его snapshot
+  // присутствия всё равно показывает, что адресат был за кадром в момент
+  // отправки. Это не должно «влиться» обратно в общую сцену после его возврата.
+  if (message.presentCharacterIds) {
+    return !message.presentCharacterIds.includes(targetId);
+  }
+
+  const targetIsPresent = present.some((item) => item.id === targetId);
+  return !targetIsPresent;
 }
 
 /**
@@ -492,7 +550,18 @@ export function pendingSpeakers(
       .filter((message) => message.sender === "assistant")
       // Инлайн-реакции «живой сцены» и дистанционные контакты не являются
       // полноценным ходом героя основной сцены.
-      .filter((message) => !message.isLiveSceneEcho && !message.remoteKind)
+      .filter((message) => {
+        if (message.isLiveSceneEcho || message.remoteKind) return false;
+        if (
+          message.characterId &&
+          message.presentCharacterIds &&
+          participants.some((item) => item.id === message.characterId) &&
+          !message.presentCharacterIds.includes(message.characterId)
+        ) {
+          return false;
+        }
+        return true;
+      })
       .map((message) => message.characterId ?? mainCharacterId)
   );
 

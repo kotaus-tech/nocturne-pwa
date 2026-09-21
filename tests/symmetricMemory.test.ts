@@ -6,6 +6,8 @@ import {
   countRelevantMessagesSince,
   emptyParticipantMemory,
   intentionSurvivesShift,
+  isRemoteThreadMessage,
+  messageVisibleToCharacter,
   notesSignature,
   pendingSpeakers,
   resolveMemoryPointer,
@@ -388,6 +390,43 @@ describe("границы личного контекста и rewind safety", ()
     expect(pendingSpeakers(messages, participants, "c-1").map((item) => item.id)).toEqual([
       "c-2",
     ]);
+  });
+
+  it("находит старый user remote-thread без remoteKind по target и presence", () => {
+    const participants = [makeCharacter("c-1", "Ая"), makeCharacter("c-2", "Рин")];
+    const oldRemoteUser = makeMessage("m-1", "user", "Рин, ответь", {
+      targetCharacterId: "c-2",
+      presentCharacterIds: ["c-1"],
+    });
+
+    expect(isRemoteThreadMessage(oldRemoteUser, participants, [participants[0]])).toBe(true);
+    // Snapshot сохраняет приватность даже после возвращения адресата в сцену.
+    expect(isRemoteThreadMessage(oldRemoteUser, participants, participants)).toBe(true);
+    expect(
+      isRemoteThreadMessage(
+        { ...oldRemoteUser, presentCharacterIds: undefined },
+        participants,
+        participants
+      )
+    ).toBe(false);
+    expect(messageVisibleToCharacter(oldRemoteUser, "c-1")).toBe(false);
+    expect(messageVisibleToCharacter(oldRemoteUser, "c-2")).toBe(true);
+    expect(
+      isRemoteThreadMessage(
+        {
+          id: "old-remote-reply",
+          sessionId: "s-1",
+          sender: "assistant",
+          characterId: "c-2",
+          swipes: ["Я получила сообщение."],
+          currentSwipeIndex: 0,
+          presentCharacterIds: [],
+          timestamp: 3,
+        },
+        participants,
+        participants
+      )
+    ).toBe(true);
   });
 });
 

@@ -42,6 +42,7 @@ import {
   buildTranscriptSince,
   getParticipantMemory,
   intentionSignature,
+  isRemoteThreadMessage,
   matchLeftCharacters,
   mergeSceneRelations,
   matchReturnedCharacters,
@@ -322,20 +323,21 @@ export function ChatView({
     ]
   );
 
+  const presentCharacters = presence.present;
+  const absentCharacters = presence.absent;
+
   /**
-   * Имена остальных героев сцены: память ведётся от лица основного персонажа,
-   * но групповой контекст ей тоже нужен.
+   * Имена остальных героев именно текущего кадра: отсутствующие существуют
+   * в составе ветки, но не должны попадать в legacy-вспомогательные prompt-ы
+   * как будто находятся рядом.
    */
   const othersInScene = useMemo(
     () =>
-      participants
+      presentCharacters
         .filter((item) => item.id !== character?.id)
         .map((item) => item.name),
-    [participants, character?.id]
+    [presentCharacters, character?.id]
   );
-
-  const presentCharacters = presence.present;
-  const absentCharacters = presence.absent;
 
   /**
    * Отсутствующие персонажи, чьё дистанционное сообщение ещё без ответа
@@ -839,7 +841,13 @@ export function ChatView({
       return [];
     }
 
-    const recent = messages.slice(-14);
+    const recent = messages
+      .filter(
+        (message) =>
+          !isGroupScene ||
+          !isRemoteThreadMessage(message, participants, presentCharacters)
+      )
+      .slice(-14);
     const transcript = recent
       .map(
         (message) =>
@@ -937,7 +945,7 @@ export function ChatView({
     for (let index = list.length - 1; index >= 0; index -= 1) {
       const message = list[index];
       if (message.sender !== "assistant" || message.isLiveSceneEcho) continue;
-      if (message.remoteKind) continue; // дистанционный контакт — не ход в сцене
+      if (isRemoteThreadMessage(message, participants, presentCharacters)) continue;
       return message.characterId ?? character.id;
     }
     return character.id;
@@ -958,21 +966,6 @@ export function ChatView({
     ? presentCharacters.find((item) => item.id === targetCharacterId) ??
       remotePendingCharacters.find((item) => item.id === targetCharacterId)
     : undefined;
-
-  /**
-   * Дистанционная ветка не должна просачиваться в обычный контекст сцены.
-   * Для старых сообщений без `remoteKind` дополнительно проверяем адресата:
-   * если игрок писал отсутствующему герою, это тоже приватная переписка.
-   */
-  const isRemoteThreadMessage = (message: Message): boolean => {
-    if (message.remoteKind) return true;
-    if (message.sender !== "user" || !message.targetCharacterId) return false;
-
-    const target = participants.find(
-      (item) => item.id === message.targetCharacterId
-    );
-    return Boolean(target && !presentCharacters.some((item) => item.id === target.id));
-  };
 
   /**
    * Единая точка применения патчей состояния ветки (ТЗ §2.6, §10):
@@ -1030,7 +1023,7 @@ export function ChatView({
   const isOwnSceneTurn = (message: Message) =>
     message.sender === "assistant" &&
     !message.isLiveSceneEcho &&
-    !message.remoteKind;
+    !isRemoteThreadMessage(message, participants, presentCharacters);
 
   const lastAssistantId = [...allMessages]
     .reverse()
@@ -1136,7 +1129,8 @@ export function ChatView({
         // SMS/дистанционный контакт видит игрок, но не активные персонажи
         // основной сцены — иначе сам факт сообщения станет метазнанием.
         const sceneRecent = recent.filter(
-          (message) => !isRemoteThreadMessage(message)
+          (message) =>
+            !isRemoteThreadMessage(message, participants, presentCharacters)
         );
 
         const speakerStats = statsFor(speaker.id);
@@ -1578,7 +1572,10 @@ export function ChatView({
         const fragment = buildTranscriptSince(
           freshMessages,
           lastChronicleMessageIdRef.current,
-          nameForMessage
+          nameForMessage,
+          24,
+          (message) =>
+            isRemoteThreadMessage(message, freshParticipants, freshPresent)
         );
         if (fragment.trim()) {
           try {
@@ -1759,7 +1756,10 @@ export function ChatView({
           (message) =>
             (message.sender === "assistant" &&
               message.characterId === target.id &&
-              Boolean(message.remoteKind)) ||
+              (Boolean(message.remoteKind) ||
+                message.isRemoteReply ||
+                (message.presentCharacterIds &&
+                  !message.presentCharacterIds.includes(target.id)))) ||
             (message.sender === "user" &&
               (message.addressedTo === target.id ||
                 message.targetCharacterId === target.id))
@@ -1990,7 +1990,8 @@ export function ChatView({
         isSteppedWindow
       );
       const sceneRecent = recent.filter(
-        (item) => !isRemoteThreadMessage(item)
+        (item) =>
+          !isRemoteThreadMessage(item, participants, presentCharacters)
       );
 
       const systemPrompt = buildSystemPrompt(
@@ -2016,8 +2017,8 @@ export function ChatView({
           : undefined
       );
       const turns = isGroupScene
-        ? messagesToTurns(recent, turnLabelFor(speaker.id))
-        : messagesToTurns(recent);
+        ? messagesToTurns(sceneRecent, turnLabelFor(speaker.id))
+        : messagesToTurns(sceneRecent);
 
       setStreamingCharacterId(speaker.id);
       setLiveStreamedText("");
@@ -2196,6 +2197,15 @@ export function ChatView({
       return;
     }
 
+    // Группа больше не отправляет старый субъективный facts/diary extractor:
+    // он не умеет различать общую хронику и личный слой участника. Кнопка
+    // ручного обновления в group flow остаётся рабочей, но обновляет только
+    // нейтральный summary через тот же безопасный путь.
+    if (isGroupScene) {
+      await handleRefreshSummary();
+      return;
+    }
+
     if (allMessages.length < 3) return;
 
     const targetMessages =
@@ -2296,12 +2306,16 @@ export function ChatView({
         .equals(session.id)
         .sortBy("timestamp");
       const transcript = freshMessages
-        .filter((message) => !message.isLiveSceneEcho)
+        .filter(
+          (message) =>
+            !message.isLiveSceneEcho &&
+            !isRemoteThreadMessage(message, participants, presentCharacters)
+        )
         .map(
           (message) =>
             `${speakerName(message)}: ${message.swipes[message.currentSwipeIndex] ?? ""}`
         )
-        .join("\\n");
+        .join("\n");
       if (!transcript.trim()) return;
 
       const freshSummary = await requestNeutralChronicle(
@@ -2352,9 +2366,16 @@ export function ChatView({
       return;
     }
 
-    if (allMessages.length < 2) return;
+    const sourceMessages = isGroupScene
+      ? allMessages.filter(
+          (message) =>
+            !message.isLiveSceneEcho &&
+            !isRemoteThreadMessage(message, participants, presentCharacters)
+        )
+      : allMessages;
+    if (sourceMessages.length < 2) return;
 
-    const transcript = allMessages
+    const transcript = sourceMessages
       .map(
         (message, index) =>
           `[#${index + 1}] ${speakerName(message)}: ${message.swipes[message.currentSwipeIndex]}`
@@ -2372,10 +2393,10 @@ export function ChatView({
 
       if (rawEpisodes.length > 0) {
         const firstMessageTime =
-          allMessages[0]?.timestamp || Date.now() - 3600000;
+          sourceMessages[0]?.timestamp || Date.now() - 3600000;
 
         const lastMessageTime =
-          allMessages[allMessages.length - 1]?.timestamp || Date.now();
+          sourceMessages[sourceMessages.length - 1]?.timestamp || Date.now();
 
         const timeStep =
           (lastMessageTime - firstMessageTime) /
@@ -2460,7 +2481,7 @@ export function ChatView({
     if (
       message.sender !== "assistant" ||
       message.isLiveSceneEcho ||
-      message.remoteKind
+      isRemoteThreadMessage(message, participants, presentCharacters)
     ) {
       continue;
     }

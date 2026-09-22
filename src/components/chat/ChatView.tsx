@@ -74,6 +74,10 @@ import {
 } from "../../services/offscreenTick";
 import { splitLiveSceneReactions } from "../../services/liveSceneReactions";
 import {
+  buildRoleplayTurnDirective,
+  type RoleplayTurnMode,
+} from "../../services/turnDirectives";
+import {
   isLocalEndpoint,
   messagesToTurns,
   requestRoleplayReply,
@@ -1043,7 +1047,7 @@ export function ChatView({
 
   async function callModelAndAppend(
     contextMessages: Message[],
-    isInitiative = false,
+    turnMode: RoleplayTurnMode = "normal",
     onlySpeakers?: Character[],
     targetName?: string,
     patchSource: SceneSessionPatch["sourceKind"] = "user_turn"
@@ -1162,10 +1166,15 @@ export function ChatView({
           ? messagesToTurns(sceneRecent, turnLabelFor(speaker.id))
           : messagesToTurns(sceneRecent);
 
-        if (isInitiative) {
+        const turnDirective = buildRoleplayTurnDirective(
+          turnMode,
+          userProfile.name,
+          speaker.name
+        );
+        if (turnDirective) {
           turns.push({
             role: "user",
-            content: `[${userProfile.name} молчит или выжидает. ${speaker.name}, прояви собственную инициативу: продолжи мысль, соверши физическое действие, измени положение, начни новую реплику или нарушь паузу. НЕ говори и НЕ действуй за ${userProfile.name}!]`,
+            content: turnDirective,
           });
         } else if (targetName && speaker.id === speakers[0].id) {
           // Игрок выбрал адресата аватаром: подсказка уходит только в запрос,
@@ -1455,7 +1464,7 @@ export function ChatView({
     const last = full[full.length - 1];
 
     if (last && last.sender === "user") {
-      await callModelAndAppend(full, false, undefined, undefined, "regenerate");
+      await callModelAndAppend(full, "normal", undefined, undefined, "regenerate");
       return;
     }
 
@@ -1466,7 +1475,7 @@ export function ChatView({
     const pending = pendingSpeakers(full, participants, character?.id ?? "");
     if (pending.length === 0) return;
 
-    await callModelAndAppend(full, false, pending, undefined, "regenerate");
+    await callModelAndAppend(full, "normal", pending, undefined, "regenerate");
   }
 
   /**
@@ -1732,7 +1741,7 @@ export function ChatView({
       .sortBy("timestamp");
 
     setDirectorOpen(false);
-    await callModelAndAppend(full, true, [speaker]);
+    await callModelAndAppend(full, "initiative", [speaker]);
   }
 
   /**
@@ -1937,7 +1946,7 @@ export function ChatView({
       return;
     }
 
-    await callModelAndAppend(full, false, target ? [target] : undefined, target?.name);
+    await callModelAndAppend(full, "normal", target ? [target] : undefined, target?.name);
   }
 
   async function handleContinue() {
@@ -1958,11 +1967,11 @@ export function ChatView({
 
       if (!next) return;
 
-      await callModelAndAppend(full, true, [next]);
+      await callModelAndAppend(full, "continue", [next]);
       return;
     }
 
-    await callModelAndAppend(full, true);
+    await callModelAndAppend(full, "continue");
   }
 
   async function handleRegenerate(message: Message) {

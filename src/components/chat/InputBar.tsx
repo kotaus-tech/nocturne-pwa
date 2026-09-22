@@ -23,6 +23,7 @@ interface Props {
   onSend: (text: string) => void;
   onOpenDirector: () => void;
   onRequestSuggestions: () => Promise<string[]>;
+  /** Продолжает текущую сцену отдельным сообщением без имитации реплики игрока. */
   onContinue: () => void;
   /** Прерывает текущую генерацию, если она идёт. */
   onStop?: () => void;
@@ -250,8 +251,8 @@ export function InputBar({
           disabled={sending}
           title={
             groupScene
-              ? "Продолжить — передать ход следующему персонажу"
-              : "Продолжить — инициатива персонажа"
+              ? "Продолжить сцену — передать ход следующему персонажу"
+              : "Продолжить текущую сцену"
           }
           className={toolButtonClass}
         >

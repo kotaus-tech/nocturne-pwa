@@ -2,6 +2,9 @@ import { DEFAULT_STATS } from "../../types";
 import type {
   GroupBlueprint,
   GroupCharacterBlueprint,
+  GroupChemistryBlueprint,
+  GroupInformationLayer,
+  GroupPlayerAnchorBlueprint,
   GroupRelationBlueprint,
   GroupSpeechBlueprint,
   GroupStatsBlueprint,
@@ -11,6 +14,13 @@ import type {
 const MAX_TEXT = 900;
 const MAX_NAME = 70;
 const MAX_ITEMS = 8;
+
+type ValidationOptions = {
+  /** Включает строгие поля Group DNA V2, не затрагивая legacy V1 payload. */
+  adultEnabled?: boolean;
+  /** UI Group DNA V2 не должен молча принять старый blueprint. */
+  requireV2?: boolean;
+};
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -88,6 +98,16 @@ function normalizeCharacter(raw: unknown, index: number): GroupCharacterBlueprin
   };
 }
 
+function normalizePlayerAnchor(raw: unknown): GroupPlayerAnchorBlueprint | undefined {
+  if (!isObject(raw)) return undefined;
+  return {
+    mode: asString(raw.mode, 180),
+    visibleRole: asString(raw.visibleRole, 500),
+    playerKnowledge: asStringArray(raw.playerKnowledge, 6, 320),
+    pressurePoints: asStringArray(raw.pressurePoints, 5, 280),
+  };
+}
+
 function normalizeScene(raw: unknown): GroupBlueprint["scene"] {
   const source = isObject(raw) ? raw : {};
   return {
@@ -98,6 +118,10 @@ function normalizeScene(raw: unknown): GroupBlueprint["scene"] {
     tone: asString(source.tone, 240) || "живой и наблюдательный",
     hook: asString(source.hook, 500) || "У игрока остаётся понятный повод вмешаться.",
     boundaries: asStringArray(source.boundaries, 6, 300),
+    locationConditions: asStringArray(source.locationConditions, 6, 260),
+    microCatalyst: asString(source.microCatalyst, 420) || undefined,
+    playerAnchor: normalizePlayerAnchor(source.playerAnchor),
+    ensembleRoles: asStringArray(source.ensembleRoles, 2, 220),
   };
 }
 
@@ -137,6 +161,63 @@ function normalizeRelations(
     });
   }
   return result;
+}
+
+function normalizeReferences(value: unknown, cast: GroupCharacterBlueprint[]): string[] {
+  if (!Array.isArray(value)) return [];
+  const keys = new Set(cast.map((item) => item.key));
+  const byName = new Map(cast.map((item) => [item.name.toLocaleLowerCase("ru-RU"), item.key]));
+  const result: string[] = [];
+  for (const item of value) {
+    const candidate = asString(item, 80);
+    if (!candidate) continue;
+    const lower = candidate.toLocaleLowerCase("ru-RU");
+    const resolved = lower === "игрок" || lower === "player"
+      ? "player"
+      : keys.has(candidate)
+        ? candidate
+        : byName.get(lower) ?? "";
+    if (resolved && !result.includes(resolved)) result.push(resolved);
+  }
+  return result.slice(0, 6);
+}
+
+function normalizeInformationLayers(
+  raw: unknown,
+  cast: GroupCharacterBlueprint[]
+): GroupInformationLayer[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(isObject)
+    .slice(0, 8)
+    .map((item) => ({
+      type: asString(item.type, 180),
+      holders: normalizeReferences(item.holders, cast),
+      hiddenFrom: normalizeReferences(item.hiddenFrom, cast),
+      content: asString(item.content, 600),
+      visibleClue: asString(item.visibleClue, 320),
+      revealCondition: asString(item.revealCondition, 320),
+    }))
+    .filter((item) => item.type && item.content && item.holders.length > 0);
+}
+
+function normalizeChemistry(
+  raw: unknown,
+  cast: GroupCharacterBlueprint[]
+): GroupChemistryBlueprint[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(isObject)
+    .slice(0, 6)
+    .map((item) => ({
+      pattern: asString(item.pattern, 260),
+      participants: normalizeReferences(item.participants, cast),
+      intensity: asString(item.intensity, 100),
+      publicMask: asString(item.publicMask, 320),
+      trigger: asString(item.trigger, 320),
+      boundaries: asStringArray(item.boundaries, 5, 240),
+    }))
+    .filter((item) => item.pattern && item.participants.length >= 2);
 }
 
 /**
@@ -219,14 +300,20 @@ export function upgradeLegacyGroup(raw: unknown, expectedSize: number): unknown 
 
 export function validateGroupBlueprint(
   raw: unknown,
-  expectedSize: number
+  expectedSize: number,
+  options: ValidationOptions = {}
 ): GroupValidationResult {
   const upgraded = upgradeLegacyGroup(raw, expectedSize);
   const issues: string[] = [];
   if (!isObject(upgraded)) return { ok: false, issues: ["Ответ не является JSON-объектом."] };
 
-  if (upgraded.version !== 1) {
-    issues.push("version: должна быть 1");
+  const version = upgraded.version === 2 ? 2 : upgraded.version === 1 ? 1 : 0;
+  if (version === 0) {
+    issues.push("version: должна быть 1 или 2");
+  }
+  const isV2 = version === 2;
+  if (options.requireV2 && !isV2) {
+    issues.push("version: Group DNA V2 должен вернуть blueprint версии 2");
   }
 
   const castRaw = upgraded.cast;
@@ -318,6 +405,31 @@ export function validateGroupBlueprint(
     if (!asString(rawScene[field])) issues.push(`scene.${field}: обязательное непустое поле`);
   }
 
+  if (isV2) {
+    const rawAnchor = rawScene.playerAnchor;
+    if (!isObject(rawAnchor) || !asString(rawAnchor.mode) || !asString(rawAnchor.visibleRole)) {
+      issues.push("scene.playerAnchor: нужна социальная позиция игрока и её видимая роль");
+    }
+    if (isObject(rawAnchor) && (!Array.isArray(rawAnchor.playerKnowledge) || !Array.isArray(rawAnchor.pressurePoints))) {
+      issues.push("scene.playerAnchor: нужны playerKnowledge и pressurePoints массивами");
+    }
+    if (!Array.isArray(rawScene.locationConditions) || scene.locationConditions?.length === 0) {
+      issues.push("scene.locationConditions: нужен хотя бы один физический фактор места");
+    }
+    if (!asString(rawScene.microCatalyst)) {
+      issues.push("scene.microCatalyst: нужен осязаемый спусковой крючок");
+    }
+    if (!Array.isArray(rawScene.ensembleRoles) || scene.ensembleRoles?.length === 0 || (scene.ensembleRoles?.length ?? 0) > 2) {
+      issues.push("scene.ensembleRoles: нужна одна или две доминирующие социальные роли");
+    }
+    if (!Array.isArray(upgraded.informationLayers)) {
+      issues.push("informationLayers: обязательный массив слоёв знаний");
+    }
+    if (!Array.isArray(upgraded.chemistry)) {
+      issues.push("chemistry: обязательный массив взрослого подтекста, включая пустой");
+    }
+  }
+
   const opening = asString(upgraded.opening, 1800);
   if (opening.length < 20) issues.push("opening: общий опенинг должен быть содержательным");
 
@@ -327,14 +439,48 @@ export function validateGroupBlueprint(
     issues.push(`relations: нужно минимум ${Math.max(1, expectedSize - 1)} направленных связей между героями`);
   }
 
+  const informationLayers = normalizeInformationLayers(upgraded.informationLayers, cast);
+  if (isV2) {
+    const rawLayers = Array.isArray(upgraded.informationLayers) ? upgraded.informationLayers : [];
+    rawLayers.forEach((item, index) => {
+      if (!isObject(item) || !asString(item.type) || !asString(item.content)) {
+        issues.push(`informationLayers[${index}]: нужны type и content`);
+      }
+      const holders = isObject(item) ? normalizeReferences(item.holders, cast) : [];
+      if (isObject(item) && holders.length === 0) {
+        issues.push(`informationLayers[${index}].holders: нужен хотя бы один существующий носитель знания`);
+      }
+    });
+  }
+
+  const chemistry = normalizeChemistry(upgraded.chemistry, cast);
+  if (isV2) {
+    const rawChemistry = Array.isArray(upgraded.chemistry) ? upgraded.chemistry : [];
+    rawChemistry.forEach((item, index) => {
+      const participants = isObject(item) ? normalizeReferences(item.participants, cast) : [];
+      if (!isObject(item) || !asString(item.pattern) || participants.length < 2) {
+        issues.push(`chemistry[${index}]: нужны pattern и минимум два существующих участника`);
+      }
+    });
+    if (options.adultEnabled === false && chemistry.length > 0) {
+      issues.push("chemistry: взрослый подтекст нельзя возвращать без включённого профиля 18+");
+    }
+  }
+
   if (issues.length > 0) return { ok: false, issues };
 
   const blueprint: GroupBlueprint = {
-    version: 1,
+    version: version === 2 ? 2 : 1,
     scene,
     cast,
     relations,
     opening,
+    ...(version === 2 || Array.isArray(upgraded.informationLayers)
+      ? { informationLayers }
+      : {}),
+    ...(version === 2 || Array.isArray(upgraded.chemistry)
+      ? { chemistry }
+      : {}),
   };
 
   return { ok: true, blueprint };

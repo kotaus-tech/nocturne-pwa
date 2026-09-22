@@ -74,7 +74,7 @@ export async function generateGroupBlueprint(
     }
 
     lastRaw = safeStringify(parsed);
-    const validation = validateGroupBlueprint(parsed, prefs.size);
+    const validation = validateGroupBlueprint(parsed, prefs.size, { adultEnabled: prefs.adultEnabled, requireV2: prefs.generationVersion === 2 });
     if (validation.ok) {
       rememberGroupSignature(makeGroupSignature(validation.blueprint));
       return {
@@ -137,7 +137,7 @@ export async function regenerateGroupSection(
     }
 
     lastRaw = safeStringify(parsed);
-    const validation = validateGroupBlueprint(parsed, prefs.size);
+    const validation = validateGroupBlueprint(parsed, prefs.size, { adultEnabled: prefs.adultEnabled, requireV2: prefs.generationVersion === 2 });
     if (validation.ok) {
       const merged = mergeSection(blueprint, validation.blueprint, section, targetKey);
       return {
@@ -163,6 +163,33 @@ function mergeSection(
   if (section === "scene") return { ...previous, scene: next.scene };
   if (section === "opening") return { ...previous, opening: next.opening };
   if (section === "relations") return { ...previous, relations: next.relations };
+  if (section === "anchoring") {
+    return {
+      ...previous,
+      scene: { ...previous.scene, playerAnchor: next.scene.playerAnchor },
+    };
+  }
+  if (section === "information") {
+    const knownKeys = new Set(previous.cast.map((item) => item.key));
+    const informationLayers = (next.informationLayers ?? [])
+      .map((layer) => ({
+        ...layer,
+        holders: layer.holders.filter((key) => key === "player" || knownKeys.has(key)),
+        hiddenFrom: layer.hiddenFrom.filter((key) => key === "player" || knownKeys.has(key)),
+      }))
+      .filter((layer) => layer.holders.length > 0);
+    return { ...previous, informationLayers };
+  }
+  if (section === "chemistry") {
+    const knownKeys = new Set(previous.cast.map((item) => item.key));
+    const chemistry = (next.chemistry ?? [])
+      .map((item) => ({
+        ...item,
+        participants: item.participants.filter((key) => key === "player" || knownKeys.has(key)),
+      }))
+      .filter((item) => item.participants.length >= 2);
+    return { ...previous, chemistry };
+  }
 
   // Для cast сохраняем исходные ключи и отношения: это защита от случайного
   // переименования, которое могло бы отсоединить связи в уже собранной сцене.
@@ -199,6 +226,24 @@ function compileCharacterSystemPrompt(
     })
     .join("\n");
 
+  const knownInformation = (blueprint.informationLayers ?? []).flatMap((layer) => {
+    if (layer.holders.includes(character.key)) {
+      return [`- Ты знаешь: ${layer.content}${layer.revealCondition ? ` Условие раскрытия: ${layer.revealCondition}` : ""}`];
+    }
+    if (!layer.hiddenFrom.includes(character.key) && layer.visibleClue) {
+      return [`- Ты можешь заметить след, но не знаешь всей правды: ${layer.visibleClue}`];
+    }
+    return [];
+  });
+
+  const personalChemistry = (blueprint.chemistry ?? [])
+    .filter((item) => item.participants.includes(character.key))
+    .map((item) => `- ${item.pattern} Интенсивность: ${item.intensity || "не задана"}. Публичная маска: ${item.publicMask || "не задана"}. Триггер: ${item.trigger || "развивается по взаимным действиям"}. Границы: ${item.boundaries.join("; ") || "уважать явно выраженные границы"}.`);
+
+  const anchor = blueprint.scene.playerAnchor;
+  const physicalConditions = blueprint.scene.locationConditions?.join("; ") || "конкретные бытовые детали места достраиваются по сцене";
+  const dominantRoles = blueprint.scene.ensembleRoles?.join("; ") || "роли распределяются по наблюдаемому поведению";
+
   return [
     `Ты — ${character.name}, ${character.age} лет. Твоя роль в общей сцене: ${character.role}.`,
     `ПУБЛИЧНЫЙ СЛОЙ: ${character.publicPersona}`,
@@ -207,51 +252,79 @@ function compileCharacterSystemPrompt(
     `ГОЛОС: ${character.speech.register}; ритм — ${character.speech.rhythm}. Характерные маркеры: ${character.speech.markers.join(", ") || "нет обязательного словаря"}. Примеры: ${character.speech.examples.join(" / ")}.`,
     `ГРАНИЦЫ: ${character.boundaries.join("; ") || "реагируй на нарушение соразмерно характеру"}.`,
     `ПРАВИЛА ПОВЕДЕНИЯ:\n${character.behaviorRules.map((rule) => `- ${rule}`).join("\n")}`,
-    `ОБЩАЯ СЦЕНА: ${blueprint.scene.setting}. ${blueprint.scene.premise} Сейчас: ${blueprint.scene.currentMoment}.`,
+    `СОЦИАЛЬНАЯ ФИЗИКА: ${physicalConditions}. Доминирующие роли ансамбля: ${dominantRoles}.`,
+    anchor
+      ? `ПОЗИЦИЯ ИГРОКА: ${anchor.mode}. Для окружающих: ${anchor.visibleRole}. Это рамка сцены, а не приказ игроку наблюдать, судить, отвечать или действовать.`
+      : "ПОЗИЦИЯ ИГРОКА: не задана жёстко; не делай игрока обязательным центром сцены.",
+    `ОБЩАЯ СЦЕНА: ${blueprint.scene.setting}. ${blueprint.scene.premise} Сейчас: ${blueprint.scene.currentMoment}${blueprint.scene.microCatalyst ? ` Спусковой крючок: ${blueprint.scene.microCatalyst}` : ""}.`,
     relations ? `ТВОИ СВЯЗИ В ГРУППЕ:\n${relations}` : "У тебя нет заранее заданной близкой связи — строй её по наблюдаемым событиям.",
+    knownInformation.length > 0
+      ? `ЧТО ТЕБЕ ИЗВЕСТНО О СКРЫТЫХ СЛОЯХ:\n${knownInformation.join("\n")}`
+      : "СКРЫТЫЕ СЛОИ: не приписывай себе чужие знания; делай выводы только из наблюдаемых следов.",
+    personalChemistry.length > 0
+      ? `ВЗРОСЛЫЙ ПОДТЕКСТ, ЕСЛИ ОН УМЕСТЕН:\n${personalChemistry.join("\n")}`
+      : "ВЗРОСЛЫЙ ПОДТЕКСТ: не добавляй его самовольно и не переводь обычный разговор в сексуальный контекст.",
     "Не говори, не думай и не действуй за игрока. NPC могут автономно говорить друг с другом; игрок не обязан быть адресатом каждой реплики. Не форсируй романтику, трагедию или откровенные темы.",
   ].join("\n\n");
 }
 
 export function blueprintToGeneratedGroup(blueprint: GroupBlueprint): GeneratedGroup {
-  const tags = ["Group DNA"];
-  const characters: GeneratedCharacterDraft[] = blueprint.cast.map((item) => ({
-    groupKey: item.key,
-    name: item.name,
-    age: String(item.age),
-    tagline: item.tagline,
-    genre: blueprint.scene.setting.slice(0, 80),
-    tags,
-    originTag: "GROUP DNA",
-    description: item.appearance,
-    personality: [
-      item.personality,
-      `Публичная манера: ${item.publicPersona}`,
-      `Сильные стороны: ${item.strengths.join(", ") || "раскрываются в игре"}.`,
-      `Недостатки: ${item.flaws.join(", ")}.`,
-      `Собственные цели: ${item.wants.join(", ")}.`,
-    ].join(" "),
-    scenario: item.scenarioRole,
-    systemPrompt: compileCharacterSystemPrompt(blueprint, item),
-    firstMessage: item.firstMessage,
-    initialStats: { ...item.initialStats },
-    lorebook: [
-      ...item.facts.map((fact) => ({
-        id: newId(),
-        keys: [item.name.toLocaleLowerCase("ru-RU"), "факт", "память"],
-        content: fact,
-        isActive: true,
-      })),
-      ...(item.secret
-        ? [{
-            id: newId(),
-            keys: [item.name.toLocaleLowerCase("ru-RU"), "секрет"],
-            content: `(Не раскрывать без естественного повода.) ${item.secret}`,
-            isActive: true,
-          }]
-        : []),
-    ].slice(0, 10),
-  }));
+  const tags = blueprint.version === 2 ? ["Group DNA", "Group DNA V2"] : ["Group DNA"];
+  const characters: GeneratedCharacterDraft[] = blueprint.cast.map((item) => {
+    const characterInformation = (blueprint.informationLayers ?? []).flatMap((layer) => {
+      if (layer.holders.includes(item.key)) {
+        return [`Знание персонажа: ${layer.content}${layer.revealCondition ? ` (раскрытие: ${layer.revealCondition})` : ""}`];
+      }
+      if (!layer.hiddenFrom.includes(item.key) && layer.visibleClue) {
+        return [`Наблюдаемый след: ${layer.visibleClue}`];
+      }
+      return [];
+    });
+
+    return {
+      groupKey: item.key,
+      name: item.name,
+      age: String(item.age),
+      tagline: item.tagline,
+      genre: blueprint.scene.setting.slice(0, 80),
+      tags,
+      originTag: blueprint.version === 2 ? "GROUP DNA V2" : "GROUP DNA",
+      description: item.appearance,
+      personality: [
+        item.personality,
+        `Публичная манера: ${item.publicPersona}`,
+        `Сильные стороны: ${item.strengths.join(", ") || "раскрываются в игре"}.`,
+        `Недостатки: ${item.flaws.join(", ")}.`,
+        `Собственные цели: ${item.wants.join(", ")}.`,
+      ].join(" "),
+      scenario: item.scenarioRole,
+      systemPrompt: compileCharacterSystemPrompt(blueprint, item),
+      firstMessage: item.firstMessage,
+      initialStats: { ...item.initialStats },
+      lorebook: [
+        ...item.facts.map((fact) => ({
+          id: newId(),
+          keys: [item.name.toLocaleLowerCase("ru-RU"), "факт", "память"],
+          content: fact,
+          isActive: true,
+        })),
+        ...characterInformation.map((fact) => ({
+          id: newId(),
+          keys: [item.name.toLocaleLowerCase("ru-RU"), "социальная информация"],
+          content: fact,
+          isActive: true,
+        })),
+        ...(item.secret
+          ? [{
+              id: newId(),
+              keys: [item.name.toLocaleLowerCase("ru-RU"), "секрет"],
+              content: `(Не раскрывать без естественного повода.) ${item.secret}`,
+              isActive: true,
+            }]
+          : []),
+      ].slice(0, 10),
+    };
+  });
 
   const relations: GeneratedGroupRelation[] = blueprint.relations.map((relation) => ({
     fromKey: relation.fromKey,
@@ -273,6 +346,10 @@ export function blueprintToGeneratedGroup(blueprint: GroupBlueprint): GeneratedG
       currentMoment: blueprint.scene.currentMoment,
       tone: blueprint.scene.tone,
       hook: blueprint.scene.hook,
+      locationConditions: blueprint.scene.locationConditions,
+      microCatalyst: blueprint.scene.microCatalyst,
+      playerAnchor: blueprint.scene.playerAnchor,
+      ensembleRoles: blueprint.scene.ensembleRoles,
     },
     blueprint,
   };

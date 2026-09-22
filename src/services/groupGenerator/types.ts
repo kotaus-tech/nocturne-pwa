@@ -11,6 +11,8 @@ export interface GroupOptionSelection {
 }
 
 export interface GroupPreferences extends GroupOptionSelection {
+  /** Новая UI-ветка явно просит blueprint V2; отсутствие поля = legacy caller. */
+  generationVersion?: 2;
   size: number;
   gender: GroupGender;
   ageBandId: string;
@@ -22,6 +24,41 @@ export interface GroupPreferences extends GroupOptionSelection {
   presetId?: string;
 }
 
+export interface GroupPlayerAnchorBlueprint {
+  /** Социальная позиция игрока относительно ансамбля. */
+  mode: string;
+  /** Что видят персонажи и почему игрок находится в сцене. */
+  visibleRole: string;
+  /** Что игрок вправе знать на старте, без навязанных мыслей и решений. */
+  playerKnowledge: string[];
+  /** Как группа может давить на ситуацию, но не на волю игрока. */
+  pressurePoints: string[];
+}
+
+export interface GroupInformationLayer {
+  /** Человеческое название паттерна: сговор, прошлое, зависимость и т. п. */
+  type: string;
+  /** Ключи тех, кто знает содержание слоя; «player» допустим для игрока. */
+  holders: string[];
+  /** Ключи тех, кому содержание нельзя раскрывать без условия. */
+  hiddenFrom: string[];
+  content: string;
+  visibleClue: string;
+  revealCondition: string;
+}
+
+export interface GroupChemistryBlueprint {
+  /** Взрослый подтекст группы; пусто, если профиль не включён. */
+  pattern: string;
+  /** Ключи участников или «player». */
+  participants: string[];
+  intensity: string;
+  /** Нейтральная маска, которую видят остальные. */
+  publicMask: string;
+  trigger: string;
+  boundaries: string[];
+}
+
 export interface GroupSceneBlueprint {
   title: string;
   setting: string;
@@ -30,6 +67,14 @@ export interface GroupSceneBlueprint {
   tone: string;
   hook: string;
   boundaries: string[];
+  /** Group DNA V2: физические условия, а не только название места. */
+  locationConditions?: string[];
+  /** Group DNA V2: осязаемый спусковой крючок текущего момента. */
+  microCatalyst?: string;
+  /** Group DNA V2: социальная позиция игрока в компании. */
+  playerAnchor?: GroupPlayerAnchorBlueprint;
+  /** Group DNA V2: одна-две доминирующие роли ансамбля. */
+  ensembleRoles?: string[];
 }
 
 export interface GroupSpeechBlueprint {
@@ -83,7 +128,8 @@ export interface GroupRelationBlueprint {
 }
 
 export interface GroupBlueprint {
-  version: 1;
+  /** Version 1 остаётся валидной для старых ответов и сохранённых данных. */
+  version: 1 | 2;
   createdAt?: number;
   preferencesSnapshot?: {
     size: number;
@@ -95,6 +141,10 @@ export interface GroupBlueprint {
   cast: GroupCharacterBlueprint[];
   relations: GroupRelationBlueprint[];
   opening: string;
+  /** Group DNA V2: асимметричные знания и условия раскрытия. */
+  informationLayers?: GroupInformationLayer[];
+  /** Group DNA V2: взрослый подтекст только при включённом профиле. */
+  chemistry?: GroupChemistryBlueprint[];
 }
 
 export type GroupValidationResult =
@@ -105,7 +155,10 @@ export type GroupRegenerationSection =
   | "scene"
   | "opening"
   | "relations"
-  | "cast";
+  | "cast"
+  | "anchoring"
+  | "information"
+  | "chemistry";
 
 export interface GeneratedCharacterDraft extends Partial<Character> {
   /** Скрытый ключ, нужен только для переноса связей в ChatSession. */
@@ -125,7 +178,10 @@ export interface GeneratedGroup {
   title?: string;
   summary?: string;
   relations?: GeneratedGroupRelation[];
-  scene?: Pick<GroupSceneBlueprint, "setting" | "premise" | "currentMoment" | "tone" | "hook">;
+  scene?: Pick<
+    GroupSceneBlueprint,
+    "setting" | "premise" | "currentMoment" | "tone" | "hook" | "locationConditions" | "microCatalyst" | "playerAnchor" | "ensembleRoles"
+  >;
   blueprint?: GroupBlueprint;
 }
 

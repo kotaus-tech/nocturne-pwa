@@ -3,7 +3,7 @@ import { Loader2 } from "lucide-react";
 import { Modal } from "../common/Modal";
 import { getApiConfig } from "../../db";
 import { isLocalEndpoint } from "../../services/apiClient";
-import { GROUP_AGE_BANDS, GROUP_CATALOG, presetSelections } from "../../services/groupGenerator/catalog";
+import { GROUP_AGE_BANDS, GROUP_CATALOG, presetEnablesAdult, presetSelections } from "../../services/groupGenerator/catalog";
 import { generateGroupBlueprint, regenerateGroupSection } from "../../services/groupGenerator/generator";
 import type {
   GeneratedGroup,
@@ -27,6 +27,7 @@ type Step = "settings" | "working" | "result";
 
 function emptyPreferences(): GroupPreferences {
   return {
+    generationVersion: 2,
     size: 3,
     gender: "any",
     ageBandId: "adult_mixed",
@@ -59,7 +60,16 @@ export function GroupGeneratorModal({ open, onClose, onApplyGroup }: Props) {
   }, [open]);
 
   const setPreference = <K extends keyof GroupPreferences>(key: K, value: GroupPreferences[K]) => {
-    setPrefs((previous) => ({ ...previous, [key]: value }));
+    setPrefs((previous) => {
+      if (key === "adultEnabled" && value === false) {
+        return {
+          ...previous,
+          adultEnabled: false,
+          selections: { ...previous.selections, groupChemistry: [] },
+        };
+      }
+      return { ...previous, [key]: value };
+    });
   };
 
   const toggleOption = (categoryId: string, optionId: string, max: number) => {
@@ -93,7 +103,8 @@ export function GroupGeneratorModal({ open, onClose, onApplyGroup }: Props) {
     setPrefs((previous) => ({
       ...previous,
       presetId,
-      selections: { ...previous.selections, ...presetSelections(presetId) },
+      adultEnabled: presetEnablesAdult(presetId) || previous.adultEnabled,
+      selections: presetSelections(presetId),
     }));
   };
 
@@ -106,21 +117,25 @@ export function GroupGeneratorModal({ open, onClose, onApplyGroup }: Props) {
   };
 
   const surprise = () => {
-    const selections: Record<string, string[]> = {};
-    for (const category of GROUP_CATALOG) {
-      if (Math.random() < 0.25) continue;
-      const amount = category.max > 1 && Math.random() > 0.65 ? 2 : 1;
-      const shuffled = [...category.options].sort(() => Math.random() - 0.5);
-      selections[category.id] = shuffled.slice(0, amount).map((option) => option.id);
-    }
-    setPrefs((previous) => ({
-      ...previous,
-      gender: pickRandom<GroupGender>(["any", "female", "male", "mixed"]),
-      ageBandId: pickRandom(GROUP_AGE_BANDS).id,
-      uniqueness: pickRandom<GroupUniqueness>([1, 2, 2, 3]),
-      selections,
-      presetId: "preset_none",
-    }));
+    setPrefs((previous) => {
+      const selections: Record<string, string[]> = {};
+      for (const category of GROUP_CATALOG) {
+        if (category.legacy || (category.adultOnly && !previous.adultEnabled)) continue;
+        if (Math.random() < 0.25) continue;
+        const options = category.options.filter((option) => !option.hint.startsWith("legacy:"));
+        const amount = category.max > 1 && Math.random() > 0.65 ? 2 : 1;
+        const shuffled = [...options].sort(() => Math.random() - 0.5);
+        selections[category.id] = shuffled.slice(0, amount).map((option) => option.id);
+      }
+      return {
+        ...previous,
+        gender: pickRandom<GroupGender>(["any", "female", "male", "mixed"]),
+        ageBandId: pickRandom(GROUP_AGE_BANDS).id,
+        uniqueness: pickRandom<GroupUniqueness>([1, 2, 2, 3]),
+        selections,
+        presetId: "preset_none",
+      };
+    });
   };
 
   const handleGenerate = async () => {
@@ -187,7 +202,7 @@ export function GroupGeneratorModal({ open, onClose, onApplyGroup }: Props) {
       onClose={onClose}
       variant="sheet"
       size="lg"
-      title="Group DNA — генератор групповой сцены"
+      title="Group DNA V2 — генератор групповой сцены"
     >
       {step === "working" && (
         <div className="flex flex-col items-center gap-4 py-16 text-center">

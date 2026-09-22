@@ -5,6 +5,9 @@ export interface GroupSignature {
   tone: string;
   roles: string[];
   relationPattern: string;
+  /** Group DNA V2: короткая память социальной рамки без приватных подробностей. */
+  playerAnchor?: string;
+  informationPattern?: string;
   createdAt: number;
 }
 
@@ -26,6 +29,8 @@ function read(): GroupSignature[] {
           ? item.roles.filter((role): role is string => typeof role === "string").slice(0, 4)
           : [],
         relationPattern: typeof item.relationPattern === "string" ? item.relationPattern.slice(0, 160) : "",
+        playerAnchor: typeof item.playerAnchor === "string" ? item.playerAnchor.slice(0, 120) : undefined,
+        informationPattern: typeof item.informationPattern === "string" ? item.informationPattern.slice(0, 160) : undefined,
         createdAt: typeof item.createdAt === "number" && Number.isFinite(item.createdAt)
           ? item.createdAt
           : 0,
@@ -46,6 +51,8 @@ export function makeGroupSignature(blueprint: GroupBlueprint): GroupSignature {
     tone: blueprint.scene.tone.slice(0, 80),
     roles: blueprint.cast.map((item) => item.role).slice(0, 4),
     relationPattern: blueprint.relations.map((item) => item.label).join(", ").slice(0, 140),
+    playerAnchor: blueprint.scene.playerAnchor?.mode?.slice(0, 120),
+    informationPattern: blueprint.informationLayers?.map((item) => item.type).join(", ").slice(0, 160),
     createdAt: Date.now(),
   };
 }

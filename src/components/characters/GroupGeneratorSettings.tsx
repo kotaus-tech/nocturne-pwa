@@ -45,9 +45,10 @@ export function GroupGeneratorSettings({
               <Users size={21} strokeWidth={1.7} />
             </div>
             <p className="min-w-0 text-base leading-relaxed text-content-secondary">
-              Модель придумает самостоятельных героев одной сцены, их неодинаковые
-              связи и общий опенинг. NPC смогут разговаривать друг с другом, а игрок
-              получит естественный повод войти в сцену, не становясь её обязательным центром.
+              Group DNA V2 собирает современный реалистичный ансамбль: самостоятельных
+              героев, социальную позицию игрока, физику места, скрытые знания и общий
+              опенинг. NPC смогут разговаривать друг с другом, а игрок получит естественный
+              повод войти в сцену, не становясь её обязательным центром.
             </p>
           </div>
 
@@ -119,13 +120,13 @@ export function GroupGeneratorSettings({
               <span className="text-xs text-content-muted">Пустая категория = решит AI</span>
             </div>
             <div className="space-y-3">
-              {GROUP_CATALOG.filter((category) => !category.advanced).map((category) => (
+              {GROUP_CATALOG.filter((category) => !category.advanced && !category.legacy && !category.adultOnly).map((category) => (
                 <CategoryBlock
                   key={category.id}
                   category={category}
                   selected={prefs.selections[category.id] ?? []}
                   onToggle={(optionId) => onToggleOption(category.id, optionId, category.max)}
-                  onDice={() => onRandomizeCategory(category.id, category.options)}
+                  onDice={() => onRandomizeCategory(category.id, category.options.filter((option) => !option.hint.startsWith("legacy:")))}
                   onClear={() => clearCategory(category.id)}
                 />
               ))}
@@ -144,13 +145,13 @@ export function GroupGeneratorSettings({
             </button>
             {showAdvanced && (
               <div className="mt-4 space-y-4 border-t border-white/[0.07] pt-4">
-                {GROUP_CATALOG.filter((category) => category.advanced).map((category) => (
+                {GROUP_CATALOG.filter((category) => category.advanced && !category.legacy && !category.adultOnly).map((category) => (
                   <CategoryBlock
                     key={category.id}
                     category={category}
                     selected={prefs.selections[category.id] ?? []}
                     onToggle={(optionId) => onToggleOption(category.id, optionId, category.max)}
-                    onDice={() => onRandomizeCategory(category.id, category.options)}
+                    onDice={() => onRandomizeCategory(category.id, category.options.filter((option) => !option.hint.startsWith("legacy:")))}
                     onClear={() => clearCategory(category.id)}
                   />
                 ))}
@@ -215,6 +216,17 @@ export function GroupGeneratorSettings({
                     </span>
                   </span>
                 </label>
+
+                {prefs.adultEnabled && GROUP_CATALOG.filter((category) => category.adultOnly).map((category) => (
+                  <CategoryBlock
+                    key={category.id}
+                    category={category}
+                    selected={prefs.selections[category.id] ?? []}
+                    onToggle={(optionId) => onToggleOption(category.id, optionId, category.max)}
+                    onDice={() => onRandomizeCategory(category.id, category.options)}
+                    onClear={() => clearCategory(category.id)}
+                  />
+                ))}
               </div>
             )}
           </div>
@@ -237,7 +249,7 @@ export function GroupGeneratorSettings({
           <div>
             <p className="mb-2 text-sm font-medium text-content-secondary">Быстрый пресет</p>
             <div className="flex flex-wrap gap-2">
-              {GROUP_PRESETS.map((preset) => (
+              {GROUP_PRESETS.filter((preset) => !("legacy" in preset)).map((preset) => (
                 <button
                   key={preset.id}
                   type="button"
@@ -316,7 +328,7 @@ function CategoryBlock({
         </span>
       </div>
       <div className="flex flex-wrap gap-2">
-        {category.options.map((option) => {
+        {category.options.filter((option) => !option.hint.startsWith("legacy:")).map((option) => {
           const isSelected = selected.includes(option.id);
           const disabled = !isSelected && selected.length >= category.max;
           return (

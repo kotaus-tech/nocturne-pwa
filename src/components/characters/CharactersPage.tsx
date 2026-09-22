@@ -398,11 +398,11 @@ export function CharactersPage({
           <button
             type="button"
             onClick={() => setGroupDnaOpen(true)}
-            title="Расширенный генератор ансамбля и общей сцены"
+            title="Group DNA V2: расширенный генератор ансамбля и общей сцены"
             className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-accent/40 bg-accent/10 px-4 py-2.5 text-sm font-semibold text-accent transition-all hover:border-accent hover:bg-accent/15"
           >
             <Users size={16} strokeWidth={1.8} />
-            <span>Group DNA</span>
+            <span>Group DNA V2</span>
           </button>
 
           <button

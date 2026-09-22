@@ -26,6 +26,7 @@ import { supportsCardImport } from "../../utils/characterCardFile";
 import { CharacterGeneratorModal } from "./CharacterGeneratorModal";
 import { GeneratorV2Modal } from "./v2/GeneratorV2Modal";
 import { GroupSceneModal } from "./GroupSceneModal";
+import { GroupGeneratorModal } from "./GroupGeneratorModal";
 import {
   GROUP_SIZE_MIN,
   type GeneratedGroup,
@@ -36,7 +37,7 @@ import { Badge } from "../common/Badge";
 import { FavoriteButton } from "../common/FavoriteButton";
 import { Avatar } from "../common/Avatar";
 import { DEFAULT_STATS } from "../../types";
-import type { Character } from "../../types";
+import type { Character, SceneRelation } from "../../types";
 import { cn } from "../../utils/cn";
 
 interface CharactersPageProps {
@@ -112,6 +113,7 @@ export function CharactersPage({
   // Групповая сцена: сначала выбор готовых героев, затем (по желанию) AI-генерация.
   const [groupPickerOpen, setGroupPickerOpen] = useState(false);
   const [groupGeneratorOpen, setGroupGeneratorOpen] = useState(false);
+  const [groupDnaOpen, setGroupDnaOpen] = useState(false);
   // Character DNA: отдельный генератор V2 (не заменяет классический).
   const [dnaOpen, setDnaOpen] = useState(false);
   const [draggedFile, setDraggedFile] = useState<File | null>(null);
@@ -232,8 +234,9 @@ export function CharactersPage({
   const handleApplyGroup = async (group: GeneratedGroup) => {
     const now = Date.now();
 
-    const saved: Character[] = group.characters.map((draft, index) =>
-      sanitizeCharacter({
+    const entries = group.characters.map((draft, index) => ({
+      draft,
+      character: sanitizeCharacter({
         ...emptyCharacter(),
         ...draft,
         id: newId(),
@@ -241,18 +244,40 @@ export function CharactersPage({
         initialStats: draft.initialStats ?? { ...DEFAULT_STATS },
         lorebook: draft.lorebook ?? [],
         createdAt: now + index,
-      } as Character)
-    );
+      } as Character),
+    }));
+    const saved = entries.map((entry) => entry.character);
 
     if (saved.length < GROUP_SIZE_MIN) {
       throw new Error("Модель вернула слишком мало персонажей для сцены.");
     }
 
-    await db.characters.bulkPut(saved);
+    const keyToCharacter = new Map<string, Character>();
+    entries.forEach(({ draft, character }, index) => {
+      keyToCharacter.set(draft.groupKey || `character_${index + 1}`, character);
+      keyToCharacter.set(draft.name?.trim() || character.name, character);
+    });
+
+    const relations: SceneRelation[] = (group.relations ?? []).flatMap((relation) => {
+      const from = keyToCharacter.get(relation.fromKey);
+      const to = keyToCharacter.get(relation.toKey);
+      if (!from || !to || from.id === to.id || !relation.text.trim()) return [];
+      return [{
+        id: newId(),
+        from: from.id,
+        to: to.id,
+        text: relation.text.trim().slice(0, 400),
+        updatedAt: now,
+      }];
+    });
 
     const [leader, ...rest] = saved;
     const session = await createGroupSession(leader, rest, {
+      title: group.title,
       opening: group.opening,
+      summary: group.summary,
+      relations,
+      persistCharacters: saved,
     });
 
     onOpenSession(session.id);
@@ -368,6 +393,16 @@ export function CharactersPage({
           >
             <Users size={16} strokeWidth={1.8} />
             <span>Групповая сцена</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setGroupDnaOpen(true)}
+            title="Расширенный генератор ансамбля и общей сцены"
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-accent/40 bg-accent/10 px-4 py-2.5 text-sm font-semibold text-accent transition-all hover:border-accent hover:bg-accent/15"
+          >
+            <Users size={16} strokeWidth={1.8} />
+            <span>Group DNA</span>
           </button>
 
           <button
@@ -718,6 +753,12 @@ export function CharactersPage({
         onApply={handleApplySingle}
         onApplyGroup={handleApplyGroup}
         initialMode="group"
+      />
+
+      <GroupGeneratorModal
+        open={groupDnaOpen}
+        onClose={() => setGroupDnaOpen(false)}
+        onApplyGroup={handleApplyGroup}
       />
 
       <GeneratorV2Modal

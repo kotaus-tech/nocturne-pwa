@@ -360,8 +360,8 @@ export function CharactersPage({
         </div>
       )}
 
-      <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
-        <div>
+      <header className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
           <p className="text-xs font-semibold uppercase tracking-wider text-content-muted">
             Лица ваших историй
           </p>
@@ -373,14 +373,14 @@ export function CharactersPage({
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex w-full min-w-0 flex-wrap items-center gap-2.5 lg:w-auto lg:justify-end">
           <button
             type="button"
             onClick={() => {
               setDraggedFile(null);
               setImportModalOpen(true);
             }}
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-white/[0.09] bg-surface-2 px-4 py-2.5 text-sm font-semibold text-content transition-all hover:bg-surface-3 hover:border-accent/40 hover:text-accent"
+            className="inline-flex min-h-11 min-w-0 max-w-full items-center justify-center gap-2 rounded-xl border border-white/[0.09] bg-surface-2 px-4 py-2.5 text-sm font-semibold text-content transition-all hover:bg-surface-3 hover:border-accent/40 hover:text-accent"
           >
             <Upload size={16} strokeWidth={1.8} />
             <span>Импорт</span>
@@ -389,7 +389,7 @@ export function CharactersPage({
           <button
             type="button"
             onClick={() => setGroupPickerOpen(true)}
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-white/[0.09] bg-surface-2 px-4 py-2.5 text-sm font-semibold text-content transition-all hover:border-accent/40 hover:bg-surface-3 hover:text-accent"
+            className="inline-flex min-h-11 min-w-0 max-w-full items-center justify-center gap-2 rounded-xl border border-white/[0.09] bg-surface-2 px-4 py-2.5 text-sm font-semibold text-content transition-all hover:border-accent/40 hover:bg-surface-3 hover:text-accent"
           >
             <Users size={16} strokeWidth={1.8} />
             <span>Групповая сцена</span>
@@ -399,7 +399,7 @@ export function CharactersPage({
             type="button"
             onClick={() => setGroupDnaOpen(true)}
             title="Group DNA V2: расширенный генератор ансамбля и общей сцены"
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-accent/40 bg-accent/10 px-4 py-2.5 text-sm font-semibold text-accent transition-all hover:border-accent hover:bg-accent/15"
+            className="inline-flex min-h-11 min-w-0 max-w-full items-center justify-center gap-2 rounded-xl border border-accent/40 bg-accent/10 px-4 py-2.5 text-sm font-semibold text-accent transition-all hover:border-accent hover:bg-accent/15"
           >
             <Users size={16} strokeWidth={1.8} />
             <span>Group DNA V2</span>
@@ -409,7 +409,7 @@ export function CharactersPage({
             type="button"
             onClick={() => setDnaOpen(true)}
             title="Расширенный генератор глубоких современных персонажей"
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-accent/40 bg-accent/10 px-4 py-2.5 text-sm font-semibold text-accent transition-all hover:border-accent hover:bg-accent/15"
+            className="inline-flex min-h-11 min-w-0 max-w-full items-center justify-center gap-2 rounded-xl border border-accent/40 bg-accent/10 px-4 py-2.5 text-sm font-semibold text-accent transition-all hover:border-accent hover:bg-accent/15"
           >
             <Dna size={16} strokeWidth={1.8} />
             <span>Character DNA</span>
@@ -418,7 +418,7 @@ export function CharactersPage({
           <button
             type="button"
             onClick={openCreate}
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-on-accent shadow-[0_0_20px_rgba(139,92,246,0.25)] transition-all hover:bg-accent-hover"
+            className="inline-flex min-h-11 min-w-0 max-w-full items-center justify-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-on-accent shadow-[0_0_20px_rgba(139,92,246,0.25)] transition-all hover:bg-accent-hover"
           >
             <Plus size={17} strokeWidth={2} />
             <span>Создать персонажа</span>

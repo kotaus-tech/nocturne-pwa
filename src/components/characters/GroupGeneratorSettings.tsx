@@ -239,8 +239,7 @@ export function GroupGeneratorSettings({
               id={ideaId}
               value={prefs.customIdea}
               onChange={(event) => setPreference("customIdea", event.target.value)}
-              rows={3}
-              maxLength={1600}
+              rows={5}
               placeholder="Например: ночная смена в маленьком отеле; один гость хочет уехать, администратор скрывает проблему, курьер случайно знает больше всех…"
               className="input-field resize-y text-sm leading-relaxed"
             />

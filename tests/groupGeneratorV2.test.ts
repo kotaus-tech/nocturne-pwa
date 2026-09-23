@@ -159,6 +159,16 @@ describe("Group DNA V2 catalog and prompt", () => {
     expect(resolveGroupPreferencesBlock(preferences)).toContain("Позиция игрока");
   });
 
+  it("сохраняет длинную авторскую задумку без скрытого обрезания", () => {
+    const longIdea = "Подробное обязательное условие для сцены. ".repeat(180).trim();
+    const prefs = { ...preferences, customIdea: longIdea };
+    const block = resolveGroupPreferencesBlock(prefs);
+    const prompt = buildGroupGenerationPrompt(prefs, []);
+
+    expect(block).toContain(longIdea);
+    expect(prompt).toContain(longIdea);
+  });
+
   it("показывает пресеты Group DNA 2.0 и не удаляет legacy ids из resolver", () => {
     expect(GROUP_PRESETS.map((preset) => preset.id)).toContain("preset_secret_romance");
     expect(GROUP_PRESETS.map((preset) => preset.id)).toContain("preset_shared_place");

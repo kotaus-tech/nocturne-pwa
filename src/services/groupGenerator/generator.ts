@@ -31,7 +31,10 @@ function normalizedPreferences(prefs: GroupPreferences): GroupPreferences {
   return {
     ...prefs,
     size: Math.min(4, Math.max(2, Math.round(Number.isFinite(prefs.size) ? prefs.size : 2))),
-    customIdea: typeof prefs.customIdea === "string" ? prefs.customIdea.trim().slice(0, 1600) : "",
+    // Не обрезаем авторскую задумку: длинный prompt пользователя должен целиком
+    // попасть в запрос к модели. Ограничение контекста остаётся ответственностью
+    // выбранного провайдера, а не скрытой потерей текста в UI.
+    customIdea: typeof prefs.customIdea === "string" ? prefs.customIdea.trim() : "",
     selections: Object.fromEntries(
       Object.entries(prefs.selections ?? {}).map(([key, ids]) => [key, Array.isArray(ids) ? ids.slice(0, 4) : []])
     ),

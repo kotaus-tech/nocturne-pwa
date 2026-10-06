@@ -135,6 +135,8 @@ export function CharacterProfileModal({
   const [activeTab, setActiveTab] = useState<ProfileTab>("bio");
   const [loadingExtract, setLoadingExtract] = useState(false);
   const [loadingChronicle, setLoadingChronicle] = useState(false);
+  const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [chronicleError, setChronicleError] = useState<string | null>(null);
   const [promptModalOpen, setPromptModalOpen] = useState(false);
   const [newFactContent, setNewFactContent] = useState("");
 
@@ -159,9 +161,18 @@ export function CharacterProfileModal({
     if (!onManualExtractMemory || loadingExtract) return;
 
     setLoadingExtract(true);
+    setMemoryError(null);
 
     try {
       await onManualExtractMemory();
+    } catch (cause) {
+      // Раньше ошибка уходила в никуда: индикатор гас, а разделы памяти
+      // оставались прежними — со стороны это выглядело как «кнопка не работает».
+      setMemoryError(
+        cause instanceof Error && cause.message
+          ? cause.message
+          : "Не удалось обновить память и дневник."
+      );
     } finally {
       setLoadingExtract(false);
     }
@@ -171,9 +182,16 @@ export function CharacterProfileModal({
     if (!onRebuildChronicle || loadingChronicle) return;
 
     setLoadingChronicle(true);
+    setChronicleError(null);
 
     try {
       await onRebuildChronicle();
+    } catch (cause) {
+      setChronicleError(
+        cause instanceof Error && cause.message
+          ? cause.message
+          : "Не удалось собрать хронику по диалогу."
+      );
     } finally {
       setLoadingChronicle(false);
     }
@@ -463,6 +481,21 @@ export function CharacterProfileModal({
                   </p>
                 )}
 
+                {!loadingChronicle && chronicleError && (
+                  <div
+                    role="alert"
+                    className="mb-4 rounded-xl border border-danger/30 bg-danger/5 p-3.5"
+                  >
+                    <p className="text-sm leading-relaxed text-danger">
+                      {chronicleError}
+                    </p>
+                    <p className="mt-1.5 text-xs leading-relaxed text-content-muted">
+                      Хроника не изменилась. Причина почти всегда в канале
+                      подключения или в модели: её ответ не дошёл до приложения.
+                    </p>
+                  </div>
+                )}
+
                 {storyLog.length === 0 ? (
                   <div>
                     <EmptyState
@@ -705,6 +738,20 @@ export function CharacterProfileModal({
                   >
                     Обрабатываем память и дневник…
                   </p>
+                )}
+
+                {!loadingExtract && memoryError && (
+                  <div
+                    role="alert"
+                    className="rounded-xl border border-danger/30 bg-danger/5 p-3.5"
+                  >
+                    <p className="text-sm leading-relaxed text-danger">
+                      {memoryError}
+                    </p>
+                    <p className="mt-1.5 text-xs leading-relaxed text-content-muted">
+                      Якоря памяти и дневник остались прежними.
+                    </p>
+                  </div>
                 )}
 
                 <form

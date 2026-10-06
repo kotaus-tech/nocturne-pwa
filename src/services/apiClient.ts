@@ -90,6 +90,15 @@ export function isOllamaEndpoint(baseUrl?: string): boolean {
   );
 }
 
+/**
+ * Нативный API DeepSeek: поле `reasoning` ему незнакомо. А вот у агрегаторов
+ * (ru-openrouter.ru, polza.ai, OpenRouter) тот же `deepseek/...` — обычная
+ * модель, и выключить ей размышления можно и нужно.
+ */
+export function isNativeDeepSeekEndpoint(config: ApiConfig): boolean {
+  return sanitizeBaseUrl(config.baseUrl).toLowerCase().includes("deepseek");
+}
+
 export function isDeepSeekEndpoint(config: ApiConfig): boolean {
   const base = sanitizeBaseUrl(config.baseUrl).toLowerCase();
   const model = (config.model || "").toLowerCase();
@@ -314,42 +323,174 @@ function sanitizeGeminiContents(turns: ChatTurn[]): GeminiContent[] {
   return merged;
 }
 
-function extractResponseContent(data: any): string {
-  const choiceMsg = data?.choices?.[0]?.message;
-  const directMsg = data?.message;
+/**
+ * Собирает текст из содержимого ответа: строка или массив частей
+ * (Anthropic/Gemini-стиль: `[{ type: "text", text: "…" }]`).
+ */
+export function joinResponseParts(value: unknown): { text: string; reasoning: string } {
+  // Важно не тримить части: в стриме куски текста приходят с пробелами на
+  // стыках («Первая » + «часть»), и обрезка склеивала бы слова.
+  if (typeof value === "string") return { text: value, reasoning: "" };
+  if (!Array.isArray(value)) return { text: "", reasoning: "" };
 
-  let raw = "";
+  let text = "";
+  let reasoning = "";
 
-  if (choiceMsg && typeof choiceMsg.content === "string" && choiceMsg.content.trim().length > 0) {
-    raw = choiceMsg.content.trim();
-  } else if (directMsg && typeof directMsg.content === "string" && directMsg.content.trim().length > 0) {
-    raw = directMsg.content.trim();
-  } else if (typeof data?.response === "string" && data.response.trim().length > 0) {
-    raw = data.response.trim();
-  }
-
-  if (!raw) {
-    if (choiceMsg && typeof choiceMsg.reasoning_content === "string" && choiceMsg.reasoning_content.trim().length > 0) {
-      raw = choiceMsg.reasoning_content.trim();
-    } else if (directMsg && typeof directMsg.reasoning_content === "string" && directMsg.reasoning_content.trim().length > 0) {
-      raw = directMsg.reasoning_content.trim();
+  for (const part of value) {
+    if (typeof part === "string") {
+      text += part;
+      continue;
     }
+
+    const partText = typeof (part as any)?.text === "string" ? (part as any).text : "";
+    if (!partText) continue;
+
+    const type = String((part as any)?.type ?? "").toLowerCase();
+    const isReasoning =
+      (part as any)?.thought === true || type.includes("reason") || type.includes("think");
+
+    if (isReasoning) reasoning += partText;
+    else text += partText;
   }
 
-  if (!raw) return "";
+  return { text, reasoning };
+}
 
-  if (raw.includes("</think>")) {
-    const parts = raw.split("</think>");
-    const reply = parts[parts.length - 1].trim();
-    if (reply.length > 0) return reply;
+/** Поле `reasoning_details` (OpenRouter-стиль): массив строк или частей. */
+function readReasoningDetails(value: unknown): string {
+  if (!Array.isArray(value)) return "";
+
+  return value
+    .map((item) =>
+      typeof item === "string"
+        ? item
+        : typeof (item as any)?.text === "string"
+          ? (item as any).text
+          : ""
+    )
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+/**
+ * Режим размышлений для Gemini: служебным задачам (память, дневник, хроника)
+ * размышления не нужны — они лишь съедают бюджет ответа. Явный выбор игрока
+ * (LOW/MEDIUM/HIGH) уважаем.
+ */
+function geminiThinkingMode(config: ApiConfig, extras: ChatRequestExtras): ThinkingMode {
+  const mode = config.thinkingMode ?? "AUTO";
+  if (!extras.reasoningOff) return mode;
+  return mode === "HIGH" || mode === "MEDIUM" || mode === "LOW" ? mode : "OFF";
+}
+
+/** Снимает обёртки размышлений, если модель завернула ответ в <think>/<thought>. */
+function unwrapThinkingTags(raw: string): string {
+  let text = raw;
+
+  if (text.includes("</think>")) {
+    const reply = text.split("</think>").pop()?.trim() ?? "";
+    if (reply.length > 0) text = reply;
   }
 
-  if (raw.includes("<think>")) {
-    const cleaned = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/<think>[\s\S]*$/gi, "").trim();
-    if (cleaned.length > 0) return cleaned;
+  if (text.includes("<think>")) {
+    const cleaned = text
+      .replace(/<think>[\s\S]*?<\/think>/gi, "")
+      .replace(/<think>[\s\S]*$/gi, "")
+      .trim();
+    if (cleaned.length > 0) text = cleaned;
   }
 
-  return raw;
+  return text;
+}
+
+export interface ExtractedResponseText {
+  /** Лучший текст ответа (а если ответа нет — текст размышлений). */
+  text: string;
+  /** Откуда он взят: обычный ответ, канал размышлений или ничего. */
+  source: "content" | "reasoning" | "none";
+  /** Полный текст канала размышлений — для пометки <thought> в чате. */
+  reasoning: string;
+}
+
+/**
+ * Достаёт текст ответа из всех форматов, которые встречаются у провайдеров и
+ * агрегаторов (OpenRouter, ru-openrouter.ru, polza.ai, DeepSeek, Ollama, Gemini,
+ * Anthropic-совместимые шлюзы).
+ *
+ * Раньше читался только `choices[0].message.content`, поэтому у «думающих»
+ * моделей ответ выглядел пустым: готовый JSON уезжает в отдельное поле
+ * (`reasoning`, `reasoning_content`, `thinking`) или приходит массивом частей.
+ * Для памяти, дневника и хроники это означало «модель промолчала» и молчаливую
+ * потерю данных — особенно на ru-openrouter.ru и polza.ai, где модели с
+ * размышлениями включены по умолчанию.
+ *
+ * `preferJson` используют служебные задачи: тогда выбирается тот канал,
+ * в котором действительно лежит JSON-объект.
+ */
+export function extractResponseText(
+  data: any,
+  { preferJson = false }: { preferJson?: boolean } = {}
+): ExtractedResponseText {
+  const messageLike = [
+    data?.choices?.[0]?.message,
+    data?.choices?.[0]?.delta,
+    data?.message,
+  ].filter(Boolean);
+
+  const content: string[] = [];
+  const reasoning: string[] = [];
+
+  const pushTrimmed = (bucket: string[], value: string) => {
+    const trimmed = value.trim();
+    if (trimmed) bucket.push(trimmed);
+  };
+
+  for (const message of messageLike) {
+    const parts = joinResponseParts(message.content);
+    pushTrimmed(content, parts.text);
+    pushTrimmed(reasoning, parts.reasoning);
+
+    for (const field of [message.reasoning_content, message.reasoning, message.thinking]) {
+      if (typeof field === "string" && field.trim()) reasoning.push(field.trim());
+    }
+
+    const details = readReasoningDetails(message.reasoning_details);
+    if (details) reasoning.push(details);
+  }
+
+  // Gemini-подобный формат: ответ приходит частями, размышления помечены `thought`.
+  const geminiParts = data?.candidates?.[0]?.content?.parts;
+  if (Array.isArray(geminiParts)) {
+    const parts = joinResponseParts(geminiParts);
+    pushTrimmed(content, parts.text);
+    pushTrimmed(reasoning, parts.reasoning);
+  }
+
+  for (const field of [data?.choices?.[0]?.text, data?.response, data?.output_text]) {
+    if (typeof field === "string" && field.trim()) content.push(field.trim());
+  }
+
+  const candidates: Array<{ text: string; source: "content" | "reasoning" }> = [
+    ...content.map((text) => ({ text, source: "content" as const })),
+    ...reasoning.map((text) => ({ text, source: "reasoning" as const })),
+  ];
+
+  const picked =
+    (preferJson ? candidates.find((item) => item.text.includes("{")) : undefined) ??
+    candidates.find((item) => item.text.trim().length > 0);
+
+  if (!picked) return { text: "", source: "none", reasoning: "" };
+
+  return {
+    text: unwrapThinkingTags(picked.text),
+    source: picked.source,
+    reasoning: reasoning.join("\n\n").trim(),
+  };
+}
+
+function extractResponseContent(data: any): string {
+  return extractResponseText(data).text;
 }
 
 function cleanStreamTextForUI(fullOutput: string): string {
@@ -379,12 +520,32 @@ function cleanStreamTextForUI(fullOutput: string): string {
   return text.replace(/```(?:meta|json)?[\s\S]*$/i, "").trimStart();
 }
 
+/**
+ * Дополнительные поля запроса для служебных (фоновых) задач: памяти, дневника,
+ * хроники, синопсиса, выбора говорящего.
+ *
+ *  - `jsonMode` — просим провайдера вернуть строго JSON-объект;
+ *  - `reasoningOff` — просим не тратить бюджет на «размышления», иначе у
+ *    думающих моделей готовый ответ уезжает в отдельное поле, а `content`
+ *    остаётся пустым (штатное поведение ru-openrouter.ru и polza.ai);
+ *  - `expectJson` — при разборе ответа выбираем канал, где реально лежит JSON;
+ *  - `withoutThoughtPrefix` — не подмешивать размышления в текст ответа: у
+ *    служебных задач нет окна чата, им нужен только чистый ответ.
+ */
+export interface ChatRequestExtras {
+  jsonMode?: boolean;
+  reasoningOff?: boolean;
+  expectJson?: boolean;
+  withoutThoughtPrefix?: boolean;
+}
+
 async function callOllamaStream(
   config: ApiConfig,
   systemPrompt: string,
   turns: ChatTurn[],
   onChunk: (accumulatedText: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  extras: ChatRequestExtras = {}
 ): Promise<string> {
   const { primaryUrl } = resolveEndpoints(config.baseUrl);
 
@@ -398,7 +559,7 @@ async function callOllamaStream(
       ? 1.0 + config.frequencyPenalty * 0.5
       : config.localRepeatPenalty ?? 1.1;
 
-  const bodyPayload = {
+  const bodyPayload: Record<string, any> = {
     model: config.model,
     messages: [{ role: "system", content: systemPrompt }, ...turns],
     stream: true,
@@ -414,24 +575,37 @@ async function callOllamaStream(
     },
   };
 
+  if (extras.jsonMode) bodyPayload.format = "json";
+
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (config.apiKey && config.apiKey.trim().length > 0) {
     headers["Authorization"] = `Bearer ${config.apiKey.trim()}`;
   }
 
-  const res = await fetch(primaryUrl, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(bodyPayload),
-    signal,
-  });
+  let res: Response;
+  try {
+    res = await fetch(primaryUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(bodyPayload),
+      signal,
+    });
+  } catch (netErr) {
+    if (signal?.aborted || isAbortError(netErr)) throw netErr;
+    throw new LLMRequestError(
+      formatApiError(netErr, undefined, undefined, config.baseUrl, config.model)
+    );
+  }
 
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
-    throw new Error(formatApiError(null, res.status, errText, config.baseUrl, config.model));
+    throw new LLMRequestError(
+      formatApiError(null, res.status, errText, config.baseUrl, config.model),
+      res.status
+    );
   }
 
-  if (!res.body) throw new Error("Ollama не предоставила поток данных.");
+  if (!res.body) throw new LLMRequestError("Ollama не предоставила поток данных.");
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder("utf-8");
@@ -487,6 +661,11 @@ export async function readJsonResponse(res: Response, url?: string): Promise<any
     );
   }
 
+  // Часть агрегаторов отвечает потоком SSE даже на `stream: false`.
+  // Склеиваем такой поток в обычную структуру, а не падаем на разборе.
+  const sse = parseSseResponse(trimmed);
+  if (sse) return sse;
+
   try {
     return JSON.parse(trimmed);
   } catch {
@@ -494,6 +673,56 @@ export async function readJsonResponse(res: Response, url?: string): Promise<any
       `Ответ сервера${where} не является JSON: ${trimmed.slice(0, 200) || "(пустой ответ)"}`
     );
   }
+}
+
+/**
+ * Разбирает SSE-ответ, пришедший на обычный (не стриминговый) запрос:
+ * собирает дельты в `choices[0].message`, чтобы дальше работал общий разбор.
+ */
+function parseSseResponse(text: string): any | null {
+  if (!text.includes("data:")) return null;
+
+  let content = "";
+  let reasoning = "";
+  let lastPayload: any = null;
+
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) continue;
+
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(payload);
+    } catch {
+      continue;
+    }
+
+    if (!parsed || typeof parsed !== "object") continue;
+    lastPayload = parsed;
+
+    const delta = parsed?.choices?.[0]?.delta;
+    if (!delta) continue;
+
+    const parts = joinResponseParts(delta.content);
+    content += parts.text;
+    reasoning += parts.reasoning;
+    reasoning += joinResponseParts(delta.reasoning_content ?? delta.reasoning).text;
+  }
+
+  if (!content && !reasoning) return lastPayload;
+
+  return {
+    ...(lastPayload ?? {}),
+    choices: [
+      {
+        ...(lastPayload?.choices?.[0] ?? {}),
+        message: { role: "assistant", content, reasoning_content: reasoning },
+      },
+    ],
+  };
 }
 
 /** Same-origin путь прокси: совпадает с Edge Function Netlify (netlify.toml). */
@@ -510,6 +739,27 @@ export class ProxyChannelError extends Error {
     super(message);
     this.name = "ProxyChannelError";
   }
+}
+
+/**
+ * Ошибка обращения к провайдеру с сохранённым HTTP-кодом.
+ *
+ * Нужна фоновым задачам: по коду видно, отклонил ли провайдер дополнительные
+ * поля запроса (400/422 — повторяем без них) или дело в ключе и лимите
+ * (401/403/429 — повторять бессмысленно и дорого).
+ */
+export class LLMRequestError extends Error {
+  readonly status?: number;
+
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = "LLMRequestError";
+    this.status = status;
+  }
+}
+
+export function isAbortError(cause: unknown): boolean {
+  return cause instanceof Error && cause.name === "AbortError";
 }
 
 function hostOf(url: string): string {
@@ -654,7 +904,8 @@ async function callOpenAICompatibleStream(
   systemPrompt: string,
   turns: ChatTurn[],
   onChunk: (accumulatedText: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  extras: ChatRequestExtras = {}
 ): Promise<string> {
   const { primaryUrl, fallbackUrl } = resolveEndpoints(config.baseUrl);
   const isDeepSeek = isDeepSeekEndpoint(config);
@@ -679,6 +930,14 @@ async function callOpenAICompatibleStream(
     bodyPayload.top_k = config.topK;
   }
 
+  if (extras.jsonMode) {
+    bodyPayload.response_format = { type: "json_object" };
+  }
+
+  if (extras.reasoningOff && !isNativeDeepSeekEndpoint(config)) {
+    bodyPayload.reasoning = { enabled: false };
+  }
+
   const allowProxy = !isLocalEndpoint(config.baseUrl);
 
   let res: Response;
@@ -699,15 +958,21 @@ async function callOpenAICompatibleStream(
       }, allowProxy);
     }
   } catch (netErr) {
-    throw new Error(formatApiError(netErr, undefined, undefined, config.baseUrl, config.model));
+    if (signal?.aborted || isAbortError(netErr)) throw netErr;
+    throw new LLMRequestError(
+      formatApiError(netErr, undefined, undefined, config.baseUrl, config.model)
+    );
   }
 
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
-    throw new Error(formatApiError(null, res.status, errText, config.baseUrl, config.model));
+    throw new LLMRequestError(
+      formatApiError(null, res.status, errText, config.baseUrl, config.model),
+      res.status
+    );
   }
 
-  if (!res.body) throw new Error("Сервер не вернул поток данных (SSE).");
+  if (!res.body) throw new LLMRequestError("Сервер не вернул поток данных (SSE).");
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder("utf-8");
@@ -733,12 +998,22 @@ async function callOpenAICompatibleStream(
           const parsed = JSON.parse(dataStr);
           const delta = parsed?.choices?.[0]?.delta;
 
-          if (delta?.reasoning_content) {
-            reasoningAccumulator += delta.reasoning_content;
-            continue;
+          // Канал размышлений называется по-разному: reasoning_content,
+          // reasoning, thinking. Запоминаем его целиком: если модель так и не
+          // выдаст обычный текст, ответ (часто это готовый JSON) лежит здесь.
+          const reasoningDelta = joinResponseParts(
+            delta?.reasoning_content ?? delta?.reasoning ?? delta?.thinking
+          ).text;
+          if (reasoningDelta) {
+            reasoningAccumulator += reasoningDelta;
           }
 
-          const token = delta?.content || "";
+          const contentParts = joinResponseParts(delta?.content);
+          if (contentParts.reasoning) {
+            reasoningAccumulator += contentParts.reasoning;
+          }
+
+          const token = contentParts.text;
           if (token) {
             fullOutput += token;
             onChunk(cleanStreamTextForUI(fullOutput));
@@ -748,7 +1023,20 @@ async function callOpenAICompatibleStream(
     }
   }
 
-  if (reasoningAccumulator && !fullOutput.includes("```meta") && !fullOutput.includes("<thought>")) {
+  if (!fullOutput.trim() && reasoningAccumulator.trim()) {
+    // «Думающая» модель израсходовала бюджет на размышления и не выдала
+    // итоговый текст. Возвращаем размышления: служебные задачи (память,
+    // хроника, синопсис) находят в них готовый JSON, а пустая строка раньше
+    // молча оставляла разделы памяти без изменений.
+    return reasoningAccumulator.trim();
+  }
+
+  if (
+    reasoningAccumulator &&
+    !extras.withoutThoughtPrefix &&
+    !fullOutput.includes("```meta") &&
+    !fullOutput.includes("<thought>")
+  ) {
     const cleanThought = reasoningAccumulator.trim().slice(0, 500).replace(/\s+/g, " ");
     fullOutput = `<thought>${cleanThought}...</thought>\n` + fullOutput;
   }
@@ -761,7 +1049,8 @@ async function callGeminiStream(
   systemPrompt: string,
   turns: ChatTurn[],
   onChunk: (accumulatedText: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  extras: ChatRequestExtras = {}
 ): Promise<string> {
   const model = cleanGeminiModel(config.model);
   const apiKey = (config.apiKey || "").trim();
@@ -772,7 +1061,7 @@ async function callGeminiStream(
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
   const contents = sanitizeGeminiContents(turns);
-  const thinkingConfig = buildGeminiThinkingConfig(model, config.thinkingMode);
+  const thinkingConfig = buildGeminiThinkingConfig(model, geminiThinkingMode(config, extras));
 
   const generationConfig: Record<string, any> = {
     temperature: config.temperature,
@@ -781,6 +1070,7 @@ async function callGeminiStream(
     ...(typeof config.topK === "number" ? { topK: config.topK } : {}),
     presencePenalty: config.presencePenalty ?? 0.0,
     frequencyPenalty: config.frequencyPenalty ?? 0.0,
+    ...(extras.jsonMode ? { responseMimeType: "application/json" } : {}),
     ...(thinkingConfig ? { thinkingConfig } : {}),
   };
 
@@ -879,7 +1169,8 @@ export async function callLLM(
   systemPrompt: string,
   turns: ChatTurn[],
   onChunk?: (text: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  extras: ChatRequestExtras = {}
 ): Promise<string> {
   const isStreamingEnabled =
     config.streamEnabled !== false &&
@@ -888,28 +1179,148 @@ export async function callLLM(
 
   if (config.mode === "gemini") {
     if (isStreamingEnabled && onChunk) {
-      return callGeminiStream(config, systemPrompt, turns, onChunk, signal);
+      return callGeminiStream(config, systemPrompt, turns, onChunk, signal, extras);
     }
-    return callGemini(config, systemPrompt, turns, signal);
+    return callGemini(config, systemPrompt, turns, signal, extras);
   }
 
   const isOllama = isOllamaEndpoint(config.baseUrl);
 
   if (isStreamingEnabled && onChunk) {
     if (isOllama) {
-      return callOllamaStream(config, systemPrompt, turns, onChunk, signal);
+      return callOllamaStream(config, systemPrompt, turns, onChunk, signal, extras);
     }
-    return callOpenAICompatibleStream(config, systemPrompt, turns, onChunk, signal);
+    return callOpenAICompatibleStream(config, systemPrompt, turns, onChunk, signal, extras);
   }
 
-  return callOpenAICompatible(config, systemPrompt, turns, signal);
+  return callOpenAICompatible(config, systemPrompt, turns, signal, extras);
+}
+
+/** Ответ провайдера пустой: модель промолчала или ушла в размышления. */
+export const EMPTY_ANSWER_MESSAGE =
+  "Модель вернула пустой ответ: израсходовала лимит токенов на размышления или промолчала. " +
+  "Повторите запрос, увеличьте лимит токенов в настройках или выберите модель без размышлений.";
+
+/** Провайдер отклонил дополнительные поля запроса — их нужно убрать и повторить. */
+function isParameterRejection(cause: unknown): boolean {
+  const status = cause instanceof LLMRequestError ? cause.status : undefined;
+  if (status === 400 || status === 422) return true;
+
+  const message = cause instanceof Error ? cause.message.toLowerCase() : "";
+  return /response_format|reasoning|unsupported|unknown parameter|invalid parameter|не поддерживается/.test(
+    message
+  );
+}
+
+/** Стоит ли повторять запрос другим способом (сеть, 5xx, странный формат ответа). */
+function isRetryableRequestError(cause: unknown): boolean {
+  if (isAbortError(cause)) return false;
+
+  const status = cause instanceof LLMRequestError ? cause.status : undefined;
+  if (status === 401 || status === 403 || status === 429) return false;
+
+  return true;
+}
+
+/**
+ * Служебный (фоновый) вызов модели: память, дневник, хроника, синопсис, выбор
+ * говорящего, внекадровые тики — всё, у чего нет окна стрима в интерфейсе.
+ *
+ * Почему отдельный путь. Такой запрос раньше уходил «буферизованным»
+ * (`stream: false`) и на агрегаторах вроде ru-openrouter.ru и polza.ai вёл себя
+ * иначе, чем чат: ответ приходит только целиком, поэтому долгая генерация
+ * обрывается прокси/шлюзом, а у «думающих» моделей готовый JSON вообще уезжает
+ * в поле размышлений (`reasoning`/`reasoning_content`), оставляя `content`
+ * пустым. Парсер видел пустую строку и молча ничего не сохранял — именно
+ * поэтому хроника, дневник и память не собирались, а кнопка «Актуализировать»
+ * крутила индикатор и ничего не делала. Чат на тех же провайдерах работал,
+ * потому что стримится.
+ *
+ * Поэтому здесь:
+ *  1) тот же стриминговый транспорт, что и у чата, но без вывода в интерфейс;
+ *  2) JSON-режим и выключенные размышления, чтобы ответ пришёл в `content`;
+ *  3) если провайдер не понял дополнительные поля (400/422) — повтор без них;
+ *  4) если провайдер не умеет SSE или канал не подошёл — повтор обычным запросом.
+ */
+export async function callBackgroundLLM(
+  config: ApiConfig,
+  systemPrompt: string,
+  turns: ChatTurn[],
+  options: { expectJson?: boolean; signal?: AbortSignal } = {}
+): Promise<string> {
+  const { expectJson = false, signal } = options;
+
+  const supportsStreaming =
+    config.streamEnabled !== false && config.localStreamEnabled !== false;
+
+  const fullExtras: ChatRequestExtras = {
+    jsonMode: expectJson,
+    reasoningOff: true,
+    expectJson,
+    withoutThoughtPrefix: true,
+  };
+  const plainExtras: ChatRequestExtras = { expectJson, withoutThoughtPrefix: true };
+
+  // Первый канал — стриминг (как чат: он работает на всех этих провайдерах),
+  // второй — обычный запрос (для тех, кто SSE не умеет). Внутри канала сначала
+  // пробуем дополнительные поля, затем — без них.
+  const channels = supportsStreaming ? [true, false] : [false, true];
+  const MAX_ATTEMPTS = 4;
+
+  let channelIndex = 0;
+  let extrasVariant = 0;
+  let parameterRejected = false;
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS && channelIndex < channels.length; attempt += 1) {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
+    const stream = channels[channelIndex];
+    const extras = extrasVariant === 0 ? fullExtras : plainExtras;
+
+    try {
+      const text = await callLLM(
+        config,
+        systemPrompt,
+        turns,
+        stream ? () => {} : undefined,
+        signal,
+        extras
+      );
+
+      if (text.trim()) return text;
+
+      // Модель промолчала (или ответ ушёл в канал, которого нет в этом
+      // формате) — пробуем другой транспорт.
+      lastError = new Error(EMPTY_ANSWER_MESSAGE);
+      channelIndex += 1;
+    } catch (cause) {
+      if (signal?.aborted || isAbortError(cause)) throw cause;
+
+      lastError = cause;
+      if (!isRetryableRequestError(cause)) throw cause;
+
+      if (isParameterRejection(cause) && extrasVariant === 0) {
+        // Провайдер не знает response_format/reasoning — повторяем без них.
+        parameterRejected = true;
+        extrasVariant = 1;
+        continue;
+      }
+
+      channelIndex += 1;
+      extrasVariant = parameterRejected ? 1 : 0;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(EMPTY_ANSWER_MESSAGE);
 }
 
 async function callOpenAICompatible(
   config: ApiConfig,
   systemPrompt: string,
   turns: ChatTurn[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  extras: ChatRequestExtras = {}
 ): Promise<string> {
   const { isOllama, primaryUrl, fallbackUrl } = resolveEndpoints(config.baseUrl);
   const isDeepSeek = isDeepSeekEndpoint(config);
@@ -947,6 +1358,8 @@ async function callOpenAICompatible(
         presence_penalty: config.presencePenalty ?? config.localPresencePenalty ?? 0.0,
       },
     };
+
+    if (extras.jsonMode) bodyPayload.format = "json";
   } else {
     bodyPayload = {
       model: config.model || (isDeepSeek ? "deepseek-chat" : "openai/gpt-4o-mini"),
@@ -961,6 +1374,14 @@ async function callOpenAICompatible(
 
     if (typeof config.topK === "number") {
       bodyPayload.top_k = config.topK;
+    }
+
+    if (extras.jsonMode) {
+      bodyPayload.response_format = { type: "json_object" };
+    }
+
+    if (extras.reasoningOff && !isNativeDeepSeekEndpoint(config)) {
+      bodyPayload.reasoning = { enabled: false };
     }
   }
 
@@ -984,24 +1405,38 @@ async function callOpenAICompatible(
       }, allowProxy);
     }
   } catch (netErr) {
-    throw new Error(formatApiError(netErr, undefined, undefined, config.baseUrl, config.model));
+    if (signal?.aborted || isAbortError(netErr)) throw netErr;
+    throw new LLMRequestError(
+      formatApiError(netErr, undefined, undefined, config.baseUrl, config.model)
+    );
   }
 
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
-    throw new Error(formatApiError(null, res.status, errText, config.baseUrl, config.model));
+    throw new LLMRequestError(
+      formatApiError(null, res.status, errText, config.baseUrl, config.model),
+      res.status
+    );
   }
 
   const data = await readJsonResponse(res);
-  const choice = data?.choices?.[0]?.message;
-  let content = extractResponseContent(data);
+  const extracted = extractResponseText(data, { preferJson: Boolean(extras.expectJson) });
+  let content = extracted.text;
 
-  if (choice?.reasoning_content && !content.includes("```meta") && !content.includes("<thought>")) {
-    const cleanThought = choice.reasoning_content.trim().slice(0, 500).replace(/\s+/g, " ");
+  // Показываем «мысли» модели в чате, но не подменяем ими сам ответ.
+  if (
+    content &&
+    extracted.source === "content" &&
+    extracted.reasoning &&
+    !extras.withoutThoughtPrefix &&
+    !content.includes("```meta") &&
+    !content.includes("<thought>")
+  ) {
+    const cleanThought = extracted.reasoning.slice(0, 500).replace(/\s+/g, " ");
     content = `<thought>${cleanThought}...</thought>\n` + content;
   }
 
-  if (!content) throw new Error("Модель вернула пустой ответ.");
+  if (!content) throw new LLMRequestError(EMPTY_ANSWER_MESSAGE);
   return content;
 }
 
@@ -1009,7 +1444,8 @@ async function callGemini(
   config: ApiConfig,
   systemPrompt: string,
   turns: ChatTurn[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  extras: ChatRequestExtras = {}
 ): Promise<string> {
   const model = cleanGeminiModel(config.model);
   const apiKey = (config.apiKey || "").trim();
@@ -1020,7 +1456,7 @@ async function callGemini(
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const contents = sanitizeGeminiContents(turns);
-  const thinkingConfig = buildGeminiThinkingConfig(model, config.thinkingMode);
+  const thinkingConfig = buildGeminiThinkingConfig(model, geminiThinkingMode(config, extras));
 
   const generationConfig: Record<string, any> = {
     temperature: config.temperature,
@@ -1029,6 +1465,7 @@ async function callGemini(
     ...(typeof config.topK === "number" ? { topK: config.topK } : {}),
     presencePenalty: config.presencePenalty ?? 0.0,
     frequencyPenalty: config.frequencyPenalty ?? 0.0,
+    ...(extras.jsonMode ? { responseMimeType: "application/json" } : {}),
     ...(thinkingConfig ? { thinkingConfig } : {}),
   };
 
@@ -1050,12 +1487,13 @@ async function callGemini(
       signal,
     });
   } catch (netErr) {
-    throw new Error(formatApiError(netErr));
+    if (signal?.aborted || isAbortError(netErr)) throw netErr;
+    throw new LLMRequestError(formatApiError(netErr));
   }
 
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
-    throw new Error(formatApiError(null, res.status, errText));
+    throw new LLMRequestError(formatApiError(null, res.status, errText), res.status);
   }
 
   const data = await readJsonResponse(res, url);

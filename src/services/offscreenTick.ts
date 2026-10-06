@@ -9,7 +9,7 @@ import type {
   SceneSessionPatch,
   SceneShift,
 } from "../types";
-import { callLLM } from "./apiClient";
+import { callBackgroundLLM } from "./apiClient";
 import { safeParseJson } from "./memoryEngine";
 import {
   getParticipantMemory,
@@ -334,12 +334,11 @@ export async function requestOffscreenTick(
 ): Promise<OffscreenTickResult | null> {
   const systemPrompt = `Ты моделируешь внутреннюю жизнь персонажа, который сейчас за кадром ролевой сцены. Отвечаешь строго в запрошенном JSON-формате. Дефолтный ответ — ничего принципиально нового не произошло.`;
 
-  const raw = await callLLM(
+  const raw = await callBackgroundLLM(
     config,
     systemPrompt,
     [{ role: "user", content: prompt }],
-    undefined,
-    signal
+    { expectJson: true, signal }
   );
 
   return parseOffscreenTickResult(raw);

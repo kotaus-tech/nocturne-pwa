@@ -114,6 +114,18 @@ import { cn } from "../../utils/cn";
 const MEMORY_EXTRACT_INTERVAL = 8;
 /** Сколько новых реплик должно накопиться, чтобы дожать память при выходе. */
 const MEMORY_FLUSH_MIN_MESSAGES = 4;
+/** Длина причины сбоя в коротком уведомлении. */
+const CAUSE_PREVIEW_LIMIT = 120;
+
+/** Короткая причина сбоя для уведомления — одной строкой. */
+function describeCause(cause: unknown): string {
+  const message = cause instanceof Error ? cause.message : String(cause ?? "");
+  const clean = message.replace(/\s+/g, " ").trim();
+  if (!clean) return "неизвестная ошибка";
+  return clean.length > CAUSE_PREVIEW_LIMIT
+    ? `${clean.slice(0, CAUSE_PREVIEW_LIMIT - 1)}…`
+    : clean;
+}
 const INITIAL_PAGE_SIZE = 35;
 const PAGE_STEP = 25;
 
@@ -1427,9 +1439,25 @@ export function ChatView({
         !isGroupScene &&
         totalAfter - lastExtractedMsgCountRef.current >= MEMORY_EXTRACT_INTERVAL
       ) {
+        const previousWatermark = lastExtractedMsgCountRef.current;
         lastExtractedMsgCountRef.current = totalAfter;
         unsavedMessagesRef.current = 0;
-        compressMemory().catch(() => {});
+
+        // Сбой фоновой памяти раньше гасился молча: игрок видел, что хроника,
+        // дневник и якоря не заполняются, но не знал причины. Теперь причина
+        // видна коротким уведомлением, а водяной знак откатывается назад —
+        // запись повторится на следующем шаге или при выходе из ветки.
+        compressMemory().catch((cause) => {
+          lastExtractedMsgCountRef.current = Math.min(
+            lastExtractedMsgCountRef.current,
+            previousWatermark
+          );
+          if (isAbortError(cause)) return;
+          showToast({
+            title: `Память не обновилась: ${describeCause(cause)}`,
+            type: "status",
+          });
+        });
       }
 
       // Фоновая жизнь группы: личная память, нейтральная хроника, офскрин-тики.
@@ -2334,13 +2362,19 @@ export function ChatView({
         transcript,
         session.summary ?? ""
       );
-      if (freshSummary.trim()) {
-        await commitPatch({
-          summaryPatch: freshSummary.trim(),
-          sourceKind: "memory_extraction",
-          sourceSnapshotAt: Date.now(),
-        });
+      if (!freshSummary.trim()) {
+        // Молчаливое «ничего не произошло» больше не прячем: игрок должен
+        // видеть, что модель не прислала текст, а не ждать вечно.
+        throw new Error(
+          "Модель не прислала текст общей хроники. Повторите запрос или выберите другую модель."
+        );
       }
+
+      await commitPatch({
+        summaryPatch: freshSummary.trim(),
+        sourceKind: "memory_extraction",
+        sourceSnapshotAt: Date.now(),
+      });
       return;
     }
 
@@ -2360,12 +2394,16 @@ export function ChatView({
         othersInScene
       );
 
-      if (freshSummary && freshSummary.trim().length > 0) {
-        await db.sessions.update(session.id, {
-          summary: freshSummary.trim(),
-          updatedAt: Date.now(),
-        });
+      if (!freshSummary.trim()) {
+        throw new Error(
+          "Модель не прислала текст синопсиса. Повторите запрос или выберите другую модель."
+        );
       }
+
+      await db.sessions.update(session.id, {
+        summary: freshSummary.trim(),
+        updatedAt: Date.now(),
+      });
     } catch (cause) {
       console.error("Refresh summary error:", cause);
       throw cause;
@@ -2402,28 +2440,32 @@ export function ChatView({
         othersInScene
       );
 
-      if (rawEpisodes.length > 0) {
-        const firstMessageTime =
-          sourceMessages[0]?.timestamp || Date.now() - 3600000;
-
-        const lastMessageTime =
-          sourceMessages[sourceMessages.length - 1]?.timestamp || Date.now();
-
-        const timeStep =
-          (lastMessageTime - firstMessageTime) /
-          Math.max(1, rawEpisodes.length - 1);
-
-        const newStoryLog: StoryLogEntry[] = rawEpisodes.map((text, index) => ({
-          id: newId(),
-          timestamp: Math.round(firstMessageTime + index * timeStep),
-          text: text.replace(/^\d+[\.\)]\s*/, "").trim(),
-        }));
-
-        await db.sessions.update(session.id, {
-          storyLog: newStoryLog,
-          updatedAt: Date.now(),
-        });
+      if (rawEpisodes.length === 0) {
+        throw new Error(
+          "Модель не вернула ни одного эпизода для хроники. Повторите запрос или выберите другую модель."
+        );
       }
+
+      const firstMessageTime =
+        sourceMessages[0]?.timestamp || Date.now() - 3600000;
+
+      const lastMessageTime =
+        sourceMessages[sourceMessages.length - 1]?.timestamp || Date.now();
+
+      const timeStep =
+        (lastMessageTime - firstMessageTime) /
+        Math.max(1, rawEpisodes.length - 1);
+
+      const newStoryLog: StoryLogEntry[] = rawEpisodes.map((text, index) => ({
+        id: newId(),
+        timestamp: Math.round(firstMessageTime + index * timeStep),
+        text: text.replace(/^\d+[\.\)]\s*/, "").trim(),
+      }));
+
+      await db.sessions.update(session.id, {
+        storyLog: newStoryLog,
+        updatedAt: Date.now(),
+      });
     } catch (cause) {
       console.error("Rebuild chronicle error:", cause);
       throw cause;

@@ -5,7 +5,7 @@ import type {
   Intention,
   Message,
 } from "../types";
-import { callLLM } from "./apiClient";
+import { callBackgroundLLM } from "./apiClient";
 import { safeParseJson } from "./memoryEngine";
 import {
   countRelevantMessagesSince,
@@ -179,12 +179,13 @@ export async function requestPersonalExtraction(
     intentionText,
   });
 
-  const raw = await callLLM(
+  // Служебный вызов идёт тем же каналом, что и чат (см. callBackgroundLLM):
+  // это спасает личную память на агрегаторах вроде ru-openrouter.ru и polza.ai.
+  const raw = await callBackgroundLLM(
     config,
     systemPrompt,
     [{ role: "user", content: prompt }],
-    undefined,
-    signal
+    { expectJson: true, signal }
   );
 
   return parsePersonalExtraction(raw);
@@ -237,15 +238,17 @@ export async function requestNeutralChronicle(
 
   const prompt = buildNeutralChroniclePrompt({ fragment, currentSummary });
 
-  const raw = await callLLM(
+  const raw = await callBackgroundLLM(
     config,
     systemPrompt,
     [{ role: "user", content: prompt }],
-    undefined,
-    signal
+    { signal }
   );
 
   return raw
+    // Хроника — чистый текст: обёртки размышлений и код-фенсы сюда не нужны.
+    .replace(/<(?:think|thought)>[\s\S]*?<\/(?:think|thought)>/gi, "")
+    .replace(/<(?:think|thought)>[\s\S]*$/gi, "")
     .replace(/```[\s\S]*?```/g, "")
     .replace(/^["'`\s]+|["'`\s]+$/g, "")
     .trim();

@@ -1,4 +1,4 @@
-import { callLLM } from "./apiClient";
+import { callBackgroundLLM } from "./apiClient";
 import { findMentionedCharacter } from "./groupScene";
 import type { ApiConfig, Character, SceneRelation } from "../types";
 
@@ -125,12 +125,11 @@ export async function requestSceneSpeaker(
   input: SceneRoutingInput,
   signal?: AbortSignal
 ): Promise<Character | undefined> {
-  const answer = await callLLM(
+  const answer = await callBackgroundLLM(
     config,
     buildRoutingPrompt(input),
     [{ role: "user", content: "[Кто отвечает первым?]" }],
-    undefined,
-    signal
+    { signal }
   );
 
   return parseRoutingAnswer(answer, input.present);

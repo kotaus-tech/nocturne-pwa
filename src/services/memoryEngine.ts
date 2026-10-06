@@ -1,6 +1,15 @@
 import type { ApiConfig } from "../types";
-import { callLLM, type ChatTurn } from "./apiClient";
+import { callBackgroundLLM, type ChatTurn } from "./apiClient";
 import { extractJsonBlock } from "./jsonRepair";
+
+/**
+ * Понятная причина, когда модель ответила не JSON: раньше такой случай
+ * подменялся дежурной записью дневника, и игрок не понимал, что память
+ * на самом деле не обновилась.
+ */
+const JSON_FORMAT_ERROR =
+  "Модель ответила не в формате JSON, поэтому память и дневник не обновились. " +
+  "Повторите запрос или выберите модель, которая уверенно отвечает в JSON.";
 
 export interface MemoryFact {
   keys: string[];
@@ -170,7 +179,10 @@ ${transcript}
 }`;
 
   const turns: ChatTurn[] = [{ role: "user", content: prompt }];
-  const raw = await callLLM(apiConfig, systemPrompt, turns);
+  // Служебный вызов идёт тем же каналом, что и чат (см. callBackgroundLLM):
+  // на ru-openrouter.ru и polza.ai обычный «буферизованный» запрос обрывался,
+  // а «думающие» модели уводили готовый JSON в поле размышлений.
+  const raw = await callBackgroundLLM(apiConfig, systemPrompt, turns, { expectJson: true });
 
   try {
     const parsed = safeParseJson(raw);
@@ -207,12 +219,7 @@ ${transcript}
     };
   } catch (err) {
     console.error("Safe JSON parse error in extractMemoriesAndDiary:", err);
-    return {
-      diaryThought: "Мы провели время вместе, и это оставило след в душе.",
-      mood: "Теплота",
-      activeFacts: existingFacts.slice(0, 18),
-      summary: "",
-    };
+    throw new Error(JSON_FORMAT_ERROR);
   }
 }
 
@@ -255,10 +262,17 @@ ${rawStoryText}
 4. ФОРМАТ: Выведи ТОЛЬКО готовый связанный текст истории без заголовков, нумерации и мета-комментариев.`;
 
   const turns: ChatTurn[] = [{ role: "user", content: prompt }];
-  const raw = await callLLM(apiConfig, systemPrompt, turns);
-  const cleaned = cleanModelOutput(raw);
+  const raw = await callBackgroundLLM(apiConfig, systemPrompt, turns);
+  const cleaned = cleanModelOutput(raw).replace(/^["'`]+|["'`]+$/g, "").trim();
 
-  return cleaned.replace(/^["'`]+|["'`]+$/g, "").trim();
+  if (!cleaned) {
+    throw new Error(
+      "Модель не прислала текст синопсиса (ответ пришёл пустым или только с размышлениями). " +
+        "Повторите запрос или увеличьте лимит токенов в настройках."
+    );
+  }
+
+  return cleaned;
 }
 
 /**
@@ -303,7 +317,10 @@ ${transcript}
 }`;
 
   const turns: ChatTurn[] = [{ role: "user", content: prompt }];
-  const raw = await callLLM(apiConfig, systemPrompt, turns);
+  // Служебный вызов идёт тем же каналом, что и чат (см. callBackgroundLLM):
+  // на ru-openrouter.ru и polza.ai обычный «буферизованный» запрос обрывался,
+  // а «думающие» модели уводили готовый JSON в поле размышлений.
+  const raw = await callBackgroundLLM(apiConfig, systemPrompt, turns, { expectJson: true });
 
   try {
     const parsed = safeParseJson(raw);
@@ -333,5 +350,8 @@ ${transcript}
     if (lines.length > 0) return lines;
   }
 
-  return [];
+  throw new Error(
+    "Модель не вернула ни одного эпизода для хроники. Повторите запрос или выберите модель, " +
+      "которая уверенно отвечает в JSON."
+  );
 }

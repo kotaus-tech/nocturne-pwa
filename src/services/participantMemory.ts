@@ -162,14 +162,14 @@ export function parsePersonalExtraction(raw: string): PersonalExtractionResult |
  * существующего принципа глобальной памяти, но per-character и по грязному
  * флагу, а не по таймеру.
  */
-export async function requestPersonalExtraction(
+export async function requestPersonalExtractionDetailed(
   config: ApiConfig,
   characterName: string,
   fragment: string,
   privateNotes: string[],
   intentionText?: string | null,
   signal?: AbortSignal
-): Promise<PersonalExtractionResult | null> {
+): Promise<{ result: PersonalExtractionResult | null; raw: string }> {
   const systemPrompt = `Ты — психолог, который восстанавливает внутренний мир одного конкретного персонажа ролевой сцены по свежим событиям. Отвечаешь строго в запрошенном JSON-формате.`;
 
   const prompt = buildPersonalExtractionPrompt({
@@ -188,7 +188,30 @@ export async function requestPersonalExtraction(
     { expectJson: true, signal }
   );
 
-  return parsePersonalExtraction(raw);
+  return { result: parsePersonalExtraction(raw), raw };
+}
+
+/**
+ * Обёртка для фоновых вызовов: не разобралось — возвращаем null, вызывающий
+ * сохраняет прежние заметки (лучше пропустить, чем выдумать).
+ */
+export async function requestPersonalExtraction(
+  config: ApiConfig,
+  characterName: string,
+  fragment: string,
+  privateNotes: string[],
+  intentionText?: string | null,
+  signal?: AbortSignal
+): Promise<PersonalExtractionResult | null> {
+  const { result } = await requestPersonalExtractionDetailed(
+    config,
+    characterName,
+    fragment,
+    privateNotes,
+    intentionText,
+    signal
+  );
+  return result;
 }
 
 /**
@@ -227,6 +250,16 @@ ${currentSummary.trim() || "пока пусто"}
 Ответь только обновлённым текстом общей хроники, без пояснений и заголовков.`;
 }
 
+/** Хроника — чистый текст: обёртки размышлений и код-фенсы сюда не нужны. */
+function finalizeChronicleText(raw: string): string {
+  return raw
+    .replace(/<(?:think|thought)>[\s\S]*?<\/(?:think|thought)>/gi, "")
+    .replace(/<(?:think|thought)>[\s\S]*$/gi, "")
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/^["'`\s]+|["'`\s]+$/g, "")
+    .trim();
+}
+
 /** Вызов нейтрального хроникёра. Возвращает готовый текст хроники. */
 export async function requestNeutralChronicle(
   config: ApiConfig,
@@ -245,11 +278,64 @@ export async function requestNeutralChronicle(
     { signal }
   );
 
-  return raw
-    // Хроника — чистый текст: обёртки размышлений и код-фенсы сюда не нужны.
-    .replace(/<(?:think|thought)>[\s\S]*?<\/(?:think|thought)>/gi, "")
-    .replace(/<(?:think|thought)>[\s\S]*$/gi, "")
-    .replace(/```[\s\S]*?```/g, "")
-    .replace(/^["'`\s]+|["'`\s]+$/g, "")
-    .trim();
+  return finalizeChronicleText(raw);
+}
+
+/**
+ * Промпт РУЧНОЙ пересборки общей хроники (кнопка «Актуализировать» в панели
+ * режиссёра).
+ *
+ * Отличие от планового промпта принципиальное. Плановый получает свежий
+ * фрагмент и правило «если ничего нового — верни хронику без изменений»; для
+ * групповой сцены ручная кнопка передавала туда ВСЮ историю, которая уже была
+ * отражена в хронике. Модель честно возвращала текст без изменений — игрок
+ * видел «нажал и ничего не произошло», хотя токены расходовались. Здесь задача
+ * обратная: пересобрать хронику заново по всей истории.
+ */
+export function buildNeutralChronicleRebuildPrompt(params: {
+  history: string;
+  currentSummary: string;
+}): string {
+  const { history, currentSummary } = params;
+
+  return `Ты — беспристрастный хроникёр ролевой сцены. Перед тобой полная история сцены и её текущая
+хроника. Хронику нужно ПЕРЕСОБРАТЬ ЗАНОВО по истории, а не просто подтвердить.
+
+ПОЛНАЯ ИСТОРИЯ СЦЕНЫ:
+${history}
+
+ТЕКУЩАЯ ХРОНИКА (черновик для пересборки):
+${currentSummary.trim() || "пока пусто"}
+
+ПРАВИЛА:
+1. Пиши от третьего лица, нейтрально, как для постороннего читателя, который ничего не знает о сцене.
+2. Фиксируй только объективно наблюдаемое: кто что сказал вслух, кто что сделал, кто пришёл и ушёл,
+   какие факты и договорённости обсуждались. Без домыслов о чужих мыслях.
+3. Пересобери хронику заново по всей истории: сохрани все значимые события, восстанови важные детали,
+   которые были упущены, убери повторы и то, что потеряло актуальность.
+4. Не возвращай прежний текст без изменений, если по истории хронику можно сделать точнее и полнее.
+5. Хроника должна остаться связным сжатым повествованием, а не списком пунктов.
+
+Ответь только обновлённым текстом общей хроники, без пояснений и заголовков.`;
+}
+
+/** Ручная пересборка хроники: вся история на входе, свежий связный текст на выходе. */
+export async function requestNeutralChronicleRebuild(
+  config: ApiConfig,
+  history: string,
+  currentSummary: string,
+  signal?: AbortSignal
+): Promise<string> {
+  const systemPrompt = `Ты — беспристрастный хроникёр ролевой сцены. Пересобираешь общую хронику заново по полной истории, фиксируя только объективно наблюдаемые события от третьего лица.`;
+
+  const prompt = buildNeutralChronicleRebuildPrompt({ history, currentSummary });
+
+  const raw = await callBackgroundLLM(
+    config,
+    systemPrompt,
+    [{ role: "user", content: prompt }],
+    { signal }
+  );
+
+  return finalizeChronicleText(raw);
 }

@@ -17,7 +17,7 @@ const JSON_FORMAT_ERROR =
  * размышления вместо JSON, обрезанный лимитом текст). С полным ответом —
  * 200 символов — причина видна сразу.
  */
-function previewRawAnswer(raw: string, limit = 200): string {
+export function previewRawAnswer(raw: string, limit = 200): string {
   const clean = (raw || "").replace(/\s+/g, " ").trim();
   if (!clean) return "(пустой ответ)";
   return clean.length > limit ? `${clean.slice(0, limit)}…` : clean;
@@ -84,6 +84,12 @@ export interface MemoryRefreshSummary {
   facts: number;
   diaryEntries: number;
   hasSceneEvent: boolean;
+  /**
+   * Где обновлялась память. У одиночного чата — общие «якоря», дневник и
+   * событие сцены; у групповой сцены память личная (заметки персонажа),
+   * поэтому и подпись в интерфейсе другая.
+   */
+  scope?: "solo" | "group";
   /** Обновление не выполнялось (например, слишком мало сообщений). */
   skippedReason?: string;
 }
@@ -91,6 +97,12 @@ export interface MemoryRefreshSummary {
 export interface ChronicleRefreshSummary {
   episodes: number;
   skippedReason?: string;
+}
+
+/** Итог ручного обновления синопсиса: новый текст и признак изменений. */
+export interface SummaryRefreshResult {
+  summary: string;
+  changed: boolean;
 }
 
 /**

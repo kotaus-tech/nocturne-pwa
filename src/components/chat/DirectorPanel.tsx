@@ -41,6 +41,7 @@ import {
 import { useLiveQuery } from "dexie-react-hooks";
 import { Reorder, useDragControls } from "framer-motion";
 import { Modal } from "../common/Modal";
+import type { SummaryRefreshResult } from "../../services/memoryEngine";
 import { Avatar } from "../common/Avatar";
 import { AmbientPlayer } from "./AmbientPlayer";
 import { db } from "../../db";
@@ -74,7 +75,7 @@ interface Props {
   onCompressMemory: () => Promise<
     { facts: number; diaryEntries: number; hasSceneEvent: boolean; skippedReason?: string } | null
   >;
-  onRefreshSummary?: () => Promise<void>;
+  onRefreshSummary?: () => Promise<SummaryRefreshResult | null>;
   onUpdateSummary?: (summary: string) => void | Promise<unknown>;
   onUpdateDim: (dim: number) => void;
   onUpdateBlur: (blur: number) => void;
@@ -421,7 +422,15 @@ export function DirectorPanel({
   const [isSummarySaved, setIsSummarySaved] = useState(false);
   const [savingSummary, setSavingSummary] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
+  /** Итог актуализации: раньше успех был неотличим от «ничего не произошло». */
+  const [summaryNotice, setSummaryNotice] = useState<string | null>(null);
   const [compressing, setCompressing] = useState(false);
+  /**
+   * Последнее значение синопсиса, пришедшее извне (из ветки). Нужно, чтобы
+   * показать результат фоновой хроники и при этом не затирать текст, который
+   * пользователь правит прямо сейчас.
+   */
+  const lastExternalSummaryRef = useRef(session.summary || "");
 
   const [thoughtMode, setThoughtMode] = useState<ThoughtMode>(session.thoughtMode || "censor");
   const [dynamicEvents, setDynamicEvents] = useState(!!session.dynamicEvents);
@@ -806,6 +815,18 @@ export function DirectorPanel({
     else await db.sessions.update(session.id, { realisticPacing: next });
   };
 
+  useEffect(() => {
+    const external = session.summary || "";
+    if (external === lastExternalSummaryRef.current) return;
+
+    const previous = lastExternalSummaryRef.current;
+    lastExternalSummaryRef.current = external;
+
+    // Показываем внешнее обновление (фоновая хроника, другая кнопка), но
+    // оставляем нетронутым текст, который пользователь набирает вручную.
+    setSummaryText((current) => (current === previous ? external : current));
+  }, [session.summary]);
+
   const handleSaveSummaryManual = async () => {
     if (!onUpdateSummary || savingSummaryRef.current) return;
     const revision = summaryRevisionRef.current;
@@ -816,6 +837,7 @@ export function DirectorPanel({
 
     try {
       await onUpdateSummary(summaryText.trim());
+      lastExternalSummaryRef.current = summaryText.trim();
       if (mountedRef.current && revision === summaryRevisionRef.current) {
         setIsSummarySaved(true);
         savedTimerRef.current = setTimeout(() => {
@@ -836,14 +858,34 @@ export function DirectorPanel({
     if (compressing) return;
     setCompressing(true);
     setSummaryError(null);
+    setSummaryNotice(null);
 
     try {
       if (onRefreshSummary) {
-        await onRefreshSummary();
+        const result = await onRefreshSummary();
+
+        if (mountedRef.current && result) {
+          // Сразу показываем свежий текст: раньше поле оставалось со старым
+          // содержимым, и успешная актуализация выглядела как «ничего не
+          // произошло» (а кнопка «Сохранить» могла вернуть старый текст).
+          lastExternalSummaryRef.current = result.summary;
+          setSummaryText(result.summary);
+          setSummaryNotice(
+            result.changed
+              ? `Синопсис обновлён: ${result.summary.length} символов.`
+              : "Модель вернула прежний текст: объективных изменений в истории не нашлось."
+          );
+        }
       } else {
         const result = await onCompressMemory();
         if (mountedRef.current && result?.skippedReason) {
           setSummaryError(result.skippedReason);
+        } else if (mountedRef.current && result) {
+          setSummaryNotice(
+            `Память обновлена: ${result.facts} ${
+              result.facts === 1 ? "заметка" : "заметок"
+            }.`
+          );
         }
       }
     } catch (cause) {
@@ -1856,7 +1898,15 @@ export function DirectorPanel({
             </div>
 
             {summaryError && (
-              <p className="mt-2 text-xs text-danger">{summaryError}</p>
+              <p role="alert" className="mt-2 text-xs leading-relaxed text-danger">
+                {summaryError}
+              </p>
+            )}
+
+            {!summaryError && summaryNotice && (
+              <p role="status" className="mt-2 text-xs leading-relaxed text-content-secondary">
+                {summaryNotice}
+              </p>
             )}
           </section>
 

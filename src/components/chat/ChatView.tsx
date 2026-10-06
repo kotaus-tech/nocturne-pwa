@@ -62,7 +62,9 @@ import { reduceScenePatch } from "../../services/sessionPatch";
 import {
   isExtractionDue,
   requestPersonalExtraction,
+  requestPersonalExtractionDetailed,
   requestNeutralChronicle,
+  requestNeutralChronicleRebuild,
 } from "../../services/participantMemory";
 import {
   buildOffscreenPatch,
@@ -106,8 +108,11 @@ import {
   extractMemoriesAndDiary,
   directCompressStoryToSummary,
   extractFullChronicleFromChat,
+  previewRawAnswer,
+  MemoryExtractionError,
   type ChronicleRefreshSummary,
   type MemoryRefreshSummary,
+  type SummaryRefreshResult,
 } from "../../services/memoryEngine";
 import { renderRoleplayText } from "../../utils/textRenderer";
 import { cn } from "../../utils/cn";
@@ -2242,14 +2247,89 @@ export function ChatView({
     // он не умеет различать общую хронику и личный слой участника. Кнопка
     // ручного обновления в group flow остаётся рабочей, но обновляет только
     // нейтральный summary через тот же безопасный путь.
+    // Групповая сцена: у каждого участника своя ЛИЧНАЯ память (заметки и
+    // намерение), общей остаётся только хроника. Раньше кнопка в этом случае
+    // лишь переадресовывала в панель режиссёра, где обновлялась хроника, а
+    // личные заметки не трогались вовсе — разделы «Память» и «Дневник»
+    // оставались пустыми при любом провайдере. Теперь кнопка делает работу:
+    // извлекает личную память основного персонажа ветки.
     if (isGroupScene) {
-      await handleRefreshSummary();
+      if (allMessages.length < 3) {
+        return {
+          facts: 0,
+          diaryEntries: 0,
+          hasSceneEvent: false,
+          scope: "group",
+          skippedReason:
+            "Пока слишком мало сообщений: память появится после нескольких реплик.",
+        };
+      }
+
+      const freshMessages = await db.messages
+        .where("sessionId")
+        .equals(session.id)
+        .sortBy("timestamp");
+      const nameForMessage = (message: Message) =>
+        resolveSpeakerName(message, character, charactersById, userProfile.name);
+      const fragment = buildPersonalTranscriptSince(
+        freshMessages,
+        character.id,
+        null,
+        nameForMessage,
+        32
+      );
+
+      if (!fragment.trim()) {
+        return {
+          facts: 0,
+          diaryEntries: 0,
+          hasSceneEvent: false,
+          scope: "group",
+          skippedReason: `В этой сцене ещё нет сообщений, которые видит ${character.name}.`,
+        };
+      }
+
+      const memory = getParticipantMemory(session, character.id);
+      const { result, raw } = await requestPersonalExtractionDetailed(
+        apiConfig,
+        character.name,
+        fragment,
+        memory.privateNotes,
+        memory.intention?.text
+      );
+
+      if (!result) {
+        throw new MemoryExtractionError(
+          `Модель не вернула личную память (${character.name}) в формате JSON. ` +
+            `Ответ модели: «${previewRawAnswer(raw)}»`,
+          raw
+        );
+      }
+
+      const extractionMessageId = freshMessages[freshMessages.length - 1]?.id ?? null;
+      const extractedIntention = result.intention
+        ? { ...result.intention, createdAtMessageId: extractionMessageId ?? "" }
+        : null;
+
+      await commitPatch({
+        participantMemoryPatch: {
+          [character.id]: {
+            privateNotes: result.privateNotes,
+            intention: extractedIntention,
+            lastExtractedMessageId: extractionMessageId,
+          },
+        },
+        baseNotesSignature: notesSignature(memory.privateNotes),
+        baseIntentionSignature: intentionSignature(memory.intention),
+        sourceKind: "memory_extraction",
+        sourceSnapshotAt: Date.now(),
+      });
+
       return {
-        facts: 0,
-        diaryEntries: 0,
+        facts: result.privateNotes.length,
+        diaryEntries: result.privateNotes.length > 0 ? 1 : 0,
         hasSceneEvent: false,
-        skippedReason:
-          "В групповой сцене личная память обновляется общей кнопкой в панели режиссёра.",
+        scope: "group",
       };
     }
 
@@ -2258,6 +2338,7 @@ export function ChatView({
         facts: 0,
         diaryEntries: 0,
         hasSceneEvent: false,
+        scope: "solo",
         skippedReason: "Пока слишком мало сообщений: память появится после нескольких реплик.",
       };
     }
@@ -2350,6 +2431,7 @@ export function ChatView({
         facts: updatedFacts.length,
         diaryEntries: 1,
         hasSceneEvent: Boolean(result.summary && result.summary.trim()),
+        scope: "solo",
       };
     } catch (cause) {
       console.error("Memory extract error:", cause);
@@ -2357,8 +2439,8 @@ export function ChatView({
     }
   }
 
-  async function handleRefreshSummary() {
-    if (!session || !apiConfig || !character || !userProfile) return;
+  async function handleRefreshSummary(): Promise<SummaryRefreshResult | null> {
+    if (!session || !apiConfig || !character || !userProfile) return null;
 
     if (isGroupScene) {
       const freshMessages = await db.messages
@@ -2376,9 +2458,13 @@ export function ChatView({
             `${speakerName(message)}: ${message.swipes[message.currentSwipeIndex] ?? ""}`
         )
         .join("\n");
-      if (!transcript.trim()) return;
+      if (!transcript.trim()) return null;
 
-      const freshSummary = await requestNeutralChronicle(
+      // Ручная кнопка: пересобираем хронику заново по всей истории. Плановый
+      // промпт («дополни компактно, а если нового нет — верни без изменений»)
+      // здесь давал ровно «ничего не произошло»: в поле свежих событий попадала
+      // вся история, уже отражённая в хронике.
+      const freshSummary = await requestNeutralChronicleRebuild(
         apiConfig,
         transcript,
         session.summary ?? ""
@@ -2391,12 +2477,16 @@ export function ChatView({
         );
       }
 
+      const previousSummary = (session.summary ?? "").trim();
+      const summaryText = freshSummary.trim();
+
       await commitPatch({
-        summaryPatch: freshSummary.trim(),
+        summaryPatch: summaryText,
         sourceKind: "memory_extraction",
         sourceSnapshotAt: Date.now(),
       });
-      return;
+
+      return { summary: summaryText, changed: summaryText !== previousSummary };
     }
 
     const storyLogText = (session.storyLog || [])
@@ -2421,10 +2511,15 @@ export function ChatView({
         );
       }
 
+      const summaryText = freshSummary.trim();
+      const previousSummary = (session.summary ?? "").trim();
+
       await db.sessions.update(session.id, {
-        summary: freshSummary.trim(),
+        summary: summaryText,
         updatedAt: Date.now(),
       });
+
+      return { summary: summaryText, changed: summaryText !== previousSummary };
     } catch (cause) {
       console.error("Refresh summary error:", cause);
       throw cause;

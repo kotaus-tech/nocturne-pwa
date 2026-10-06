@@ -10,6 +10,12 @@ import {
   directCompressStoryToSummary,
   MemoryExtractionError,
 } from "../src/services/memoryEngine";
+import {
+  buildNeutralChronicleRebuildPrompt,
+  requestNeutralChronicle,
+  requestNeutralChronicleRebuild,
+  requestPersonalExtractionDetailed,
+} from "../src/services/participantMemory";
 import type { ApiConfig } from "../src/types";
 
 /**
@@ -342,6 +348,62 @@ describe("фоновый вызов (память, дневник, хроник�
     await expect(
       callBackgroundLLM(baseConfig, "system", turns, { expectJson: true })
     ).rejects.toThrow(/пустой ответ/i);
+  });
+});
+
+describe("ручная актуализация (панель режиссёра и групповая сцена)", () => {
+  it("промпт пересборки требует собрать хронику заново, а не подтвердить старую", () => {
+    const rebuild = buildNeutralChronicleRebuildPrompt({
+      history: "Игрок: привет\nМира: привет",
+      currentSummary: "Они поздоровались.",
+    });
+
+    expect(rebuild).toContain("ПЕРЕСОБРАТЬ ЗАНОВО");
+    expect(rebuild).toContain("Игрок: привет");
+    expect(rebuild).toContain("Не возвращай прежний текст без изменений");
+    // Плановое правило «ничего не произошло — верни как было» здесь вредно:
+    // именно из-за него ручная кнопка выглядела как «нажал и ничего».
+    expect(rebuild).not.toContain("верни хронику без изменений");
+  });
+
+  it("ручная пересборка отдаёт новый текст хроники", async () => {
+    stubFetch(() =>
+      sseDelta({
+        content: "<thought>прикидываю</thought>Они познакомились в метро и договорились встретиться снова.",
+      })
+    );
+
+    const text = await requestNeutralChronicleRebuild(
+      baseConfig,
+      "Игрок: привет",
+      "Они поздоровались."
+    );
+
+    expect(text).toBe("Они познакомились в метро и договорились встретиться снова.");
+    expect(text).not.toContain("<thought>");
+    expect(calls[0].body.messages[1].content).toContain("ПЕРЕСОБРАТЬ ЗАНОВО");
+  });
+
+  it("плановая хроника по-прежнему просит не выдумывать изменений", async () => {
+    stubFetch(() => sseDelta({ content: "Они поздоровались." }));
+
+    await requestNeutralChronicle(baseConfig, "Игрок: привет", "Они поздоровались.");
+
+    expect(calls[0].body.messages[1].content).toContain("верни хронику без изменений");
+  });
+
+  it("личная память групповой сцены возвращает сырой ответ, если JSON не разобрался", async () => {
+    stubFetch(() => sseDelta({ content: "Мира задумалась о нём." }));
+
+    const { result, raw } = await requestPersonalExtractionDetailed(
+      baseConfig,
+      "Мира",
+      "Игрок: привет",
+      []
+    );
+
+    expect(result).toBeNull();
+    expect(raw).toContain("Мира задумалась");
   });
 });
 

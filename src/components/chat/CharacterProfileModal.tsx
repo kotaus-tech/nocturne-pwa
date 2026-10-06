@@ -183,6 +183,14 @@ export function CharacterProfileModal({
   const diary = session.diary || [];
   const storyLog = session.storyLog || [];
 
+  // Личная память участника групповой сцены. В группе субъективные мысли
+  // хранятся здесь (participantMemory), а не в общих session.diary /
+  // session.extractedFacts — поэтому разделы «Память» и «Дневник» выглядели
+  // пустыми, хотя память собиралась.
+  const personalMemory = session.participantMemory?.[character.id] ?? null;
+  const personalNotes = personalMemory?.privateNotes ?? [];
+  const personalIntention = personalMemory?.intention ?? null;
+
   // Существующая сортировка: закреплённые факты первыми.
   const facts = [...(session.extractedFacts || [])].sort((a, b) => {
     if (Boolean(a.isPinned) === Boolean(b.isPinned)) return 0;
@@ -206,6 +214,14 @@ export function CharacterProfileModal({
         });
       } else if (result.skippedReason) {
         setMemoryFeedback({ kind: "info", text: result.skippedReason });
+      } else if (result.scope === "group") {
+        setMemoryFeedback({
+          kind: "success",
+          text:
+            `Личная память обновлена (${character.name}): ` +
+            `${result.facts} ${plural(result.facts, "заметка", "заметки", "заметок")}. ` +
+            "Общая хроника обновляется кнопкой в панели режиссёра.",
+        });
       } else {
         const parts = [
           `${result.facts} ${plural(result.facts, "якорь", "якоря", "якорей")}`,
@@ -776,11 +792,43 @@ export function CharacterProfileModal({
                   </p>
                 )}
 
+                {personalNotes.length > 0 && (
+                  <section className="mb-5 rounded-2xl border border-accent/20 bg-accent/[0.04] p-4 sm:p-5">
+                    <h5 className="mb-3 inline-flex items-center gap-2 text-sm font-semibold text-accent">
+                      <Brain size={16} aria-hidden="true" />
+                      Личные заметки · {character.name}
+                    </h5>
+
+                    <ul className="space-y-2.5">
+                      {personalNotes.map((note, index) => (
+                        <li
+                          key={`${index}-${note.slice(0, 16)}`}
+                          className="flex gap-2.5 text-sm leading-relaxed text-content-secondary"
+                        >
+                          <span aria-hidden="true" className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-accent/60" />
+                          <span className="min-w-0 [overflow-wrap:anywhere]">{note}</span>
+                        </li>
+                      ))}
+                    </ul>
+
+                    {personalIntention?.text && (
+                      <p className="mt-4 border-t border-white/[0.06] pt-3 text-sm leading-relaxed text-content-muted">
+                        <span className="font-semibold text-content-secondary">Намерение: </span>
+                        {personalIntention.text}
+                      </p>
+                    )}
+                  </section>
+                )}
+
                 {diary.length === 0 ? (
                   <EmptyState
                     icon={Heart}
                     title="В дневнике пока нет записей"
-                    description="Они формируются автоматически каждые 8 сообщений или по кнопке «Записать мысль»."
+                    description={
+                      personalNotes.length > 0
+                        ? "Личные записи персонажа показаны выше — они живут в памяти сцены."
+                        : "Они формируются автоматически каждые 8 сообщений или по кнопке «Записать мысль»."
+                    }
                   />
                 ) : (
                   <div className="space-y-4">
@@ -882,6 +930,34 @@ export function CharacterProfileModal({
                   >
                     Обрабатываем память и дневник…
                   </p>
+                )}
+
+                {personalNotes.length > 0 && (
+                  <section className="mb-5 rounded-2xl border border-accent/20 bg-accent/[0.04] p-4 sm:p-5">
+                    <h5 className="mb-3 inline-flex items-center gap-2 text-sm font-semibold text-accent">
+                      <Brain size={16} aria-hidden="true" />
+                      Личная память · {character.name}
+                    </h5>
+
+                    <ul className="space-y-2.5">
+                      {personalNotes.map((note, index) => (
+                        <li
+                          key={`${index}-${note.slice(0, 16)}`}
+                          className="flex gap-2.5 text-sm leading-relaxed text-content-secondary"
+                        >
+                          <span aria-hidden="true" className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-accent/60" />
+                          <span className="min-w-0 [overflow-wrap:anywhere]">{note}</span>
+                        </li>
+                      ))}
+                    </ul>
+
+                    {personalIntention?.text && (
+                      <p className="mt-4 border-t border-white/[0.06] pt-3 text-sm leading-relaxed text-content-muted">
+                        <span className="font-semibold text-content-secondary">Намерение: </span>
+                        {personalIntention.text}
+                      </p>
+                    )}
+                  </section>
                 )}
 
                 <form

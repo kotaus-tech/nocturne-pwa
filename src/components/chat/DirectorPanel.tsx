@@ -71,7 +71,9 @@ interface Props {
   onClose: () => void;
   session: ChatSession;
   onUpdateNotes: (notes: string) => void;
-  onCompressMemory: () => Promise<void>;
+  onCompressMemory: () => Promise<
+    { facts: number; diaryEntries: number; hasSceneEvent: boolean; skippedReason?: string } | null
+  >;
   onRefreshSummary?: () => Promise<void>;
   onUpdateSummary?: (summary: string) => void | Promise<unknown>;
   onUpdateDim: (dim: number) => void;
@@ -836,8 +838,14 @@ export function DirectorPanel({
     setSummaryError(null);
 
     try {
-      if (onRefreshSummary) await onRefreshSummary();
-      else await onCompressMemory();
+      if (onRefreshSummary) {
+        await onRefreshSummary();
+      } else {
+        const result = await onCompressMemory();
+        if (mountedRef.current && result?.skippedReason) {
+          setSummaryError(result.skippedReason);
+        }
+      }
     } catch (cause) {
       if (mountedRef.current) {
         setSummaryError(cause instanceof Error ? cause.message : "Ошибка актуализации.");

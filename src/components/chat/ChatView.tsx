@@ -106,6 +106,8 @@ import {
   extractMemoriesAndDiary,
   directCompressStoryToSummary,
   extractFullChronicleFromChat,
+  type ChronicleRefreshSummary,
+  type MemoryRefreshSummary,
 } from "../../services/memoryEngine";
 import { renderRoleplayText } from "../../utils/textRenderer";
 import { cn } from "../../utils/cn";
@@ -459,7 +461,7 @@ export function ChatView({
   const lastExtractedMsgCountRef = useRef(0);
   /** Сколько реплик ещё не попало в память — нужно для дозаписи при выходе. */
   const unsavedMessagesRef = useRef(0);
-  const memoryCompressRef = useRef<(() => Promise<void>) | null>(null);
+  const memoryCompressRef = useRef<(() => Promise<MemoryRefreshSummary | null>) | null>(null);
   const lastStatusRef = useRef("");
 
   const isNearBottomRef = useRef(true);
@@ -2231,9 +2233,9 @@ export function ChatView({
     }
   }
 
-  async function compressMemory() {
+  async function compressMemory(): Promise<MemoryRefreshSummary | null> {
     if (!allMessages || !session || !apiConfig || !character || !userProfile) {
-      return;
+      return null;
     }
 
     // Группа больше не отправляет старый субъективный facts/diary extractor:
@@ -2242,10 +2244,23 @@ export function ChatView({
     // нейтральный summary через тот же безопасный путь.
     if (isGroupScene) {
       await handleRefreshSummary();
-      return;
+      return {
+        facts: 0,
+        diaryEntries: 0,
+        hasSceneEvent: false,
+        skippedReason:
+          "В групповой сцене личная память обновляется общей кнопкой в панели режиссёра.",
+      };
     }
 
-    if (allMessages.length < 3) return;
+    if (allMessages.length < 3) {
+      return {
+        facts: 0,
+        diaryEntries: 0,
+        hasSceneEvent: false,
+        skippedReason: "Пока слишком мало сообщений: память появится после нескольких реплик.",
+      };
+    }
 
     const targetMessages =
       allMessages.length > 20 ? allMessages.slice(-20) : allMessages;
@@ -2330,6 +2345,12 @@ export function ChatView({
           type: "status",
         });
       }
+
+      return {
+        facts: updatedFacts.length,
+        diaryEntries: 1,
+        hasSceneEvent: Boolean(result.summary && result.summary.trim()),
+      };
     } catch (cause) {
       console.error("Memory extract error:", cause);
       throw cause;
@@ -2410,9 +2431,9 @@ export function ChatView({
     }
   }
 
-  async function handleRebuildChronicle() {
+  async function handleRebuildChronicle(): Promise<ChronicleRefreshSummary | null> {
     if (!allMessages || !session || !apiConfig || !character || !userProfile) {
-      return;
+      return null;
     }
 
     const sourceMessages = isGroupScene
@@ -2422,7 +2443,9 @@ export function ChatView({
             !isRemoteThreadMessage(message, participants, presentCharacters)
         )
       : allMessages;
-    if (sourceMessages.length < 2) return;
+    if (sourceMessages.length < 2) {
+      return { episodes: 0, skippedReason: "Для хроники нужно хотя бы два сообщения." };
+    }
 
     const transcript = sourceMessages
       .map(
@@ -2466,6 +2489,8 @@ export function ChatView({
         storyLog: newStoryLog,
         updatedAt: Date.now(),
       });
+
+      return { episodes: newStoryLog.length };
     } catch (cause) {
       console.error("Rebuild chronicle error:", cause);
       throw cause;

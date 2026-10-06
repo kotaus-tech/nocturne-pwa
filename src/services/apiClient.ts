@@ -1280,7 +1280,9 @@ function isRetryableRequestError(cause: unknown): boolean {
   if (isAbortError(cause)) return false;
 
   const status = cause instanceof LLMRequestError ? cause.status : undefined;
-  if (status === 401 || status === 403 || status === 429) return false;
+  // 401/403 — ключ, 402 — исчерпан лимит (у polza.ai — дневной), 429 — частота.
+  // Повторять такое бессмысленно и дорого: ответ будет тем же.
+  if (status === 401 || status === 402 || status === 403 || status === 429) return false;
 
   return true;
 }

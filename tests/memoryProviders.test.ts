@@ -5,7 +5,11 @@ import {
   readJsonResponse,
   type ChatTurn,
 } from "../src/services/apiClient";
-import { extractMemoriesAndDiary, directCompressStoryToSummary } from "../src/services/memoryEngine";
+import {
+  extractMemoriesAndDiary,
+  directCompressStoryToSummary,
+  MemoryExtractionError,
+} from "../src/services/memoryEngine";
 import type { ApiConfig } from "../src/types";
 
 /**
@@ -407,6 +411,38 @@ describe("память и синопсис на агрегаторе", () => {
     expect(calls[1].body.messages.at(-1).content).toMatch(/СТРОГО одним JSON-объектом/);
     expect(result.mood).toBe("Тепло");
     expect(result.activeFacts).toHaveLength(1);
+  });
+
+  it("повторяет запрос, если JSON пришёл, но не по схеме памяти", async () => {
+    stubFetch(({ index }) =>
+      index === 0
+        ? sseDelta({ content: '{"analysis": "диалог про прогулку"}' })
+        : sseDelta({
+            content: JSON.stringify({
+              diaryThought: "Он снова рядом.",
+              mood: "Тепло",
+              activeFacts: [{ keys: ["прогулка"], content: "Гуляли у реки" }],
+              summary: "Гуляли у реки.",
+            }),
+          })
+    );
+
+    const result = await extractMemoriesAndDiary(baseConfig, "Мира", "Игрок", "Игрок: привет");
+
+    expect(calls).toHaveLength(2);
+    expect(result.mood).toBe("Тепло");
+    expect(result.activeFacts).toHaveLength(1);
+  });
+
+  it("несёт сырой ответ модели в ошибке (для показа в интерфейсе)", async () => {
+    stubFetch(() => sseDelta({ content: "Извини, сейчас не могу помочь." }));
+
+    const failure = await extractMemoriesAndDiary(baseConfig, "Мира", "Игрок", "Игрок: привет").catch(
+      (cause) => cause
+    );
+
+    expect(failure).toBeInstanceOf(MemoryExtractionError);
+    expect((failure as MemoryExtractionError).rawAnswer).toContain("не могу помочь");
   });
 
   it("в ошибке формата видно, что именно ответила модель", async () => {

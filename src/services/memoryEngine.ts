@@ -24,8 +24,11 @@ function previewRawAnswer(raw: string, limit = 200): string {
 }
 
 /** Единый текст ошибки формата: причина + то, что реально прислала модель. */
-function jsonFormatError(raw: string): Error {
-  return new Error(`${JSON_FORMAT_ERROR} Ответ модели: «${previewRawAnswer(raw)}»`);
+function jsonFormatError(raw: string): MemoryExtractionError {
+  return new MemoryExtractionError(
+    `${JSON_FORMAT_ERROR} Ответ модели: «${previewRawAnswer(raw)}»`,
+    raw
+  );
 }
 
 /**
@@ -38,21 +41,71 @@ const JSON_ONLY_REMINDER =
   "Твой ответ не был JSON. Ответь СТРОГО одним JSON-объектом без пояснений, " +
   "без markdown и без текста до или после — начни символом { и закончи символом }.";
 
+function looksLikeExpectedJson(raw: string, requiredKeys: string[]): boolean {
+  if (!raw.includes("{")) return false;
+
+  try {
+    const parsed = safeParseJson(raw);
+    if (!parsed || typeof parsed !== "object") return false;
+    return requiredKeys.some((key) => parsed[key] !== undefined);
+  } catch {
+    return false;
+  }
+}
+
 async function callBackgroundJson(
   apiConfig: ApiConfig,
   systemPrompt: string,
-  turns: ChatTurn[]
+  turns: ChatTurn[],
+  requiredKeys: string[]
 ): Promise<string> {
   const raw = await callBackgroundLLM(apiConfig, systemPrompt, turns, { expectJson: true });
-  if (raw.includes("{")) return raw;
+  if (looksLikeExpectedJson(raw, requiredKeys)) return raw;
 
-  console.warn("Memory answer had no JSON, retrying once:", previewRawAnswer(raw));
-  return callBackgroundLLM(
+  // Модель ответила прозой (или JSON не по схеме): один короткий повтор с
+  // жёстким требованием формата дешевле, чем пустой раздел памяти.
+  console.warn("Memory answer was not the expected JSON, retrying once:", previewRawAnswer(raw));
+  const retry = await callBackgroundLLM(
     apiConfig,
     systemPrompt,
     [...turns, { role: "user", content: JSON_ONLY_REMINDER }],
     { expectJson: true }
   );
+
+  return retry.trim() ? retry : raw;
+}
+
+/**
+ * Итог ручного обновления памяти: сколько якорей записано, появилась ли запись
+ * дневника и событие сцены. Раньше обработчик ничего не возвращал, и интерфейс
+ * не мог отличить «всё обновилось» от «ничего не произошло».
+ */
+export interface MemoryRefreshSummary {
+  facts: number;
+  diaryEntries: number;
+  hasSceneEvent: boolean;
+  /** Обновление не выполнялось (например, слишком мало сообщений). */
+  skippedReason?: string;
+}
+
+export interface ChronicleRefreshSummary {
+  episodes: number;
+  skippedReason?: string;
+}
+
+/**
+ * Ошибка обновления памяти с сырым ответом модели. Сырой ответ нужен, чтобы
+ * игрок (а не только консоль) видел, что именно прислала модель: прозу вместо
+ * JSON, обрезанный лимитом текст или пустоту.
+ */
+export class MemoryExtractionError extends Error {
+  readonly rawAnswer: string;
+
+  constructor(message: string, rawAnswer = "") {
+    super(message);
+    this.name = "MemoryExtractionError";
+    this.rawAnswer = rawAnswer;
+  }
 }
 
 export interface MemoryFact {
@@ -226,7 +279,14 @@ ${transcript}
   // Служебный вызов идёт тем же каналом, что и чат (см. callBackgroundLLM):
   // на ru-openrouter.ru и polza.ai обычный «буферизованный» запрос обрывался,
   // а «думающие» модели уводили готовый JSON в поле размышлений.
-  const raw = await callBackgroundJson(apiConfig, systemPrompt, turns);
+  const raw = await callBackgroundJson(apiConfig, systemPrompt, turns, [
+    "diaryThought",
+    "mood",
+    "activeFacts",
+    "newFacts",
+    "summary",
+    "storyEvent",
+  ]);
 
   try {
     const parsed = safeParseJson(raw);
@@ -310,10 +370,11 @@ ${rawStoryText}
   const cleaned = cleanModelOutput(raw).replace(/^["'`]+|["'`]+$/g, "").trim();
 
   if (!cleaned) {
-    throw new Error(
+    throw new MemoryExtractionError(
       "Модель не прислала текст синопсиса: ответ пришёл пустым или только с размышлениями. " +
         "Повторите запрос, увеличьте лимит токенов в настройках или выберите модель без " +
-        `размышлений. Ответ модели: «${previewRawAnswer(raw)}»`
+        `размышлений. Ответ модели: «${previewRawAnswer(raw)}»`,
+      raw
     );
   }
 
@@ -365,7 +426,7 @@ ${transcript}
   // Служебный вызов идёт тем же каналом, что и чат (см. callBackgroundLLM):
   // на ru-openrouter.ru и polza.ai обычный «буферизованный» запрос обрывался,
   // а «думающие» модели уводили готовый JSON в поле размышлений.
-  const raw = await callBackgroundJson(apiConfig, systemPrompt, turns);
+  const raw = await callBackgroundJson(apiConfig, systemPrompt, turns, ["episodes"]);
 
   try {
     const parsed = safeParseJson(raw);

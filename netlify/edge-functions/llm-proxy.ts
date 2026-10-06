@@ -22,7 +22,7 @@ export default async (request: Request) => {
 
   // Небольшой allow-list на всякий случай, чтобы прокси нельзя было
   // использовать как анонимный туннель куда угодно.
-  const allowedHosts = ["api.ru-openrouter.ru"];
+  const allowedHosts = ["api.ru-openrouter.ru", "polza.ai"];
   if (!allowedHosts.includes(targetUrl.hostname)) {
     return new Response(JSON.stringify({ error: "Host not allowed" }), { status: 403 });
   }

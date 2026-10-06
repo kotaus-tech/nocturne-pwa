@@ -11,6 +11,50 @@ const JSON_FORMAT_ERROR =
   "Модель ответила не в формате JSON, поэтому память и дневник не обновились. " +
   "Повторите запрос или выберите модель, которая уверенно отвечает в JSON.";
 
+/**
+ * Короткий фрагмент ответа модели для сообщения об ошибке. Без него игрок
+ * видел только «не получилось» и не мог понять причину (пустой ответ,
+ * размышления вместо JSON, обрезанный лимитом текст). С полным ответом —
+ * 200 символов — причина видна сразу.
+ */
+function previewRawAnswer(raw: string, limit = 200): string {
+  const clean = (raw || "").replace(/\s+/g, " ").trim();
+  if (!clean) return "(пустой ответ)";
+  return clean.length > limit ? `${clean.slice(0, limit)}…` : clean;
+}
+
+/** Единый текст ошибки формата: причина + то, что реально прислала модель. */
+function jsonFormatError(raw: string): Error {
+  return new Error(`${JSON_FORMAT_ERROR} Ответ модели: «${previewRawAnswer(raw)}»`);
+}
+
+/**
+ * Ответ без единой фигурной скобки — почти всегда «размышления вместо ответа»
+ * у думающих моделей: монолог есть, JSON нет. Один короткий повтор с жёстким
+ * требованием формата дешевле, чем пустой раздел памяти, но повторов больше
+ * одного не делаем: если модель не умеет JSON, это выяснится сразу.
+ */
+const JSON_ONLY_REMINDER =
+  "Твой ответ не был JSON. Ответь СТРОГО одним JSON-объектом без пояснений, " +
+  "без markdown и без текста до или после — начни символом { и закончи символом }.";
+
+async function callBackgroundJson(
+  apiConfig: ApiConfig,
+  systemPrompt: string,
+  turns: ChatTurn[]
+): Promise<string> {
+  const raw = await callBackgroundLLM(apiConfig, systemPrompt, turns, { expectJson: true });
+  if (raw.includes("{")) return raw;
+
+  console.warn("Memory answer had no JSON, retrying once:", previewRawAnswer(raw));
+  return callBackgroundLLM(
+    apiConfig,
+    systemPrompt,
+    [...turns, { role: "user", content: JSON_ONLY_REMINDER }],
+    { expectJson: true }
+  );
+}
+
 export interface MemoryFact {
   keys: string[];
   content: string;
@@ -182,7 +226,7 @@ ${transcript}
   // Служебный вызов идёт тем же каналом, что и чат (см. callBackgroundLLM):
   // на ru-openrouter.ru и polza.ai обычный «буферизованный» запрос обрывался,
   // а «думающие» модели уводили готовый JSON в поле размышлений.
-  const raw = await callBackgroundLLM(apiConfig, systemPrompt, turns, { expectJson: true });
+  const raw = await callBackgroundJson(apiConfig, systemPrompt, turns);
 
   try {
     const parsed = safeParseJson(raw);
@@ -218,8 +262,8 @@ ${transcript}
       summary: finalSummary,
     };
   } catch (err) {
-    console.error("Safe JSON parse error in extractMemoriesAndDiary:", err);
-    throw new Error(JSON_FORMAT_ERROR);
+    console.error("Safe JSON parse error in extractMemoriesAndDiary:", err, "\nRAW ANSWER:", raw);
+    throw jsonFormatError(raw);
   }
 }
 
@@ -267,8 +311,9 @@ ${rawStoryText}
 
   if (!cleaned) {
     throw new Error(
-      "Модель не прислала текст синопсиса (ответ пришёл пустым или только с размышлениями). " +
-        "Повторите запрос или увеличьте лимит токенов в настройках."
+      "Модель не прислала текст синопсиса: ответ пришёл пустым или только с размышлениями. " +
+        "Повторите запрос, увеличьте лимит токенов в настройках или выберите модель без " +
+        `размышлений. Ответ модели: «${previewRawAnswer(raw)}»`
     );
   }
 
@@ -320,7 +365,7 @@ ${transcript}
   // Служебный вызов идёт тем же каналом, что и чат (см. callBackgroundLLM):
   // на ru-openrouter.ru и polza.ai обычный «буферизованный» запрос обрывался,
   // а «думающие» модели уводили готовый JSON в поле размышлений.
-  const raw = await callBackgroundLLM(apiConfig, systemPrompt, turns, { expectJson: true });
+  const raw = await callBackgroundJson(apiConfig, systemPrompt, turns);
 
   try {
     const parsed = safeParseJson(raw);
@@ -350,8 +395,5 @@ ${transcript}
     if (lines.length > 0) return lines;
   }
 
-  throw new Error(
-    "Модель не вернула ни одного эпизода для хроники. Повторите запрос или выберите модель, " +
-      "которая уверенно отвечает в JSON."
-  );
+  throw jsonFormatError(raw);
 }

@@ -99,6 +99,21 @@ export function isNativeDeepSeekEndpoint(config: ApiConfig): boolean {
   return sanitizeBaseUrl(config.baseUrl).toLowerCase().includes("deepseek");
 }
 
+/**
+ * polza.ai: поле `reasoning` устроено иначе (effort), а `{enabled: false}` там
+ * не принимается и приводит к 400 с нулевыми токенами — то есть к запросу,
+ * который вообще не доходит до модели. Уже сохранённые настройки менять не
+ * нужно: просто не отправляем это поле такому провайдеру.
+ */
+function isPolzaEndpoint(config: ApiConfig): boolean {
+  return sanitizeBaseUrl(config.baseUrl).toLowerCase().includes("polza");
+}
+
+/** Можно ли просить провайдера не тратить бюджет на размышления. */
+function canToggleReasoningOff(config: ApiConfig): boolean {
+  return !isNativeDeepSeekEndpoint(config) && !isPolzaEndpoint(config);
+}
+
 export function isDeepSeekEndpoint(config: ApiConfig): boolean {
   const base = sanitizeBaseUrl(config.baseUrl).toLowerCase();
   const model = (config.model || "").toLowerCase();
@@ -934,7 +949,7 @@ async function callOpenAICompatibleStream(
     bodyPayload.response_format = { type: "json_object" };
   }
 
-  if (extras.reasoningOff && !isNativeDeepSeekEndpoint(config)) {
+  if (extras.reasoningOff && canToggleReasoningOff(config)) {
     bodyPayload.reasoning = { enabled: false };
   }
 
@@ -978,6 +993,7 @@ async function callOpenAICompatibleStream(
   const decoder = new TextDecoder("utf-8");
   let fullOutput = "";
   let reasoningAccumulator = "";
+  let providerErrorText = "";
   let buffer = "";
 
   while (true) {
@@ -996,6 +1012,12 @@ async function callOpenAICompatibleStream(
         if (dataStr === "[DONE]") break;
         try {
           const parsed = JSON.parse(dataStr);
+
+          if (!providerErrorText) {
+            const providerError = extractProviderError(parsed);
+            if (providerError) providerErrorText = providerError;
+          }
+
           const delta = parsed?.choices?.[0]?.delta;
 
           // Канал размышлений называется по-разному: reasoning_content,
@@ -1021,6 +1043,12 @@ async function callOpenAICompatibleStream(
         } catch {}
       }
     }
+  }
+
+  if (!fullOutput.trim() && !reasoningAccumulator.trim() && providerErrorText) {
+    // Ошибка пришла прямо в потоке, текста нет — показываем причину, а не
+    // «модель промолчала».
+    throw new LLMRequestError(providerErrorText);
   }
 
   if (!fullOutput.trim() && reasoningAccumulator.trim()) {
@@ -1201,6 +1229,41 @@ export const EMPTY_ANSWER_MESSAGE =
   "Модель вернула пустой ответ: израсходовала лимит токенов на размышления или промолчала. " +
   "Повторите запрос, увеличьте лимит токенов в настройках или выберите модель без размышлений.";
 
+/**
+ * Провайдер может прислать ошибку внутри успешного ответа (HTTP 200): так
+ * делают OpenRouter и его клоны, отдавая `choices[0].error` +
+ * `finish_reason: "error"`, а отказ модели по фильтрам — полем
+ * `message.refusal`. Раньше такой ответ выглядел как «модель промолчала»:
+ * текст пустой, причина неизвестна. Теперь причину видно.
+ */
+function extractProviderError(data: any): string | null {
+  if (!data || typeof data !== "object") return null;
+
+  const choice = Array.isArray(data.choices) ? data.choices[0] : undefined;
+  const candidates = [
+    data.error,
+    choice?.error,
+    choice?.message?.error,
+    choice?.message?.refusal,
+    choice?.refusal,
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+    if (typeof candidate === "object") {
+      const message = candidate.message ?? candidate.detail ?? candidate.reason;
+      if (typeof message === "string" && message.trim()) return message.trim();
+    }
+  }
+
+  if (choice?.finish_reason === "error") {
+    return "Провайдер вернул ошибку в ответе (finish_reason: error).";
+  }
+
+  return null;
+}
+
 /** Провайдер отклонил дополнительные поля запроса — их нужно убрать и повторить. */
 function isParameterRejection(cause: unknown): boolean {
   const status = cause instanceof LLMRequestError ? cause.status : undefined;
@@ -1253,30 +1316,36 @@ export async function callBackgroundLLM(
   const supportsStreaming =
     config.streamEnabled !== false && config.localStreamEnabled !== false;
 
-  const fullExtras: ChatRequestExtras = {
-    jsonMode: expectJson,
-    reasoningOff: true,
-    expectJson,
-    withoutThoughtPrefix: true,
-  };
-  const plainExtras: ChatRequestExtras = { expectJson, withoutThoughtPrefix: true };
+  const base: ChatRequestExtras = { expectJson, withoutThoughtPrefix: true };
+
+  // Лестница дополнительных полей. Провайдеры по-разному относятся к
+  // `response_format` и `reasoning`, и заранее это не угадать: кто-то молча
+  // игнорирует, кто-то отвечает 400. Поэтому снимаем поля ПО ОДНОМУ, а не всё
+  // сразу: JSON-режим заметно повышает шанс получить разборный ответ, и
+  // расстаёмся с ним последним.
+  const extrasVariants: ChatRequestExtras[] = expectJson
+    ? [
+        { ...base, jsonMode: true, reasoningOff: true },
+        { ...base, jsonMode: true },
+        base,
+      ]
+    : [{ ...base, reasoningOff: true }, base];
 
   // Первый канал — стриминг (как чат: он работает на всех этих провайдерах),
   // второй — обычный запрос (для тех, кто SSE не умеет). Внутри канала сначала
   // пробуем дополнительные поля, затем — без них.
   const channels = supportsStreaming ? [true, false] : [false, true];
-  const MAX_ATTEMPTS = 4;
+  const MAX_ATTEMPTS = 6;
 
   let channelIndex = 0;
-  let extrasVariant = 0;
-  let parameterRejected = false;
+  let variantIndex = 0;
   let lastError: unknown = null;
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS && channelIndex < channels.length; attempt += 1) {
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 
     const stream = channels[channelIndex];
-    const extras = extrasVariant === 0 ? fullExtras : plainExtras;
+    const extras = extrasVariants[Math.min(variantIndex, extrasVariants.length - 1)];
 
     try {
       const text = await callLLM(
@@ -1300,15 +1369,16 @@ export async function callBackgroundLLM(
       lastError = cause;
       if (!isRetryableRequestError(cause)) throw cause;
 
-      if (isParameterRejection(cause) && extrasVariant === 0) {
-        // Провайдер не знает response_format/reasoning — повторяем без них.
-        parameterRejected = true;
-        extrasVariant = 1;
+      if (isParameterRejection(cause) && variantIndex < extrasVariants.length - 1) {
+        // Провайдер не знает одно из полей — снимаем его и повторяем на том же
+        // канале: стриминг и JSON-режим при этом сохраняются.
+        variantIndex += 1;
         continue;
       }
 
+      // Канал не подошёл (например, провайдер не умеет SSE): другой транспорт,
+      // но с уже понятным набором полей.
       channelIndex += 1;
-      extrasVariant = parameterRejected ? 1 : 0;
     }
   }
 
@@ -1380,7 +1450,7 @@ async function callOpenAICompatible(
       bodyPayload.response_format = { type: "json_object" };
     }
 
-    if (extras.reasoningOff && !isNativeDeepSeekEndpoint(config)) {
+    if (extras.reasoningOff && canToggleReasoningOff(config)) {
       bodyPayload.reasoning = { enabled: false };
     }
   }
@@ -1422,6 +1492,14 @@ async function callOpenAICompatible(
   const data = await readJsonResponse(res);
   const extracted = extractResponseText(data, { preferJson: Boolean(extras.expectJson) });
   let content = extracted.text;
+
+  // Провайдер ответил 200, но внутри — ошибка (OpenRouter-семейство отдаёт
+  // `choices[0].error` с finish_reason: "error"). Без этой проверки причина
+  // терялась, и разделы памяти просто оставались пустыми.
+  if (!content.trim()) {
+    const providerError = extractProviderError(data);
+    if (providerError) throw new LLMRequestError(providerError);
+  }
 
   // Показываем «мысли» модели в чате, но не подменяем ими сам ответ.
   if (

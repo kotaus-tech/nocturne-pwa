@@ -197,7 +197,7 @@ describe("ответ потоком на обычный запрос", () => {
 });
 
 describe("фоновый вызов (память, дневник, хроника, синопсис)", () => {
-  it("идёт стриминговым каналом и просит JSON без размышлений", async () => {
+  it("идёт стриминговым каналом и просит JSON, не навязывая polza.ai чужих полей", async () => {
     stubFetch(() => sseDelta({ content: '{"mood":"тепло"}' }));
 
     const text = await callBackgroundLLM(baseConfig, "system", turns, { expectJson: true });
@@ -206,6 +206,21 @@ describe("фоновый вызов (память, дневник, хроник�
     expect(calls).toHaveLength(1);
     expect(calls[0].body.stream).toBe(true);
     expect(calls[0].body.response_format).toEqual({ type: "json_object" });
+    // polza.ai принимает `reasoning` в другом виде, а `{enabled:false}` отбивает
+    // ошибкой 400 с нулевыми токенами — то есть запрос не доходит до модели.
+    expect(calls[0].body.reasoning).toBeUndefined();
+  });
+
+  it("просит отключить размышления у провайдера, который это понимает (OpenRouter)", async () => {
+    const openRouterConfig: ApiConfig = {
+      ...baseConfig,
+      baseUrl: "https://openrouter.ai/api/v1",
+    };
+
+    stubFetch(() => sseDelta({ content: '{"mood":"тепло"}' }));
+
+    await callBackgroundLLM(openRouterConfig, "system", turns, { expectJson: true });
+
     expect(calls[0].body.reasoning).toEqual({ enabled: false });
   });
 
@@ -222,7 +237,7 @@ describe("фоновый вызов (память, дневник, хроник�
     expect(text).toContain("Он вернулся");
   });
 
-  it("повторяет запрос без дополнительных полей, если провайдер их не знает", async () => {
+  it("снимает дополнительные поля по одному, а не все сразу", async () => {
     stubFetch(({ body }) =>
       body.response_format
         ? jsonResponse({ error: { message: "Unsupported parameter: response_format" } }, 400)
@@ -232,10 +247,50 @@ describe("фоновый вызов (память, дневник, хроник�
     const text = await callBackgroundLLM(baseConfig, "system", turns, { expectJson: true });
 
     expect(text).toBe('{"mood":"спокойствие"}');
+    expect(calls).toHaveLength(3);
+    // Вторая попытка продолжает идти стримом: снимаем только виновника, а
+    // JSON-режим (он повышает шанс разборного ответа) держим до последнего.
+    expect(calls[1].body.stream).toBe(true);
+    expect(calls[1].body.response_format).toEqual({ type: "json_object" });
+    expect(calls[2].body.response_format).toBeUndefined();
+    expect(calls[2].body.reasoning).toBeUndefined();
+    expect(calls[2].body.stream).toBe(true);
+  });
+
+  it("при отказе от reasoning сохраняет JSON-режим и стрим", async () => {
+    const openRouterConfig: ApiConfig = {
+      ...baseConfig,
+      baseUrl: "https://openrouter.ai/api/v1",
+    };
+
+    stubFetch(({ body }) =>
+      body.reasoning
+        ? jsonResponse({ error: { message: "Unsupported parameter: reasoning" } }, 400)
+        : sseDelta({ content: '{"mood":"ровно"}' })
+    );
+
+    const text = await callBackgroundLLM(openRouterConfig, "system", turns, { expectJson: true });
+
+    expect(text).toBe('{"mood":"ровно"}');
     expect(calls).toHaveLength(2);
-    expect(calls[0].body.response_format).toBeDefined();
-    expect(calls[1].body.response_format).toBeUndefined();
     expect(calls[1].body.reasoning).toBeUndefined();
+    expect(calls[1].body.response_format).toEqual({ type: "json_object" });
+    expect(calls[1].body.stream).toBe(true);
+  });
+
+  it("показывает ошибку, которую провайдер прислал внутри ответа 200", async () => {
+    stubFetch(() =>
+      sse([
+        JSON.stringify({
+          error: { message: "Provider returned error: upstream is overloaded" },
+          choices: [{ finish_reason: "error", delta: {} }],
+        }),
+      ])
+    );
+
+    await expect(
+      callBackgroundLLM(baseConfig, "system", turns, { expectJson: true })
+    ).rejects.toThrow(/upstream is overloaded/);
   });
 
   it("уходит на обычный запрос, если провайдер не умеет SSE", async () => {
@@ -330,6 +385,37 @@ describe("память и синопсис на агрегаторе", () => {
     expect(result.mood).toBe("Тепло");
     expect(result.activeFacts).toHaveLength(1);
     expect(result.summary).toContain("гуляли");
+  });
+
+  it("повторяет запрос, если модель ответила монологом без JSON", async () => {
+    stubFetch(({ index }) =>
+      index === 0
+        ? sseDelta({ content: "Сейчас подумаю... видимо, стоит записать, что они гуляли." })
+        : sseDelta({
+            content: JSON.stringify({
+              diaryThought: "Он снова рядом.",
+              mood: "Тепло",
+              activeFacts: [{ keys: ["прогулка"], content: "Гуляли у реки" }],
+              summary: "Гуляли у реки.",
+            }),
+          })
+    );
+
+    const result = await extractMemoriesAndDiary(baseConfig, "Мира", "Игрок", "Игрок: привет");
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1].body.messages.at(-1).content).toMatch(/СТРОГО одним JSON-объектом/);
+    expect(result.mood).toBe("Тепло");
+    expect(result.activeFacts).toHaveLength(1);
+  });
+
+  it("в ошибке формата видно, что именно ответила модель", async () => {
+    stubFetch(() => sseDelta({ content: "Извини, сейчас не могу помочь." }));
+    // повтор на монолог тоже вернёт монолог — сработает защита от тишины
+
+    await expect(
+      extractMemoriesAndDiary(baseConfig, "Мира", "Игрок", "Игрок: привет")
+    ).rejects.toThrow(/не в формате JSON.*Ответ модели/s);
   });
 
   it("синопсис объясняет пустой ответ вместо тихого «ничего не произошло»", async () => {

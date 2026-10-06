@@ -14,7 +14,7 @@ const __dirname = path.dirname(__filename);
  * edge-функции `netlify/edge-functions/llm-proxy.ts` — меняться должен вместе
  * с ним.
  */
-const PROXY_ALLOWED_HOSTS = ["api.ru-openrouter.ru"];
+const PROXY_ALLOWED_HOSTS = ["api.ru-openrouter.ru", "polza.ai"];
 
 const PROXY_PATH = "/api/llm-proxy";
 

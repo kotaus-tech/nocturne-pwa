@@ -3,6 +3,8 @@
 [build]
   command = "npm run build"
   publish = "dist"
+  # Явно указываем каталог, чтобы Edge Function не потерялась при branch deploy.
+  edge_functions = "netlify/edge-functions"
 
 [build.environment]
   # Vite 7 требует Node 20+, в CI используется 22 — держим версии одинаковыми.

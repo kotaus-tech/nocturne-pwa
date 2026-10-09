@@ -11,31 +11,41 @@ import { useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { Modal } from "../common/Modal";
 import { Avatar } from "../common/Avatar";
-import type { RelationshipStats } from "../../types";
+import type { RelationshipDelta, RelationshipStats } from "../../types";
+import { cn } from "../../utils/cn";
 
 interface StatsParticipant {
   id: string;
   name: string;
   avatarUrl?: string;
   stats: RelationshipStats;
+  /** Сдвиг шкал за последний ответ этого участника. */
+  delta?: RelationshipDelta;
 }
 
 interface StatsPanelProps {
   open: boolean;
   onClose: () => void;
   stats: RelationshipStats;
+  /** Сдвиг шкал за последний ответ (одиночная ветка). */
+  delta?: RelationshipDelta;
   /** Групповая сцена: шкалы отношений с каждым участником. */
   participants?: StatsParticipant[];
   activeParticipantId?: string;
 }
 
+/** Числовые шкалы отношений, которые показывает панель. */
+type StatKey = "trust" | "affection" | "closeness" | "tension" | "conflict";
+
 interface StatConfig {
-  key: keyof RelationshipStats;
+  key: StatKey;
   label: string;
   icon: typeof Shield;
   color: string;
   glow: string;
   description: string;
+  /** Рост шкалы — хорошая новость: доверие растёт, а конфликт — нет. */
+  upIsGood: boolean;
 }
 
 const STAT_CONFIGS: StatConfig[] = [
@@ -46,6 +56,7 @@ const STAT_CONFIGS: StatConfig[] = [
     color: "var(--relationship-trust)",
     glow: "rgba(56, 189, 248, 0.35)",
     description: "Насколько свободно персонаж готов вам открываться.",
+    upIsGood: true,
   },
   {
     key: "affection",
@@ -54,6 +65,7 @@ const STAT_CONFIGS: StatConfig[] = [
     color: "var(--relationship-affection)",
     glow: "rgba(244, 114, 182, 0.35)",
     description: "Теплота и интерес, возникшие между вами.",
+    upIsGood: true,
   },
   {
     key: "closeness",
@@ -62,6 +74,7 @@ const STAT_CONFIGS: StatConfig[] = [
     color: "var(--relationship-closeness)",
     glow: "rgba(167, 139, 250, 0.35)",
     description: "Общий опыт и ощущение взаимного понимания.",
+    upIsGood: true,
   },
   {
     key: "tension",
@@ -70,6 +83,7 @@ const STAT_CONFIGS: StatConfig[] = [
     color: "var(--relationship-tension)",
     glow: "rgba(251, 191, 36, 0.35)",
     description: "Неопределённость и эмоциональная интенсивность сцены.",
+    upIsGood: false,
   },
   {
     key: "conflict",
@@ -78,13 +92,45 @@ const STAT_CONFIGS: StatConfig[] = [
     color: "var(--relationship-conflict)",
     glow: "rgba(248, 113, 113, 0.35)",
     description: "Противоречия и нерешённые разногласия.",
+    upIsGood: false,
   },
 ];
+
+/** Бейдж сдвига шкалы за последний ответ: зелёный — к лучшему, красный — к худшему. */
+function DeltaBadge({ value, upIsGood }: { value: number; upIsGood: boolean }) {
+  if (value === 0) return null;
+
+  const favorable = value > 0 === upIsGood;
+
+  return (
+    <span
+      title="Изменение за последний ответ"
+      className={cn(
+        "ml-1.5 inline-flex items-center rounded-md border px-1.5 py-px text-[10px] font-bold tabular-nums leading-4",
+        favorable
+          ? "border-success/30 bg-success/10 text-success"
+          : "border-danger/30 bg-danger/10 text-danger"
+      )}
+    >
+      {value > 0 ? `+${value}` : `−${Math.abs(value)}`}
+    </span>
+  );
+}
+
+/** Есть ли в дельте хоть один ненулевой сдвиг. */
+function hasVisibleDelta(delta?: RelationshipDelta): boolean {
+  if (!delta) return false;
+
+  return (
+    ["trust", "affection", "closeness", "tension", "conflict", "attraction"] as const
+  ).some((key) => typeof delta[key] === "number" && delta[key] !== 0);
+}
 
 export function StatsPanel({
   open,
   onClose,
   stats,
+  delta,
   participants,
   activeParticipantId,
 }: StatsPanelProps) {
@@ -97,6 +143,7 @@ export function StatsPanel({
     roster?.find((item) => item.id === activeParticipantId) ||
     roster?.[0];
   const shownStats = selected ? selected.stats : stats;
+  const shownDelta = selected ? selected.delta : delta;
   const customStats = Object.entries(shownStats.customStats ?? {});
 
   return (
@@ -161,6 +208,12 @@ export function StatsPanel({
           </div>
         </div>
 
+        {hasVisibleDelta(shownDelta) && (
+          <p className="-mt-1.5 text-[10px] leading-tight text-content-muted">
+            Значки у чисел — насколько шкалы сдвинулись за последний ответ
+          </p>
+        )}
+
         {/* Список всех 5 шкал отношений */}
         <div className="space-y-3.5">
           {STAT_CONFIGS.map((cfg, index) => {
@@ -168,6 +221,7 @@ export function StatsPanel({
             const value = typeof rawValue === "number" ? rawValue : 0;
             const percentage = Math.min(100, Math.max(0, value));
             const Icon = cfg.icon;
+            const deltaValue = shownDelta?.[cfg.key];
 
             return (
               <div key={cfg.key} className="group min-w-0 space-y-1">
@@ -184,13 +238,16 @@ export function StatsPanel({
                     </span>
                   </div>
 
-                  <div className="text-xs sm:text-sm tabular-nums">
+                  <div className="flex items-center text-xs sm:text-sm tabular-nums">
                     <span className="font-bold" style={{ color: cfg.color }}>
                       {value}
                     </span>
                     <span className="ml-1 text-[11px] text-content-muted">
                       / 100
                     </span>
+                    {deltaValue !== undefined && deltaValue !== 0 && (
+                      <DeltaBadge value={deltaValue} upIsGood={cfg.upIsGood} />
+                    )}
                   </div>
                 </div>
 
@@ -230,12 +287,23 @@ export function StatsPanel({
               {customStats.map(([label, rawVal], idx) => {
                 const val = typeof rawVal === "number" ? rawVal : 0;
                 const percentage = Math.min(100, Math.max(0, val));
+                const customDelta = shownDelta?.customStats?.[label];
 
                 return (
                   <div key={label} className="space-y-1">
                     <div className="flex items-center justify-between text-xs">
                       <span className="font-medium text-zinc-300 truncate">{label}</span>
-                      <span className="font-bold tabular-nums text-success">{val} / 100</span>
+                      <span className="flex items-center font-bold tabular-nums text-success">
+                        {val} / 100
+                        {typeof customDelta === "number" && customDelta !== 0 && (
+                          <span
+                            title="Изменение за последний ответ"
+                            className="ml-1.5 inline-flex items-center rounded-md border border-white/[0.1] bg-white/[0.04] px-1.5 py-px text-[10px] font-bold tabular-nums leading-4 text-content-secondary"
+                          >
+                            {customDelta > 0 ? `+${customDelta}` : `−${Math.abs(customDelta)}`}
+                          </span>
+                        )}
+                      </span>
                     </div>
 
                     <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-white/[0.07]">

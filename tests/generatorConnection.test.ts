@@ -3,13 +3,11 @@ import { generateAiCharacter, generateAiGroup } from "../src/services/characterG
 import type { ApiConfig } from "../src/types";
 
 /**
- * AI-генератор персонажей и групп ходит в сеть своим запросом, поэтому у него
- * был отдельный путь до провайдера — без резервного прокси. На Netlify это
- * выглядело так: браузер блокирует прямой CORS-запрос, и генерация падала с
- * сырым «Failed to fetch», хотя обычный чат в той же ветке работал.
+ * AI-генератор персонажей и групп ходит в сеть своим запросом. Для RU
+ * OpenRouter он, как и обычный чат, использует same-origin /api/llm-proxy,
+ * чтобы браузер вообще не выполнял прямой CORS-запрос.
  *
- * Здесь проверяем, что генератор ведёт себя как чат: повторяет запрос через
- * /api/llm-proxy и объясняет ошибку человеческим текстом.
+ * Здесь проверяем общий proxy-путь и человеческие сообщения об ошибках.
  */
 
 const ruConfig: ApiConfig = {
@@ -76,8 +74,8 @@ describe("генератор персонажа: путь через резер�
 
     const character = await generateAiCharacter(ruConfig, "any", ["Фэнтези"], "");
 
-    expect(calls[0]).toBe("https://api.ru-openrouter.ru/v1/chat/completions");
-    expect(calls[1]).toContain("/api/llm-proxy?target=");
+    expect(calls[0]).toContain("/api/llm-proxy?target=");
+    expect(calls).toHaveLength(1);
     expect(character.name).toBe("Мира");
     expect(character.firstMessage).toContain("Чего надо");
   });

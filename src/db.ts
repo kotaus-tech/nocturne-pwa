@@ -4,11 +4,13 @@ import type {
   ChatSession,
   SceneRelation,
   Message,
+  ParticipantMemory,
   Persona,
   UserProfile,
   ApiConfig,
   ApiPreset,
   RelationshipStats,
+  RelationshipDelta,
   LorebookEntry,
   DiaryEntry,
   StoryLogEntry,
@@ -17,6 +19,11 @@ import type {
 } from "./types";
 import { DEFAULT_API_CONFIG, DEFAULT_STATS } from "./types";
 import { newId } from "./utils/id";
+import { sanitizeStoredBlueprint } from "./services/v2/schema";
+import {
+  sanitizeIntention,
+  sanitizePrivateNotes,
+} from "./services/groupScene";
 
 export interface KVRecord {
   key: string;
@@ -356,15 +363,69 @@ function finiteStat(value: unknown, fallback: number): number {
 }
 
 export function sanitizeStats(rawStats?: Partial<RelationshipStats>): RelationshipStats {
+  const attraction =
+    typeof rawStats?.attraction === "number" && Number.isFinite(rawStats.attraction)
+      ? Math.min(100, Math.max(0, rawStats.attraction))
+      : undefined;
+
   return {
     trust: finiteStat(rawStats?.trust, DEFAULT_STATS.trust),
     affection: finiteStat(rawStats?.affection, DEFAULT_STATS.affection),
     closeness: finiteStat(rawStats?.closeness, DEFAULT_STATS.closeness),
     tension: finiteStat(rawStats?.tension, DEFAULT_STATS.tension),
     conflict: finiteStat(rawStats?.conflict, DEFAULT_STATS.conflict),
+    // Опциональная шкала влечения (генератор V2); у старых данных отсутствует.
+    ...(attraction === undefined ? {} : { attraction }),
     statusTitle: typeof rawStats?.statusTitle === "string" && rawStats.statusTitle.trim() ? rawStats.statusTitle : DEFAULT_STATS.statusTitle,
     customStats: rawStats?.customStats && typeof rawStats.customStats === "object" ? rawStats.customStats : {},
   };
+}
+
+/**
+ * Приводит сохранённую дельту шкал к безопасному виду: только целые
+ * конечные числа в пределах ±100, нули и мусор отбрасываются. Пустой
+ * результат возвращается как undefined — «дельты не было».
+ */
+export function sanitizeStatsDelta(rawDelta?: unknown): RelationshipDelta | undefined {
+  if (!rawDelta || typeof rawDelta !== "object" || Array.isArray(rawDelta)) {
+    return undefined;
+  }
+
+  const raw = rawDelta as Partial<RelationshipDelta>;
+
+  const finiteDelta = (value: unknown): number | undefined => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+    const rounded = Math.round(value);
+    if (rounded === 0) return undefined;
+    return Math.min(100, Math.max(-100, rounded));
+  };
+
+  const delta: RelationshipDelta = {};
+
+  for (const key of [
+    "trust",
+    "affection",
+    "closeness",
+    "tension",
+    "conflict",
+    "attraction",
+  ] as const) {
+    const value = finiteDelta(raw[key]);
+    if (value !== undefined) delta[key] = value;
+  }
+
+  if (raw.customStats && typeof raw.customStats === "object") {
+    const custom: Record<string, number> = {};
+
+    for (const [key, value] of Object.entries(raw.customStats)) {
+      const diff = finiteDelta(value);
+      if (diff !== undefined) custom[key] = diff;
+    }
+
+    if (Object.keys(custom).length > 0) delta.customStats = custom;
+  }
+
+  return Object.keys(delta).length > 0 ? delta : undefined;
 }
 
 export function sanitizeLorebook(rawLore?: unknown): LorebookEntry[] {
@@ -434,6 +495,10 @@ export function sanitizeAlternateGreetings(
 }
 
 export function sanitizeCharacter(raw: Partial<Character>): Character {
+  const blueprintV2 = sanitizeStoredBlueprint(
+    (raw as { blueprintV2?: unknown })?.blueprintV2
+  );
+
   return {
     id: typeof raw?.id === "string" && raw.id.trim() ? raw.id : newId(),
     name: typeof raw?.name === "string" && raw.name.trim() ? raw.name : "Безымянный",
@@ -463,6 +528,12 @@ export function sanitizeCharacter(raw: Partial<Character>): Character {
     initialStats: sanitizeStats(raw?.initialStats),
     lorebook: sanitizeLorebook(raw?.lorebook),
     createdAt: finiteNumber(raw?.createdAt, Date.now()),
+    // Character DNA (V2): blueprint сохраняется как опциональное поле;
+    // у старых и V1-персонажей его нет, и это нормально.
+    ...(typeof raw?.generatorVersion === "number"
+      ? { generatorVersion: raw.generatorVersion }
+      : {}),
+    ...(blueprintV2 ? { blueprintV2 } : {}),
   };
 }
 
@@ -549,6 +620,60 @@ export function sanitizeAbsentReasons(raw?: unknown): Record<string, string> {
   return result;
 }
 
+/**
+ * Личная память участников сцены: записи только для актуального состава
+ * (лидер + участники), заметки и намерения — по лимитам. Указатели на
+ * сообщения не проверяются здесь на существование (история загружается
+ * отдельно) — их перемоткобезопасность разруливается на этапе проверок.
+ */
+export function sanitizeParticipantMemory(
+  raw: unknown,
+  castIds?: string[]
+): Record<string, ParticipantMemory> {
+  const result: Record<string, ParticipantMemory> = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return result;
+
+  const allowed = castIds && castIds.length > 0 ? new Set(castIds) : null;
+
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    const key = id.trim();
+    if (!key || !value || typeof value !== "object" || Array.isArray(value)) continue;
+    if (allowed && !allowed.has(key)) continue;
+
+    const entry = value as Partial<ParticipantMemory>;
+
+    const intention = sanitizeIntention(entry.intention);
+
+    result[key] = {
+      characterId: key,
+      privateNotes: sanitizePrivateNotes(entry.privateNotes),
+      intention,
+      lastExtractedMessageId:
+        typeof entry.lastExtractedMessageId === "string" && entry.lastExtractedMessageId
+          ? entry.lastExtractedMessageId
+          : null,
+      absentSinceMessageId:
+        typeof entry.absentSinceMessageId === "string" && entry.absentSinceMessageId
+          ? entry.absentSinceMessageId
+          : null,
+      ticksSinceLastSignificant: Math.max(
+        0,
+        Math.round(finiteNumber(entry.ticksSinceLastSignificant, 0))
+      ),
+      significantSinceLastContact: Math.max(
+        0,
+        Math.round(finiteNumber(entry.significantSinceLastContact, 0))
+      ),
+      lastTickAtMessageId:
+        typeof entry.lastTickAtMessageId === "string" && entry.lastTickAtMessageId
+          ? entry.lastTickAtMessageId
+          : null,
+    };
+  }
+
+  return result;
+}
+
 /** Взаимоотношения внутри группы: «кто» → «о ком» → «что думает». */
 export function sanitizeSceneRelations(raw?: unknown): SceneRelation[] {
   if (!Array.isArray(raw)) return [];
@@ -586,6 +711,18 @@ export function sanitizeSession(raw: Partial<ChatSession>): ChatSession {
     relations: sanitizeSceneRelations(raw?.relations),
     liveScene: raw?.liveScene !== false,
     participantStats: sanitizeParticipantStats(raw?.participantStats),
+    participantMemory: sanitizeParticipantMemory(raw?.participantMemory, [
+      ...(typeof raw?.characterId === "string" && raw.characterId
+        ? [raw.characterId]
+        : []),
+      ...castIds,
+    ]),
+    offscreenLifeEnabled: raw?.offscreenLifeEnabled !== false,
+    offscreenTickInterval:
+      typeof raw?.offscreenTickInterval === "number" &&
+      Number.isFinite(raw.offscreenTickInterval)
+        ? Math.min(20, Math.max(4, Math.round(raw.offscreenTickInterval)))
+        : undefined,
     memoryExtractedCount: Math.max(
       0,
       Math.round(finiteNumber(raw?.memoryExtractedCount, 0))
@@ -614,6 +751,52 @@ export function sanitizeSession(raw: Partial<ChatSession>): ChatSession {
   };
 }
 
+/**
+ * Удаляет ссылки личной памяти на сообщения, которых нет в актуальной
+ * истории (перемотка/импорт). Индексы намеренно не используются: после
+ * обрезки указатель либо остаётся стабильным id, либо безопасно обнуляется.
+ */
+export function sanitizeParticipantMemoryPointers(
+  session: ChatSession,
+  messages: Message[]
+): ChatSession {
+  if (!session.participantMemory) return session;
+
+  const ids = new Set(messages.map((message) => message.id));
+  const participantMemory = Object.fromEntries(
+    Object.entries(session.participantMemory).map(([characterId, memory]) => [
+      characterId,
+      {
+        ...memory,
+        intention: memory.intention
+          ? {
+              ...memory.intention,
+              createdAtMessageId:
+                memory.intention.createdAtMessageId &&
+                ids.has(memory.intention.createdAtMessageId)
+                  ? memory.intention.createdAtMessageId
+                  : "",
+            }
+          : null,
+        lastExtractedMessageId:
+          memory.lastExtractedMessageId && ids.has(memory.lastExtractedMessageId)
+            ? memory.lastExtractedMessageId
+            : null,
+        absentSinceMessageId:
+          memory.absentSinceMessageId && ids.has(memory.absentSinceMessageId)
+            ? memory.absentSinceMessageId
+            : null,
+        lastTickAtMessageId:
+          memory.lastTickAtMessageId && ids.has(memory.lastTickAtMessageId)
+            ? memory.lastTickAtMessageId
+            : null,
+      },
+    ])
+  );
+
+  return { ...session, participantMemory };
+}
+
 export function sanitizeMessage(raw: any): Message {
   let swipes: string[] = ["..."];
   if (Array.isArray(raw?.swipes) && raw.swipes.length > 0) {
@@ -638,6 +821,30 @@ export function sanitizeMessage(raw: any): Message {
     characterName: typeof raw?.characterName === "string" && raw.characterName.trim()
       ? raw.characterName
       : undefined,
+    addressedTo:
+      typeof raw?.addressedTo === "string" && raw.addressedTo.trim()
+        ? raw.addressedTo
+        : undefined,
+    targetCharacterId:
+      typeof raw?.targetCharacterId === "string" && raw.targetCharacterId.trim()
+        ? raw.targetCharacterId
+        : typeof raw?.addressedTo === "string" && raw.addressedTo.trim()
+          ? raw.addressedTo
+          : undefined,
+    presentCharacterIds: Array.isArray(raw?.presentCharacterIds)
+      ? raw.presentCharacterIds.filter(
+          (id: unknown): id is string => typeof id === "string" && id.trim().length > 0
+        )
+      : undefined,
+    remoteKind:
+      raw?.remoteKind === "sms" ||
+      raw?.remoteKind === "call_missed" ||
+      raw?.remoteKind === "social_post" ||
+      raw?.remoteKind === "message"
+        ? raw.remoteKind
+        : undefined,
+    isLiveSceneEcho: Boolean(raw?.isLiveSceneEcho),
+    isRemoteReply: Boolean(raw?.isRemoteReply),
     sender,
     swipes,
     currentSwipeIndex: typeof raw?.currentSwipeIndex === "number"
@@ -645,6 +852,7 @@ export function sanitizeMessage(raw: any): Message {
       : 0,
     innerThought: typeof raw?.innerThought === "string" ? raw.innerThought : undefined,
     statsSnapshot: raw?.statsSnapshot ? sanitizeStats(raw.statsSnapshot) : undefined,
+    statsDelta: sanitizeStatsDelta(raw?.statsDelta),
     imageUrl: typeof raw?.imageUrl === "string" ? raw.imageUrl : undefined,
     timestamp: finiteNumber(raw?.timestamp, Date.now()),
   };
@@ -689,8 +897,15 @@ export async function importBackup(rawBundle: any): Promise<void> {
   }
 
   const sanitizedCharacters = rawBundle.characters.map(sanitizeCharacter);
-  const sanitizedSessions = rawBundle.sessions.map(sanitizeSession);
   const sanitizedMessages = rawBundle.messages.map(sanitizeMessage);
+  const sanitizedSessions = rawBundle.sessions
+    .map(sanitizeSession)
+    .map((session: ChatSession) =>
+      sanitizeParticipantMemoryPointers(
+        session,
+        sanitizedMessages.filter((message: Message) => message.sessionId === session.id)
+      )
+    );
   const sanitizedKv = Array.isArray(rawBundle.kv) ? rawBundle.kv : [];
 
   await db.transaction("rw", db.characters, db.sessions, db.messages, db.kv, async () => {

@@ -8,7 +8,9 @@ import {
   getPersonaState,
   importBackup,
   sanitizeCharacter,
+  sanitizeMessage,
   sanitizeSession,
+  sanitizeStatsDelta,
   setActivePersona,
   setSetting,
 } from "../src/db";
@@ -75,6 +77,35 @@ describe("санитайзеры", () => {
     expect(sanitizeCharacter(withoutPersona).defaultPersonaId).toBeUndefined();
     expect(sanitizeSession({ ...session, personaId: undefined }).personaId).toBeUndefined();
   });
+
+  it("сохраняют дельту шкал сообщения и чистят мусор в ней", () => {
+    const delta = sanitizeStatsDelta({
+      trust: 3,
+      conflict: -2.4,
+      affection: 0,
+      tension: Number.NaN,
+      customStats: { Ревность: 5, Азарт: 0 },
+    });
+
+    // Дробные округляются, нули и NaN отбрасываются, прочее сохраняется.
+    expect(delta).toEqual({ trust: 3, conflict: -2, customStats: { Ревность: 5 } });
+
+    // Мусор вместо дельты — как если бы дельты не было.
+    expect(sanitizeStatsDelta(undefined)).toBeUndefined();
+    expect(sanitizeStatsDelta("плюс два")).toBeUndefined();
+    expect(sanitizeStatsDelta({ trust: 0 })).toBeUndefined();
+
+    // Дельта переживает санитайзер сообщения.
+    const message = sanitizeMessage({
+      id: "m-1",
+      sessionId: "session-1",
+      sender: "assistant",
+      swipes: ["Реплика"],
+      statsDelta: { trust: 4 },
+    });
+
+    expect(message.statsDelta).toEqual({ trust: 4 });
+  });
 });
 
 describe("резервная копия", () => {
@@ -109,6 +140,40 @@ describe("резервная копия", () => {
     expect(restored.activePersona?.name).toBe("Второй");
     expect((await db.characters.get("char-1"))?.defaultPersonaId).toBe("persona-2");
     expect((await db.sessions.get("session-1"))?.personaId).toBe("persona-2");
+  });
+
+  it("переносит дельту шкал сообщения через экспорт и импорт", async () => {
+    await db.characters.add(character);
+    await db.sessions.add(session);
+    await db.messages.add({
+      id: "m-delta",
+      sessionId: "session-1",
+      sender: "assistant",
+      swipes: ["Реплика"],
+      currentSwipeIndex: 0,
+      statsDelta: { trust: 4, conflict: -1, customStats: { Ревность: 2 } },
+      timestamp: 1,
+    });
+
+    const bundle = await exportBackup();
+    expect(bundle.messages[0].statsDelta).toEqual({
+      trust: 4,
+      conflict: -1,
+      customStats: { Ревность: 2 },
+    });
+
+    await db.characters.clear();
+    await db.sessions.clear();
+    await db.messages.clear();
+    await db.kv.clear();
+
+    await importBackup(JSON.parse(JSON.stringify(bundle)));
+
+    expect((await db.messages.get("m-delta"))?.statsDelta).toEqual({
+      trust: 4,
+      conflict: -1,
+      customStats: { Ревность: 2 },
+    });
   });
 
   it("отклоняет повреждённый файл", async () => {

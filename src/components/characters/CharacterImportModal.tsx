@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useId } from "react";
+import { useState, useRef, useEffect, useId, type ReactNode } from "react";
 import {
   Upload,
   MessagesSquare,
@@ -11,12 +11,13 @@ import {
   RotateCcw,
   Languages,
   Wand2,
-  ClipboardCheck,
   Scissors,
   ChevronDown,
   ChevronUp,
   FileText,
   X,
+  Eraser,
+  Puzzle,
 } from "lucide-react";
 import { Modal } from "../common/Modal";
 import { ImportedCardSheet } from "./ImportedCardSheet";
@@ -34,15 +35,14 @@ import {
   supportsCardImport,
 } from "../../utils/characterCardFile";
 import {
-  auditCard,
   compressCard,
   enrichCard,
   fixCard,
   polishCard,
   shouldCompressCard,
   translateCard,
-  type CardAudit,
   type CardAiProgress,
+  type CardPassResult,
 } from "../../services/cardAi";
 import { getApiConfig } from "../../db";
 import type { ApiConfig } from "../../types";
@@ -63,8 +63,14 @@ const AI_STAGE_LABELS: Record<CardAiProgress["mode"], string> = {
   compress: "Сжимаем раздутые поля",
   repair: "Исправляем поля",
   enrich: "Дополняем поля",
-  audit: "Проверяем поля",
 };
+
+/**
+ * Общая подпись для случая, когда модель не вернула ни одного пригодного
+ * фрагмента: отказ, цензурный фильтр или ответ не в том формате.
+ */
+const NO_ANSWER_NOTE =
+  "Модель не вернула ни одного фрагмента — возможно, отказалась от этого текста или ответила не в нужном формате. Попробуйте ещё раз или выберите другую модель.";
 
 /** Собирает понятную сводку: что чистка сделала с текстом карточки. */
 function describeClean(clean: CardCleanReport): string[] {
@@ -90,6 +96,127 @@ function describeClean(clean: CardCleanReport): string[] {
   return parts;
 }
 
+// -------------------- Мелкие элементы интерфейса --------------------
+
+/** Заголовок секции: маленькая капс-подпись с иконкой. */
+function SectionTitle({ icon: Icon, children }: { icon: typeof Upload; children: ReactNode }) {
+  return (
+    <h4 className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-content-muted">
+      <Icon size={12} className="shrink-0 text-accent/80" />
+      {children}
+    </h4>
+  );
+}
+
+/** Переключатель-тумблер. */
+function Switch({
+  checked,
+  onChange,
+  label,
+}: {
+  checked: boolean;
+  onChange: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={onChange}
+      className={cn(
+        "flex h-6 w-11 shrink-0 items-center rounded-full border p-0.5 transition-colors",
+        checked ? "justify-end border-accent bg-accent" : "justify-start border-white/[0.1] bg-surface-3"
+      )}
+    >
+      <span className="h-4.5 w-4.5 rounded-full bg-white shadow-sm" />
+    </button>
+  );
+}
+
+/** Строка настройки с описанием и тумблером справа. */
+function ToggleRow({
+  title,
+  description,
+  checked,
+  onChange,
+}: {
+  title: string;
+  description: string;
+  checked: boolean;
+  onChange: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-surface-2/70 p-3">
+      <div className="min-w-0">
+        <p className="text-xs font-bold text-zinc-100">{title}</p>
+        <p className="mt-0.5 text-[11px] leading-relaxed text-content-muted">{description}</p>
+      </div>
+
+      <Switch checked={checked} onChange={onChange} label={title} />
+    </div>
+  );
+}
+
+type AiButtonVariant = "primary" | "secondary" | "warning" | "ghost";
+
+/** Кнопка действия модели: иконка, заголовок и короткое пояснение. */
+function AiActionButton({
+  icon: Icon,
+  title,
+  subtitle,
+  onClick,
+  disabled,
+  variant = "secondary",
+  className,
+}: {
+  icon: typeof Wand2;
+  title: string;
+  subtitle?: string;
+  onClick: () => void;
+  disabled?: boolean;
+  variant?: AiButtonVariant;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "flex min-h-11 items-center gap-2.5 rounded-xl border px-3.5 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+        variant === "primary" &&
+          "border-transparent bg-accent text-on-accent shadow-[0_0_20px_rgba(139,92,246,0.2)] hover:bg-accent-hover",
+        variant === "secondary" &&
+          "border-white/[0.08] bg-surface-2 text-content hover:border-accent/40 hover:text-accent",
+        variant === "warning" &&
+          "border-warning/40 bg-warning/10 text-warning hover:bg-warning/20",
+        variant === "ghost" &&
+          "border-white/[0.06] bg-transparent text-content-secondary hover:border-white/[0.14] hover:text-content",
+        className
+      )}
+    >
+      <Icon size={16} className="shrink-0" />
+      <span className="min-w-0">
+        <span className="block truncate text-xs font-semibold">{title}</span>
+        {subtitle && (
+          <span
+            className={cn(
+              "mt-0.5 block truncate text-[10px] leading-tight",
+              variant === "primary" ? "text-on-accent/70" : "text-content-muted"
+            )}
+          >
+            {subtitle}
+          </span>
+        )}
+      </span>
+    </button>
+  );
+}
+
+// -------------------- Окно импорта --------------------
+
 export function CharacterImportModal({
   open,
   onClose,
@@ -113,10 +240,10 @@ export function CharacterImportModal({
   const [apiConfig, setApiConfig] = useState<ApiConfig | null>(null);
   const [aiProgress, setAiProgress] = useState<CardAiProgress | null>(null);
   const [aiNotes, setAiNotes] = useState<string[]>([]);
-  const [audit, setAudit] = useState<CardAudit | null>(null);
   /** Вкладки: сам импорт и лист персонажа — как карточка ляжет в базу. */
   const [tab, setTab] = useState<"import" | "sheet">("import");
   const [fineTuneOpen, setFineTuneOpen] = useState(false);
+  const [cleanReportOpen, setCleanReportOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -152,9 +279,10 @@ export function CharacterImportModal({
       setError(null);
       setSaving(false);
       setAiNotes([]);
-      setAudit(null);
       setAiProgress(null);
       setTab("import");
+      setCleanReportOpen(false);
+      setFineTuneOpen(false);
       if (initialFile) {
         setFile(initialFile);
         void handleParseFile(initialFile);
@@ -163,6 +291,7 @@ export function CharacterImportModal({
         setPreview(null);
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialFile]);
 
   const handleParseFile = async (f: File, useClean = cleanText) => {
@@ -175,7 +304,6 @@ export function CharacterImportModal({
       });
       setPreview(result);
       setAiNotes([]);
-      setAudit(null);
       setCustomName(result.character.name);
       setIncludeChats(result.sessions.length > 0);
     } catch (cause) {
@@ -211,9 +339,7 @@ export function CharacterImportModal({
       setFile(dropped);
       void handleParseFile(dropped);
     } else {
-      setError(
-        "Поддерживаются файлы .json и PNG-карточки персонажей (.png)."
-      );
+      setError("Поддерживаются файлы .json и PNG-карточки персонажей (.png).");
     }
   };
 
@@ -235,7 +361,6 @@ export function CharacterImportModal({
     job: (options: CardAiOptions) => Promise<{
       card: NormalizedCard;
       note?: string;
-      audit?: CardAudit;
     }>
   ) => {
     if (!preview?.card || aiBusy) return;
@@ -261,7 +386,6 @@ export function CharacterImportModal({
       if (result.note) {
         setAiNotes((prev) => [result.note!, ...prev].slice(0, 5));
       }
-      if (result.audit) setAudit(result.audit);
     } catch (cause) {
       if (cause instanceof Error && cause.name === "AbortError") {
         setAiNotes((prev) => ["Остановлено: карточка не изменилась.", ...prev].slice(0, 5));
@@ -274,36 +398,60 @@ export function CharacterImportModal({
     }
   };
 
+  /**
+   * Подпись результата прохода по тексту. Важно не врать: «перевод не
+   * потребовался» — это когда отправлять было нечего, а не когда модель
+   * ничего не вернула.
+   */
+  const passNote = (
+    result: CardPassResult,
+    phrases: { done: (changed: number) => string; idle: string; unchanged: string }
+  ): string => {
+    if (result.changed > 0) return phrases.done(result.changed);
+    if (result.sent === 0) return phrases.idle;
+    if (result.answered === 0) return NO_ANSWER_NOTE;
+    return phrases.unchanged;
+  };
+
   const handleTranslate = () =>
     void runAiJob(async (options) => {
-      const { card, changed } = await translateCard(preview!.card!, options);
+      const result = await translateCard(preview!.card!, options);
 
       return {
-        card,
-        note:
-          changed > 0
-            ? `Переведено фрагментов: ${changed}.`
-            : "Перевод не потребовался: текст карточки и так на русском.",
+        card: result.card,
+        note: passNote(result, {
+          done: (changed) => `Переведено фрагментов: ${changed}.`,
+          idle: "Перевод не потребовался: текст карточки и так на русском.",
+          unchanged: "Модель вернула текст без изменений.",
+        }),
       };
     });
 
   const handlePolish = () =>
     void runAiJob(async (options) => {
-      const { card, changed } = await polishCard(preview!.card!, options);
+      const result = await polishCard(preview!.card!, options);
 
       return {
-        card,
-        note: changed > 0 ? `Модель обработала полей: ${changed}.` : "Модель не нашла, что править.",
+        card: result.card,
+        note: passNote(result, {
+          done: (changed) => `Модель обработала полей: ${changed}.`,
+          idle: "Чистить нечего: текстовых полей в карточке нет.",
+          unchanged: "Модель не нашла, что править.",
+        }),
       };
     });
 
   const handleCompress = () =>
     void runAiJob(async (options) => {
-      const { card, changed } = await compressCard(preview!.card!, options);
+      const result = await compressCard(preview!.card!, options);
 
       return {
-        card,
-        note: changed > 0 ? `Сжато раздутых полей: ${changed}.` : "Раздутых полей не нашлось.",
+        card: result.card,
+        note: passNote(result, {
+          done: (changed) => `Сжато раздутых полей: ${changed}.`,
+          idle: "Раздутых полей не нашлось.",
+          unchanged: "Модель вернула текст без изменений.",
+        }),
       };
     });
 
@@ -313,7 +461,6 @@ export function CharacterImportModal({
 
       return {
         card: result.card,
-        audit: result.audit ?? undefined,
         note: result.notes.join(" "),
       };
     });
@@ -331,27 +478,13 @@ export function CharacterImportModal({
       };
     });
 
-  const handleAudit = () =>
-    void runAiJob(async (options) => {
-      const result = await auditCard(preview!.card!, options);
-
-      return {
-        card: preview!.card!,
-        audit: result,
-        note:
-          result.issues.length > 0
-            ? `Проверка нашла замечаний: ${result.issues.length}.`
-            : "Проверка пройдена: замечаний нет.",
-      };
-    });
-
   const handleCancelAi = () => {
     abortRef.current?.abort();
     abortRef.current = null;
   };
 
   const handleImportSubmit = async () => {
-    if (!preview || saving) return;
+    if (!preview || saving || aiBusy) return;
     setSaving(true);
     setError(null);
 
@@ -370,15 +503,215 @@ export function CharacterImportModal({
     }
   };
 
+  const statChips = preview
+    ? [
+        { icon: MessagesSquare, count: preview.stats.sessionsCount, label: "веток", tone: "text-accent" },
+        { icon: BookOpen, count: preview.stats.loreCount, label: "знаний", tone: "text-info" },
+        { icon: BrainCircuit, count: preview.stats.factsCount, label: "фактов", tone: "text-success" },
+        { icon: NotebookPen, count: preview.stats.diaryCount, label: "записей", tone: "text-[var(--relationship-affection)]" },
+      ].filter((chip) => chip.count > 0)
+    : [];
+
+  const sourceLabel = preview?.cardInfo
+    ? `${preview.cardInfo.label}${preview.cardInfo.fromPng ? " из PNG" : ""}`
+    : preview?.isFullArchive
+      ? "Полный архив экосистемы"
+      : "Одиночная карточка";
+
   return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="Импорт персонажа"
-      size={tab === "sheet" ? "lg" : "md"}
-      variant="sheet"
-    >
-      <div className="space-y-5">
+    <Modal open={open} onClose={onClose} title="Импорт персонажа" size="lg" variant="sheet">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".json,.png,application/json,image/png"
+        className="hidden"
+        onChange={handleFileChange}
+      />
+
+      <div className="space-y-4">
+        {/* ---------- Шаг выбора файла ---------- */}
+        {!preview && (
+          <div
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                fileInputRef.current?.click();
+              }
+            }}
+            className={cn(
+              "group relative flex min-h-[240px] cursor-pointer flex-col items-center justify-center rounded-3xl border-2 border-dashed p-8 text-center transition-all",
+              isDragOver
+                ? "border-accent bg-accent/15 ring-4 ring-accent/20"
+                : "border-white/[0.12] bg-[#121622]/80 hover:border-accent/60 hover:bg-[#161b28]"
+            )}
+          >
+            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl border border-white/[0.08] bg-surface-2 shadow-inner transition-transform group-hover:scale-105">
+              {parsing ? (
+                <Loader2 size={28} className="animate-spin text-accent" />
+              ) : (
+                <Upload size={28} className="text-accent" />
+              )}
+            </div>
+
+            <h3 className="text-sm font-bold text-zinc-100">
+              {parsing ? "Анализируем файл персонажа…" : "Перетащите файл персонажа сюда"}
+            </h3>
+            <p className="mt-1 text-xs text-content-secondary">
+              или нажмите, чтобы выбрать файл на устройстве
+            </p>
+
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+              {["Архивы NOCTURNE", "Карточки Character Card (.json)", "PNG с карточкой"].map((format) => (
+                <span
+                  key={format}
+                  className="rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-1.5 text-[11px] font-semibold text-content-muted group-hover:text-content"
+                >
+                  {format}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ---------- Заголовок персонажа ---------- */}
+        {preview && (
+          <div className="rounded-2xl border border-white/[0.08] bg-gradient-to-br from-[#161b26] to-[#121620] p-4">
+            <div className="flex items-start gap-4">
+              <Avatar
+                src={preview.character.avatarUrl}
+                name={preview.character.name}
+                size={64}
+                className="shrink-0 ring-1 ring-white/10"
+              />
+
+              <div className="min-w-0 flex-1">
+                <label
+                  htmlFor={nameInputId}
+                  className="mb-1 block text-[10px] font-bold uppercase tracking-[0.16em] text-content-muted"
+                >
+                  Имя персонажа
+                </label>
+                <input
+                  id={nameInputId}
+                  type="text"
+                  value={customName}
+                  onChange={(e) => setCustomName(e.target.value)}
+                  placeholder="Имя персонажа…"
+                  className="w-full rounded-lg border border-transparent bg-transparent px-0 text-base font-bold text-zinc-100 outline-none transition-colors placeholder:text-content-muted/60 hover:border-b-white/[0.15] focus:border-b-accent"
+                />
+
+                <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                  <Badge size="sm">{sourceLabel}</Badge>
+
+                  {preview.cardInfo?.creator && (
+                    <span className="text-[11px] text-content-muted">
+                      автор: {preview.cardInfo.creator}
+                    </span>
+                  )}
+
+                  {preview.character.genre?.trim() && (
+                    <span className="text-[11px] text-content-secondary">{preview.character.genre}</span>
+                  )}
+
+                  {parsing && (
+                    <span className="inline-flex items-center gap-1.5 text-[11px] text-accent">
+                      <Loader2 size={12} className="animate-spin" />
+                      обновляем…
+                    </span>
+                  )}
+                </div>
+
+                {preview.character.tagline && (
+                  <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-accent">
+                    {preview.character.tagline}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Сводка содержимого: показываем только то, чего больше нуля */}
+            {(statChips.length > 0 ||
+              (preview.cardInfo?.alternateGreetings ?? 0) > 0 ||
+              (preview.cardInfo?.tags.length ?? 0) > 0) && (
+              <div className="mt-4 flex flex-wrap items-center gap-1.5 border-t border-white/[0.06] pt-3">
+                {statChips.map(({ icon: Icon, count, label, tone }) => (
+                  <span
+                    key={label}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.07] bg-surface-2/70 px-2.5 py-1 text-[11px] text-content-secondary"
+                  >
+                    <Icon size={13} className={cn("shrink-0", tone)} />
+                    <span className="tabular-nums">
+                      {count} {label}
+                    </span>
+                  </span>
+                ))}
+
+                {(preview.cardInfo?.alternateGreetings ?? 0) > 0 && (
+                  <span className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.07] bg-surface-2/70 px-2.5 py-1 text-[11px] text-content-secondary">
+                    <MessagesSquare size={13} className="shrink-0 text-accent" />
+                    <span className="tabular-nums">
+                      +{preview.cardInfo!.alternateGreetings} варианта приветствия
+                    </span>
+                  </span>
+                )}
+
+                {(preview.cardInfo?.tags ?? []).slice(0, 8).map((tag) => (
+                  <span
+                    key={tag}
+                    className="rounded-lg border border-white/[0.05] bg-white/[0.03] px-2 py-1 text-[11px] text-content-muted"
+                  >
+                    {tag}
+                  </span>
+                ))}
+
+                {(preview.cardInfo?.tags.length ?? 0) > 8 && (
+                  <span className="px-1 text-[11px] text-content-muted">
+                    +{preview.cardInfo!.tags.length - 8} ещё
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Отчёт автоматической чистки */}
+            {preview.cardInfo?.clean && (
+              <div className="mt-3 border-t border-white/[0.06] pt-3">
+                <button
+                  type="button"
+                  onClick={() => setCleanReportOpen((prev) => !prev)}
+                  aria-expanded={cleanReportOpen}
+                  className="flex w-full items-center justify-between gap-2 text-left"
+                >
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-success">
+                    <Eraser size={13} className="shrink-0" />
+                    Текст карточки очищен автоматически
+                  </span>
+                  <span className="inline-flex items-center gap-1 text-[11px] text-content-muted">
+                    подробнее
+                    {cleanReportOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                  </span>
+                </button>
+
+                {cleanReportOpen && (
+                  <ul className="mt-2 space-y-1 rounded-xl border border-white/[0.06] bg-surface-2/60 p-3">
+                    {describeClean(preview.cardInfo.clean).map((line) => (
+                      <li key={line} className="text-[11px] leading-relaxed text-content-secondary">
+                        • {line}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ---------- Вкладки ---------- */}
         {preview && (
           <div
             role="tablist"
@@ -399,467 +732,260 @@ export function CharacterImportModal({
                   aria-selected={selected}
                   onClick={() => setTab(key)}
                   className={cn(
-                    "flex min-h-9 items-center justify-center gap-1.5 rounded-xl px-2 py-1.5 transition-all",
+                    "flex min-h-10 items-center justify-center gap-2 rounded-xl px-3 py-2 transition-all",
                     selected
                       ? "bg-accent/15 text-accent shadow-sm"
                       : "text-content-muted hover:bg-white/[0.04] hover:text-content"
                   )}
                 >
-                  <Icon size={14} className="shrink-0" />
-                  <span className="text-[11px] font-semibold">{label}</span>
+                  <Icon size={15} className="shrink-0" />
+                  <span className="text-xs font-semibold">{label}</span>
                 </button>
               );
             })}
           </div>
         )}
 
+        {/* ---------- Вкладка «Карточка» ---------- */}
         {tab === "sheet" && preview && <ImportedCardSheet character={preview.character} />}
 
-        {tab === "import" && (
-          !preview ? (
-          <div
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-            className={cn(
-              "group relative flex min-h-[220px] cursor-pointer flex-col items-center justify-center rounded-3xl border-2 border-dashed p-6 text-center transition-all",
-              isDragOver
-                ? "border-accent bg-accent/15 ring-4 ring-accent/20"
-                : "border-white/[0.12] bg-[#121622]/80 hover:border-accent/60 hover:bg-[#161b28]"
-            )}
-          >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".json,.png,application/json,image/png"
-              className="hidden"
-              onChange={handleFileChange}
-            />
-
-            <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/[0.08] bg-surface-2 shadow-inner transition-transform group-hover:scale-105">
-              {parsing ? (
-                <Loader2 size={26} className="animate-spin text-accent" />
-              ) : (
-                <Upload size={26} className="text-accent" />
-              )}
-            </div>
-
-            <h3 className="text-sm font-bold text-zinc-100">
-              {parsing ? "Анализируем файл персонажа…" : "Перетащите файл персонажа сюда"}
-            </h3>
-            <p className="mt-1 text-xs text-content-secondary">
-              или нажмите для выбора файла на устройстве
-            </p>
-
-            <span className="mt-4 rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-1.5 text-[11px] font-semibold text-content-muted group-hover:text-content">
-              Полные архивы NOCTURNE, карточки Character Card (.json) и PNG с карточкой
-            </span>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {/* Карточка предпросмотра персонажа */}
-            <div className="rounded-2xl border border-white/[0.08] bg-[#121622]/90 p-4 shadow-lg backdrop-blur-xl">
-              <div className="flex items-start gap-3.5">
-                <Avatar
-                  src={preview.character.avatarUrl}
-                  name={preview.character.name}
-                  size={58}
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <h3 className="truncate text-base font-bold text-zinc-100">
-                      {preview.character.name}
-                    </h3>
-                    {preview.character.genre && (
-                      <Badge size="sm">{preview.character.genre}</Badge>
-                    )}
-                  </div>
-                  {preview.character.tagline && (
-                    <p className="mt-0.5 line-clamp-1 text-xs text-accent">
-                      {preview.character.tagline}
-                    </p>
-                  )}
-                  {preview.character.description && (
-                    <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-content-secondary">
-                      {preview.character.description}
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              {/* Бейджи контента архива */}
-              <div className="mt-4 grid grid-cols-2 gap-2 border-t border-white/[0.06] pt-3 sm:grid-cols-4">
-                <div className="flex items-center gap-1.5 rounded-xl bg-surface-2/70 px-2.5 py-1.5 text-xs">
-                  <MessagesSquare size={14} className="text-accent shrink-0" />
-                  <span className="text-content-secondary tabular-nums">
-                    {preview.stats.sessionsCount} веток
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-1.5 rounded-xl bg-surface-2/70 px-2.5 py-1.5 text-xs">
-                  <BookOpen size={14} className="text-info shrink-0" />
-                  <span className="text-content-secondary tabular-nums">
-                    {preview.stats.loreCount} знаний
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-1.5 rounded-xl bg-surface-2/70 px-2.5 py-1.5 text-xs">
-                  <BrainCircuit size={14} className="text-success shrink-0" />
-                  <span className="text-content-secondary tabular-nums">
-                    {preview.stats.factsCount} фактов
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-1.5 rounded-xl bg-surface-2/70 px-2.5 py-1.5 text-xs">
-                  <NotebookPen size={14} className="text-[var(--relationship-affection)] shrink-0" />
-                  <span className="text-content-secondary tabular-nums">
-                    {preview.stats.diaryCount} записей
-                  </span>
-                </div>
-              </div>
-
-              {preview.cardInfo && (
-                <div className="mt-3 space-y-2 border-t border-white/[0.06] pt-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge size="sm">{preview.cardInfo.label}</Badge>
-                    {preview.cardInfo.creator && (
-                      <span className="text-[11px] text-content-muted">
-                        автор: {preview.cardInfo.creator}
-                      </span>
-                    )}
-                    {preview.cardInfo.alternateGreetings > 0 && (
-                      <span className="text-[11px] text-content-muted">
-                        +{preview.cardInfo.alternateGreetings} варианта первого сообщения
-                      </span>
-                    )}
-                  </div>
-
-                  {preview.cardInfo.clean && (
-                    <div className="rounded-xl border border-accent/20 bg-accent/[0.06] px-3 py-2">
-                      <p className="text-[11px] font-semibold uppercase tracking-wider text-accent">
-                        Текст карточки очищен
-                      </p>
-                      <ul className="mt-1 space-y-0.5">
-                        {describeClean(preview.cardInfo.clean).map((line) => (
-                          <li key={line} className="text-[11px] text-content-secondary">
-                            • {line}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {preview.cardInfo.tags.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {preview.cardInfo.tags.slice(0, 8).map((tag) => (
-                        <span
-                          key={tag}
-                          className="rounded-lg border border-white/[0.07] bg-surface-2/70 px-2 py-0.5 text-[11px] text-content-secondary"
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Опции импорта */}
-            <div className="space-y-3.5 rounded-2xl border border-white/[0.07] bg-surface-2/50 p-4">
-              {preview.cardInfo && (
-                <div className="flex items-center justify-between rounded-xl border border-white/[0.06] bg-surface-2 p-3">
-                  <div className="min-w-0 pr-3">
-                    <p className="text-xs font-bold text-zinc-100">
-                      Очищать текст карточки
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-content-muted">
-                      Убрать HTML, changelog и ссылки, а лист персонажа разложить по полям
-                    </p>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={handleToggleClean}
-                    aria-label="Очищать текст карточки"
-                    className={cn(
-                      "flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors p-0.5",
-                      cleanText
-                        ? "border-accent bg-accent justify-end"
-                        : "border-white/[0.1] bg-surface-3 justify-start"
-                    )}
-                  >
-                    <span className="h-4.5 w-4.5 rounded-full bg-white shadow-sm" />
-                  </button>
-                </div>
-              )}
-
-              <div>
-                <label
-                  htmlFor={nameInputId}
-                  className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-content-secondary"
-                >
-                  Имя персонажа при импорте
-                </label>
-                <input
-                  id={nameInputId}
-                  type="text"
-                  value={customName}
-                  onChange={(e) => setCustomName(e.target.value)}
-                  placeholder="Имя персонажа..."
-                  className="input-field text-xs font-semibold"
-                />
-              </div>
-
-              {preview.sessions.length > 0 && (
-                <div className="flex items-center justify-between rounded-xl border border-white/[0.06] bg-surface-2 p-3">
-                  <div>
-                    <p className="text-xs font-bold text-zinc-100">
-                      Импортировать историю общения ({preview.stats.sessionsCount} веток)
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-content-muted">
-                      Сохранить все сообщения, дневники и накопленную память
-                    </p>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setIncludeChats((prev) => !prev)}
-                    className={cn(
-                      "flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors p-0.5",
-                      includeChats
-                        ? "border-accent bg-accent justify-end"
-                        : "border-white/[0.1] bg-surface-3 justify-start"
-                    )}
-                  >
-                    <span className="h-4.5 w-4.5 rounded-full bg-white shadow-sm" />
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <div className="flex items-center justify-between pt-1">
-              <button
-                type="button"
-                onClick={() => {
-                  setPreview(null);
-                  setFile(null);
-                }}
-                className="inline-flex items-center gap-1.5 text-xs text-content-muted hover:text-content"
-              >
-                <RotateCcw size={13} />
-                <span>Выбрать другой файл</span>
-              </button>
-
-              <span className="text-[11px] text-content-muted">
-                {preview.cardInfo
-                  ? `${preview.cardInfo.label}${preview.cardInfo.fromPng ? " из PNG" : ""}`
-                  : preview.isFullArchive
-                    ? "Полный архив экосистемы"
-                    : "Одиночная карточка"}
-              </span>
-            </div>
-          </div>
-
-        ))}
-
-            {preview?.card && (
-              <div className="space-y-3 rounded-2xl border border-white/[0.07] bg-surface-2/50 p-4">
+        {/* ---------- Вкладка «Импорт» ---------- */}
+        {tab === "import" && preview && (
+          <div className="space-y-5">
+            {/* Доработка моделью */}
+            {preview.card && (
+              <section className="rounded-2xl border border-white/[0.07] bg-surface-2/40 p-4">
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-xs font-bold text-zinc-100">Доработать моделью</p>
-                    <p className="mt-0.5 text-[11px] text-content-muted">
-                      {apiConfig
-                        ? `Запросы идут только по кнопке · ${apiConfig.model || "модель не выбрана"}`
-                        : "Подключите модель в настройках системы"}
-                    </p>
-                  </div>
+                  <SectionTitle icon={Sparkles}>Доработка моделью</SectionTitle>
 
-                  {aiBusy && (
-                    <button
-                      type="button"
-                      onClick={handleCancelAi}
-                      className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-white/[0.08] bg-surface-2 px-2.5 py-1.5 text-[11px] font-semibold text-content-secondary hover:text-content"
-                    >
-                      <X size={13} />
-                      <span>Отмена</span>
-                    </button>
-                  )}
+                  <span className="max-w-[60%] truncate text-[11px] text-content-muted">
+                    {apiConfig
+                      ? `${apiConfig.model || "модель не выбрана"} · запросы только по кнопке`
+                      : "Подключите модель в настройках системы"}
+                  </span>
                 </div>
 
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    disabled={aiBusy}
-                    onClick={handleTranslate}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-2 text-[11px] font-semibold text-content transition-colors hover:border-accent/40 hover:text-accent disabled:opacity-40"
-                  >
-                    <Languages size={14} />
-                    <span>Перевести на русский</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={aiBusy}
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <AiActionButton
+                    icon={Wand2}
+                    title="Привести в порядок"
+                    subtitle="Мусор, перепутанные и пустые поля — за один проход"
                     onClick={handleFix}
-                    title="Почистить мусор, расставить перепутанные поля, заполнить пустые места и проверить результат"
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-accent px-3 py-2 text-[11px] font-semibold text-on-accent transition-colors hover:bg-accent-hover disabled:opacity-40"
-                  >
-                    <Wand2 size={14} />
-                    <span>Привести в порядок</span>
-                  </button>
+                    disabled={aiBusy}
+                    variant="primary"
+                    className="sm:col-span-2"
+                  />
 
-                  {preview.card && shouldCompressCard(preview.card) && (
-                    <button
-                      type="button"
-                      disabled={aiBusy}
+                  <AiActionButton
+                    icon={Languages}
+                    title="Перевести на русский"
+                    subtitle="Литературный перевод с адаптацией имён"
+                    onClick={handleTranslate}
+                    disabled={aiBusy}
+                  />
+
+                  {shouldCompressCard(preview.card) ? (
+                    <AiActionButton
+                      icon={Scissors}
+                      title="Сжать раздутые поля"
+                      subtitle="Карточка очень большая: сожмём длинные поля"
                       onClick={handleCompress}
-                      title="Карточка очень большая: модель сожмёт самые длинные поля, сохранив факты"
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-warning/40 bg-warning/10 px-3 py-2 text-[11px] font-semibold text-warning transition-colors hover:bg-warning/20 disabled:opacity-40"
-                    >
-                      <Scissors size={14} />
-                      <span>Сжать раздутые поля</span>
-                    </button>
+                      disabled={aiBusy}
+                      variant="warning"
+                    />
+                  ) : (
+                    <AiActionButton
+                      icon={Puzzle}
+                      title="Дополнить пустые поля"
+                      subtitle="Только по фактам карточки, без выдумок"
+                      onClick={handleEnrich}
+                      disabled={aiBusy}
+                    />
                   )}
                 </div>
 
-                <div>
+                {/* Отдельные действия */}
+                <div className="mt-3 border-t border-white/[0.06] pt-3">
                   <button
                     type="button"
                     onClick={() => setFineTuneOpen((prev) => !prev)}
                     aria-expanded={fineTuneOpen}
-                    className="flex items-center gap-1 text-[11px] font-semibold text-content-muted hover:text-content"
+                    className="flex items-center gap-1.5 text-[11px] font-semibold text-content-muted transition-colors hover:text-content"
                   >
                     {fineTuneOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
                     <span>Отдельные действия</span>
                   </button>
 
                   {fineTuneOpen && (
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        disabled={aiBusy}
+                    <div className="mt-2.5 grid gap-2 sm:grid-cols-2">
+                      <AiActionButton
+                        icon={Eraser}
+                        title="Только очистить"
+                        subtitle="Убрать мусор из текста"
                         onClick={handlePolish}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-2 text-[11px] font-semibold text-content transition-colors hover:border-accent/40 hover:text-accent disabled:opacity-40"
-                      >
-                        <Wand2 size={14} />
-                        <span>Только очистить</span>
-                      </button>
-
-                      <button
-                        type="button"
                         disabled={aiBusy}
+                        variant="ghost"
+                      />
+
+                      <AiActionButton
+                        icon={Puzzle}
+                        title="Только дополнить"
+                        subtitle="Заполнить пустые поля"
                         onClick={handleEnrich}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-2 text-[11px] font-semibold text-content transition-colors hover:border-accent/40 hover:text-accent disabled:opacity-40"
-                      >
-                        <Sparkles size={14} />
-                        <span>Только дополнить поля</span>
-                      </button>
-
-                      <button
-                        type="button"
                         disabled={aiBusy}
-                        onClick={handleAudit}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-2 text-[11px] font-semibold text-content transition-colors hover:border-accent/40 hover:text-accent disabled:opacity-40"
-                      >
-                        <ClipboardCheck size={14} />
-                        <span>Проверить поля</span>
-                      </button>
+                        variant="ghost"
+                      />
                     </div>
                   )}
                 </div>
 
+                {/* Прогресс работы модели */}
                 {aiProgress && (
                   <div
                     role="status"
                     aria-live="polite"
-                    className="flex items-center gap-2.5 rounded-xl border border-accent/25 bg-accent/[0.07] px-3 py-2 text-[11px] text-content-secondary"
+                    className="mt-3 rounded-xl border border-accent/25 bg-accent/[0.07] p-3"
                   >
-                    <Loader2 size={14} className="shrink-0 animate-spin text-accent" />
-                    <span>
-                      {aiProgress.stage ?? AI_STAGE_LABELS[aiProgress.mode]}…
-                      {aiProgress.total > 1
-                        ? ` ${aiProgress.current} из ${aiProgress.total}`
-                        : ""}
-                    </span>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex min-w-0 items-center gap-2 text-xs text-content-secondary">
+                        <Loader2 size={14} className="shrink-0 animate-spin text-accent" />
+                        <span className="truncate">
+                          {aiProgress.stage ?? AI_STAGE_LABELS[aiProgress.mode]}
+                          {aiProgress.total > 1 ? ` — ${aiProgress.current} из ${aiProgress.total}` : "…"}
+                        </span>
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={handleCancelAi}
+                        className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-white/[0.1] bg-surface-2/70 px-2 py-1 text-[11px] font-semibold text-content-secondary transition-colors hover:text-content"
+                      >
+                        <X size={12} />
+                        <span>Остановить</span>
+                      </button>
+                    </div>
+
+                    {aiProgress.total > 1 && (
+                      <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+                        <div
+                          className="h-full rounded-full bg-accent transition-[width] duration-300"
+                          style={{
+                            width: `${Math.min(100, Math.round((aiProgress.current / aiProgress.total) * 100))}%`,
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
 
+                {/* Отчёт модели о сделанном */}
                 {aiNotes.length > 0 && (
-                  <ul className="space-y-1">
+                  <ul className="mt-3 space-y-1.5">
                     {aiNotes.map((note) => (
-                      <li key={note} className="text-[11px] leading-relaxed text-content-muted">
-                        • {note}
+                      <li
+                        key={note}
+                        className="rounded-xl border border-white/[0.06] bg-surface-2/60 px-3 py-2 text-[11px] leading-relaxed text-content-secondary"
+                      >
+                        {note}
                       </li>
                     ))}
                   </ul>
                 )}
 
-                {audit && (
-                  <div className="space-y-2 rounded-xl border border-white/[0.07] bg-surface-2/70 p-3">
-                    {audit.summary && (
-                      <p className="text-[11px] leading-relaxed text-content-secondary">
-                        {audit.summary}
-                      </p>
-                    )}
-
-                    {audit.issues.length > 0 && (
-                      <ul className="space-y-1.5">
-                        {audit.issues.map((issue) => (
-                          <li key={`${issue.field}-${issue.problem}`} className="text-[11px]">
-                            <span className="font-semibold text-warning">{issue.field}:</span>{" "}
-                            <span className="text-content-secondary">{issue.problem}</span>
-                            {issue.suggestion && (
-                              <span className="text-content-muted"> → {issue.suggestion}</span>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-
-                    {audit.emptyFields.length > 0 && (
-                      <p className="text-[11px] text-content-muted">
-                        Не заполнено: {audit.emptyFields.join(", ")}
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
+              </section>
             )}
 
+            {/* Параметры импорта */}
+            <section className="rounded-2xl border border-white/[0.07] bg-surface-2/40 p-4">
+              <SectionTitle icon={Upload}>Параметры импорта</SectionTitle>
+
+              <div className="mt-3 space-y-2">
+                {preview.cardInfo && (
+                  <ToggleRow
+                    title="Очищать текст карточки"
+                    description="Убрать HTML, changelog и ссылки, а лист персонажа разложить по полям"
+                    checked={cleanText}
+                    onChange={handleToggleClean}
+                  />
+                )}
+
+                {preview.sessions.length > 0 && (
+                  <ToggleRow
+                    title={`Импортировать историю общения (${preview.stats.sessionsCount} веток)`}
+                    description="Сохранить все сообщения, дневники и накопленную память"
+                    checked={includeChats}
+                    onChange={() => setIncludeChats((prev) => !prev)}
+                  />
+                )}
+
+                {!preview.cardInfo && preview.sessions.length === 0 && (
+                  <p className="text-[11px] text-content-muted">
+                    Файл будет импортирован как есть — дополнительных параметров нет.
+                  </p>
+                )}
+              </div>
+            </section>
+
+            {/* Служебная строка */}
+            <div className="flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => {
+                  setPreview(null);
+                  setFile(null);
+                  setError(null);
+                  setAiNotes([]);
+                  setTab("import");
+                  setCleanReportOpen(false);
+                  fileInputRef.current?.click();
+                }}
+                className="inline-flex items-center gap-1.5 text-xs text-content-muted transition-colors hover:text-content"
+              >
+                <RotateCcw size={13} />
+                <span>Выбрать другой файл</span>
+              </button>
+
+              {file && (
+                <span className="max-w-[55%] truncate text-[11px] text-content-muted" title={file.name}>
+                  {file.name}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ---------- Ошибка ---------- */}
         {error && (
           <div
             role="alert"
-            className="flex items-start gap-2.5 rounded-2xl border border-danger/30 bg-danger/5 p-3.5 text-xs text-danger leading-relaxed"
+            className="flex items-start gap-2.5 rounded-2xl border border-danger/30 bg-danger/5 p-3.5 text-xs leading-relaxed text-danger"
           >
             <AlertCircle size={16} className="mt-0.5 shrink-0" />
             <span className="[overflow-wrap:anywhere]">{error}</span>
           </div>
         )}
 
+        {/* ---------- Футер ---------- */}
         <div className="flex items-center justify-end gap-2.5 border-t border-white/[0.08] pt-4">
           <button
             type="button"
             onClick={onClose}
-            className="rounded-xl border border-white/[0.08] bg-surface-2 px-4 py-2.5 text-xs font-semibold text-content-secondary hover:bg-surface-3 hover:text-content"
+            className="rounded-xl border border-white/[0.08] bg-surface-2 px-4 py-2.5 text-xs font-semibold text-content-secondary transition-colors hover:bg-surface-3 hover:text-content"
           >
             Отмена
           </button>
 
-          <button
-            type="button"
-            disabled={!preview || saving}
-            onClick={() => void handleImportSubmit()}
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-xs font-semibold text-on-accent shadow-[0_0_20px_rgba(139,92,246,0.25)] hover:bg-accent-hover active:bg-accent-pressed disabled:opacity-40"
-          >
-            {saving ? (
-              <Loader2 size={16} className="animate-spin" />
-            ) : (
-              <Sparkles size={16} />
-            )}
-            <span>Импортировать персонажа</span>
-          </button>
+          {preview && (
+            <button
+              type="button"
+              disabled={saving || aiBusy}
+              onClick={() => void handleImportSubmit()}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-xs font-semibold text-on-accent shadow-[0_0_20px_rgba(139,92,246,0.25)] transition-colors hover:bg-accent-hover active:bg-accent-pressed disabled:opacity-40"
+            >
+              {saving ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+              <span>Импортировать персонажа</span>
+            </button>
+          )}
         </div>
       </div>
     </Modal>

@@ -8,6 +8,9 @@ import {
   resolveEndpoints,
 } from "./apiClient";
 import { extractJsonBlock } from "./jsonRepair";
+import type { GeneratedGroup } from "./groupGenerator/types";
+
+export type { GeneratedGroup } from "./groupGenerator/types";
 
 export interface TagOption {
   id: string;
@@ -366,13 +369,6 @@ export function normalizeGeneratedCharacter(
 
 export const GROUP_SIZE_MIN = 2;
 export const GROUP_SIZE_MAX = 4;
-
-export interface GeneratedGroup {
-  /** Готовые к сохранению карточки персонажей (2–4). */
-  characters: Partial<Character>[];
-  /** Общий опенинг: как все они оказались в одной сцене. */
-  opening: string;
-}
 
 /** Ограничивает размер группы допустимым диапазоном. */
 export function clampGroupSize(size: number): number {

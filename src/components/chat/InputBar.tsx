@@ -23,6 +23,7 @@ interface Props {
   onSend: (text: string) => void;
   onOpenDirector: () => void;
   onRequestSuggestions: () => Promise<string[]>;
+  /** Продолжает текущую сцену отдельным сообщением без имитации реплики игрока. */
   onContinue: () => void;
   /** Прерывает текущую генерацию, если она идёт. */
   onStop?: () => void;
@@ -31,8 +32,13 @@ interface Props {
   modelName?: string;
   /** В ветке несколько персонажей — «Продолжить» передаёт ход следующему. */
   groupScene?: boolean;
-  /** Групповая сцена: присутствующие, кому можно адресовать реплику. */
-  participants?: { id: string; name: string; avatarUrl?: string }[];
+  /** Групповая сцена: присутствующие и ожидающие дистанционные контакты. */
+  participants?: {
+    id: string;
+    name: string;
+    avatarUrl?: string;
+    remote?: boolean;
+  }[];
   /** Выбранный адресат: его ответ ждём следующим. */
   targetId?: string | null;
   onSelectTarget?: (characterId: string) => void;
@@ -195,18 +201,32 @@ export function InputBar({
                 title={
                   isTarget
                     ? `Снять выбор: отвечает любой`
-                    : `Адресовать реплику: ${participant.name}`
+                    : participant.remote
+                      ? `Ответить на дистанционное сообщение от ${participant.name}`
+                      : `Адресовать реплику: ${participant.name}`
                 }
                 className={cn(
                   "flex shrink-0 items-center gap-1.5 rounded-full border py-1 pl-1 pr-2.5",
                   "text-[11px] font-medium transition-all active:scale-95 disabled:opacity-40",
+                  participant.remote && "border-sky-400/30 bg-sky-400/[0.08]",
                   isTarget
                     ? "border-accent/60 bg-accent/20 text-accent shadow-[0_0_16px_rgba(139,92,246,0.25)]"
                     : "border-white/[0.08] bg-[#121622]/80 text-content-secondary hover:border-accent/40 hover:bg-[#161b28] hover:text-accent"
                 )}
               >
-                <Avatar src={participant.avatarUrl} name={participant.name} size={20} />
-                <span className="max-w-[7rem] truncate">{participant.name}</span>
+                <span className="relative shrink-0">
+                  <Avatar src={participant.avatarUrl} name={participant.name} size={20} />
+                  {participant.remote && (
+                    <span
+                      aria-label="Новое дистанционное сообщение"
+                      className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-sky-300 ring-2 ring-[#121622]"
+                    />
+                  )}
+                </span>
+                <span className="max-w-[7rem] truncate">
+                  {participant.name}
+                  {participant.remote ? " · вне сцены" : ""}
+                </span>
               </button>
             );
           })}
@@ -231,8 +251,8 @@ export function InputBar({
           disabled={sending}
           title={
             groupScene
-              ? "Продолжить — передать ход следующему персонажу"
-              : "Продолжить — инициатива персонажа"
+              ? "Продолжить сцену — передать ход следующему персонажу"
+              : "Продолжить текущую сцену"
           }
           className={toolButtonClass}
         >

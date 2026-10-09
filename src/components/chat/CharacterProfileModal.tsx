@@ -23,12 +23,43 @@ import {
   Check,
   X,
   RotateCw,
+  AlertTriangle,
+  Copy,
+  Info,
 } from "lucide-react";
 import { Modal } from "../common/Modal";
 import { Avatar } from "../common/Avatar";
 import { ImagePromptModal } from "../common/ImagePromptModal";
 import type { Character, ChatSession } from "../../types";
+import {
+  MemoryExtractionError,
+  type ChronicleRefreshSummary,
+  type MemoryRefreshSummary,
+} from "../../services/memoryEngine";
+import { copyTextToClipboard } from "../../utils/clipboard";
 import { cn } from "../../utils/cn";
+
+/**
+ * Сообщение под вкладками персонажа. Общее для всех вкладок (Память, Дневник,
+ * Хроника): раньше ошибка рисовалась только внутри вкладки «Память», а кнопка
+ * «Актуализировать» есть ещё и в «Дневнике» — поэтому сбой выглядел как
+ * «покрутилось и ничего не произошло».
+ */
+type MemoryFeedback = {
+  kind: "error" | "success" | "info";
+  text: string;
+  /** Сырой ответ модели — показываем, когда он есть: причина видна без консоли. */
+  raw?: string;
+};
+
+/** Склонение: 1 якорь, 2 якоря, 5 якорей. */
+function plural(count: number, one: string, few: string, many: string): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
 
 interface Props {
   open: boolean;
@@ -36,8 +67,8 @@ interface Props {
   character: Character;
   session: ChatSession;
   messageCount?: number;
-  onManualExtractMemory?: () => Promise<void>;
-  onRebuildChronicle?: () => Promise<void>;
+  onManualExtractMemory?: () => Promise<MemoryRefreshSummary | null>;
+  onRebuildChronicle?: () => Promise<ChronicleRefreshSummary | null>;
   onDeleteFact?: (factId: string) => void;
   onAddFact?: (content: string) => void;
   onTogglePinFact?: (factId: string) => void;
@@ -135,6 +166,9 @@ export function CharacterProfileModal({
   const [activeTab, setActiveTab] = useState<ProfileTab>("bio");
   const [loadingExtract, setLoadingExtract] = useState(false);
   const [loadingChronicle, setLoadingChronicle] = useState(false);
+  const [memoryFeedback, setMemoryFeedback] = useState<MemoryFeedback | null>(null);
+  const [chronicleFeedback, setChronicleFeedback] = useState<MemoryFeedback | null>(null);
+  const [copiedRaw, setCopiedRaw] = useState(false);
   const [promptModalOpen, setPromptModalOpen] = useState(false);
   const [newFactContent, setNewFactContent] = useState("");
 
@@ -149,6 +183,14 @@ export function CharacterProfileModal({
   const diary = session.diary || [];
   const storyLog = session.storyLog || [];
 
+  // Личная память участника групповой сцены. В группе субъективные мысли
+  // хранятся здесь (participantMemory), а не в общих session.diary /
+  // session.extractedFacts — поэтому разделы «Память» и «Дневник» выглядели
+  // пустыми, хотя память собиралась.
+  const personalMemory = session.participantMemory?.[character.id] ?? null;
+  const personalNotes = personalMemory?.privateNotes ?? [];
+  const personalIntention = personalMemory?.intention ?? null;
+
   // Существующая сортировка: закреплённые факты первыми.
   const facts = [...(session.extractedFacts || [])].sort((a, b) => {
     if (Boolean(a.isPinned) === Boolean(b.isPinned)) return 0;
@@ -159,9 +201,52 @@ export function CharacterProfileModal({
     if (!onManualExtractMemory || loadingExtract) return;
 
     setLoadingExtract(true);
+    setMemoryFeedback(null);
+    setCopiedRaw(false);
 
     try {
-      await onManualExtractMemory();
+      const result = await onManualExtractMemory();
+
+      if (!result) {
+        setMemoryFeedback({
+          kind: "info",
+          text: "Данные этой ветки ещё не загрузились — попробуйте ещё раз.",
+        });
+      } else if (result.skippedReason) {
+        setMemoryFeedback({ kind: "info", text: result.skippedReason });
+      } else if (result.scope === "group") {
+        setMemoryFeedback({
+          kind: "success",
+          text:
+            `Личная память обновлена (${character.name}): ` +
+            `${result.facts} ${plural(result.facts, "заметка", "заметки", "заметок")}. ` +
+            "Общая хроника обновляется кнопкой в панели режиссёра.",
+        });
+      } else {
+        const parts = [
+          `${result.facts} ${plural(result.facts, "якорь", "якоря", "якорей")}`,
+        ];
+        if (result.diaryEntries > 0) parts.push("запись в дневник");
+        if (result.hasSceneEvent) parts.push("событие сцены");
+        setMemoryFeedback({
+          kind: "success",
+          text: `Память обновлена: ${parts.join(" · ")}.`,
+        });
+      }
+    } catch (cause) {
+      // Раньше ошибка уходила в никуда: индикатор гас, а разделы памяти
+      // оставались прежними — со стороны это выглядело как «кнопка не работает».
+      setMemoryFeedback({
+        kind: "error",
+        text:
+          cause instanceof Error && cause.message
+            ? cause.message
+            : "Не удалось обновить память и дневник.",
+        raw:
+          cause instanceof MemoryExtractionError && cause.rawAnswer
+            ? cause.rawAnswer
+            : undefined,
+      });
     } finally {
       setLoadingExtract(false);
     }
@@ -171,9 +256,42 @@ export function CharacterProfileModal({
     if (!onRebuildChronicle || loadingChronicle) return;
 
     setLoadingChronicle(true);
+    setChronicleFeedback(null);
+    setCopiedRaw(false);
 
     try {
-      await onRebuildChronicle();
+      const result = await onRebuildChronicle();
+
+      if (!result) {
+        setChronicleFeedback({
+          kind: "info",
+          text: "Данные этой ветки ещё не загрузились — попробуйте ещё раз.",
+        });
+      } else if (result.skippedReason) {
+        setChronicleFeedback({ kind: "info", text: result.skippedReason });
+      } else {
+        setChronicleFeedback({
+          kind: "success",
+          text: `Хроника обновлена: ${result.episodes} ${plural(
+            result.episodes,
+            "эпизод",
+            "эпизода",
+            "эпизодов"
+          )}.`,
+        });
+      }
+    } catch (cause) {
+      setChronicleFeedback({
+        kind: "error",
+        text:
+          cause instanceof Error && cause.message
+            ? cause.message
+            : "Не удалось собрать хронику по диалогу.",
+        raw:
+          cause instanceof MemoryExtractionError && cause.rawAnswer
+            ? cause.rawAnswer
+            : undefined,
+      });
     } finally {
       setLoadingChronicle(false);
     }
@@ -354,6 +472,81 @@ export function CharacterProfileModal({
             tabIndex={0}
             className="min-w-0 rounded-xl"
           >
+            {/* Итог обновления виден из любой вкладки: кнопка «Актуализировать»
+                есть и в «Дневнике», и в «Памяти», и в «Хронике», поэтому ошибка
+                не должна прятаться в одной из них. */}
+            {[chronicleFeedback, memoryFeedback]
+              .filter((item): item is MemoryFeedback => Boolean(item))
+              .map((item, index) => (
+                <div
+                  key={`${item.kind}-${index}`}
+                  role={item.kind === "error" ? "alert" : "status"}
+                  className={cn(
+                    "mb-5 rounded-xl border p-3.5",
+                    item.kind === "error" && "border-danger/30 bg-danger/5",
+                    item.kind === "success" && "border-success/30 bg-success/5",
+                    item.kind === "info" && "border-border bg-surface-2"
+                  )}
+                >
+                  <div className="flex items-start gap-2.5">
+                    {item.kind === "error" ? (
+                      <AlertTriangle
+                        size={16}
+                        aria-hidden="true"
+                        className="mt-0.5 shrink-0 text-danger"
+                      />
+                    ) : item.kind === "success" ? (
+                      <Check
+                        size={16}
+                        aria-hidden="true"
+                        className="mt-0.5 shrink-0 text-success"
+                      />
+                    ) : (
+                      <Info
+                        size={16}
+                        aria-hidden="true"
+                        className="mt-0.5 shrink-0 text-content-muted"
+                      />
+                    )}
+
+                    <div className="min-w-0 flex-1">
+                      <p
+                        className={cn(
+                          "text-sm leading-relaxed",
+                          item.kind === "error" ? "text-danger" : "text-content"
+                        )}
+                      >
+                        {item.text}
+                      </p>
+
+                      {item.raw && (
+                        <div className="mt-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void copyTextToClipboard(item.raw || "");
+                              setCopiedRaw(true);
+                              window.setTimeout(() => setCopiedRaw(false), 2000);
+                            }}
+                            className="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-2.5 py-1 text-xs font-semibold text-content-secondary hover:bg-surface-3"
+                          >
+                            {copiedRaw ? (
+                              <Check size={13} aria-hidden="true" className="text-success" />
+                            ) : (
+                              <Copy size={13} aria-hidden="true" />
+                            )}
+                            {copiedRaw ? "Скопировано" : "Скопировать ответ модели"}
+                          </button>
+                          <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-surface-3 p-2.5 text-xs leading-relaxed text-content-secondary">
+                            {item.raw.slice(0, 4000)}
+                          </pre>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+
             {activeTab === "bio" && (
               <div className="space-y-6">
                 {hasBio ? (
@@ -599,11 +792,43 @@ export function CharacterProfileModal({
                   </p>
                 )}
 
+                {personalNotes.length > 0 && (
+                  <section className="mb-5 rounded-2xl border border-accent/20 bg-accent/[0.04] p-4 sm:p-5">
+                    <h5 className="mb-3 inline-flex items-center gap-2 text-sm font-semibold text-accent">
+                      <Brain size={16} aria-hidden="true" />
+                      Личные заметки · {character.name}
+                    </h5>
+
+                    <ul className="space-y-2.5">
+                      {personalNotes.map((note, index) => (
+                        <li
+                          key={`${index}-${note.slice(0, 16)}`}
+                          className="flex gap-2.5 text-sm leading-relaxed text-content-secondary"
+                        >
+                          <span aria-hidden="true" className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-accent/60" />
+                          <span className="min-w-0 [overflow-wrap:anywhere]">{note}</span>
+                        </li>
+                      ))}
+                    </ul>
+
+                    {personalIntention?.text && (
+                      <p className="mt-4 border-t border-white/[0.06] pt-3 text-sm leading-relaxed text-content-muted">
+                        <span className="font-semibold text-content-secondary">Намерение: </span>
+                        {personalIntention.text}
+                      </p>
+                    )}
+                  </section>
+                )}
+
                 {diary.length === 0 ? (
                   <EmptyState
                     icon={Heart}
                     title="В дневнике пока нет записей"
-                    description="Они формируются автоматически каждые 8 сообщений или по кнопке «Записать мысль»."
+                    description={
+                      personalNotes.length > 0
+                        ? "Личные записи персонажа показаны выше — они живут в памяти сцены."
+                        : "Они формируются автоматически каждые 8 сообщений или по кнопке «Записать мысль»."
+                    }
                   />
                 ) : (
                   <div className="space-y-4">
@@ -705,6 +930,34 @@ export function CharacterProfileModal({
                   >
                     Обрабатываем память и дневник…
                   </p>
+                )}
+
+                {personalNotes.length > 0 && (
+                  <section className="mb-5 rounded-2xl border border-accent/20 bg-accent/[0.04] p-4 sm:p-5">
+                    <h5 className="mb-3 inline-flex items-center gap-2 text-sm font-semibold text-accent">
+                      <Brain size={16} aria-hidden="true" />
+                      Личная память · {character.name}
+                    </h5>
+
+                    <ul className="space-y-2.5">
+                      {personalNotes.map((note, index) => (
+                        <li
+                          key={`${index}-${note.slice(0, 16)}`}
+                          className="flex gap-2.5 text-sm leading-relaxed text-content-secondary"
+                        >
+                          <span aria-hidden="true" className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-accent/60" />
+                          <span className="min-w-0 [overflow-wrap:anywhere]">{note}</span>
+                        </li>
+                      ))}
+                    </ul>
+
+                    {personalIntention?.text && (
+                      <p className="mt-4 border-t border-white/[0.06] pt-3 text-sm leading-relaxed text-content-muted">
+                        <span className="font-semibold text-content-secondary">Намерение: </span>
+                        {personalIntention.text}
+                      </p>
+                    )}
+                  </section>
                 )}
 
                 <form

@@ -251,6 +251,71 @@ describe("групповая сцена: выбор говорящего", () =>
     expect(prompt).toContain("не говори за них");
   });
 
+  it("для локальной модели отделяет теги от cloud JSON и не смешивает presence", () => {
+    const prompt = buildSystemPrompt(
+      cast[0],
+      {
+        id: "s-local",
+        characterId: "c-1",
+        isGroup: true,
+        characterIds: ["c-2", "c-3"],
+        activeCharacterIds: ["c-1", "c-3"],
+        absentReasons: { "c-2": "у аудитории" },
+        title: "Ветка",
+        directorNotes: "",
+        currentStats: { ...DEFAULT_STATS },
+        extractedFacts: [
+          { id: "fact-1", keys: ["секрет"], content: "личный вывод лидера", createdAt: 1 },
+        ],
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      player,
+      [],
+      true,
+      {
+        others: [cast[1], cast[2]],
+        absent: [{ character: cast[1], reason: "у аудитории" }],
+      }
+    );
+
+    expect(prompt).toContain("ПОЛИФОНИЯ СЦЕНЫ И ПРИСУТСТВИЕ ИГРОКА");
+    expect(prompt).toContain("не обязан быть адресатом каждой реплики");
+    expect(prompt).toContain("В сцене сейчас: Ая, Кай");
+    expect(prompt).not.toContain("В сцене сейчас: Ая, Рин, Кай");
+    expect(prompt).toContain('<returned names="Имя" />');
+    expect(prompt).toContain('<left names="Имя" reason="короткая причина" />');
+    expect(prompt).not.toContain('поле "returned"');
+    expect(prompt).not.toContain("innerThought");
+    expect(prompt).not.toContain("личный вывод лидера");
+
+    const cloudPrompt = buildSystemPrompt(
+      cast[0],
+      {
+        id: "s-cloud",
+        characterId: "c-1",
+        isGroup: true,
+        characterIds: ["c-2", "c-3"],
+        activeCharacterIds: ["c-1", "c-3"],
+        title: "Ветка",
+        directorNotes: "",
+        currentStats: { ...DEFAULT_STATS },
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      player,
+      [],
+      false,
+      { others: [cast[1], cast[2]] }
+    );
+
+    expect(cloudPrompt).toContain('"innerThought"');
+    expect(cloudPrompt).toContain('"returned"');
+    expect(cloudPrompt).not.toContain("<thought>");
+    expect(cloudPrompt).not.toContain("<stats");
+    expect(cloudPrompt).not.toContain("<returned");
+  });
+
   it("сопоставляет вернувшихся по имени, включая падежи", () => {
     const absent = [cast[1], cast[2]];
 

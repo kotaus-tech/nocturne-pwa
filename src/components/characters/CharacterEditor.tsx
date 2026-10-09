@@ -20,6 +20,7 @@ import {
   AlertCircle,
   Check,
   Palette,
+  Dna,
 } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { getPersonaState } from "../../db";
@@ -27,6 +28,7 @@ import { Modal } from "../common/Modal";
 import { Avatar } from "../common/Avatar";
 import { ImageCropperModal } from "../common/ImageCropperModal";
 import { CharacterGeneratorModal } from "./CharacterGeneratorModal";
+import { GeneratorV2Modal } from "./v2/GeneratorV2Modal";
 import { TAG_CATEGORIES } from "../../services/characterGenerator";
 import { WALLPAPER_PRESETS } from "../../utils/wallpaperPresets";
 import { prepareImageFile, WALLPAPER_OPTIONS, MAX_SOURCE_MB } from "../../utils/image";
@@ -332,6 +334,7 @@ export function CharacterEditor({
   const [activeTab, setActiveTab] = useState<TabType>("main");
   const [cropImage, setCropImage] = useState<string | null>(null);
   const [generatorOpen, setGeneratorOpen] = useState(false);
+  const [generatorV2Open, setGeneratorV2Open] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [failedWallpaper, setFailedWallpaper] = useState<string | null>(null);
@@ -403,6 +406,22 @@ export function CharacterEditor({
       wallpaperUrl: prev.wallpaperUrl || generated.wallpaperUrl || "",
       tags: generated.tags && generated.tags.length > 0 ? generated.tags : prev.tags,
       genre: generated.genre || prev.genre || "",
+    }));
+    setActiveTab("main");
+  };
+
+  /**
+   * Character DNA (V2): черновик получает готовую карточку с blueprint,
+   * но id/createdAt и уже загруженные пользователем картинки сохраняются.
+   */
+  const handleApplyGeneratedV2 = (generated: Character) => {
+    setDraft((prev) => ({
+      ...prev,
+      ...generated,
+      id: prev.id,
+      createdAt: prev.createdAt,
+      avatarUrl: prev.avatarUrl || generated.avatarUrl || "",
+      wallpaperUrl: prev.wallpaperUrl || generated.wallpaperUrl || "",
     }));
     setActiveTab("main");
   };
@@ -508,23 +527,49 @@ export function CharacterEditor({
         size="lg"
       >
         <div className="space-y-5 sm:space-y-6">
-          <button
-            type="button"
-            onClick={() => setGeneratorOpen(true)}
-            className="flex min-h-12 sm:min-h-14 w-full items-center gap-3 rounded-2xl border border-accent/40 bg-accent/10 px-3.5 py-2.5 sm:px-4 sm:py-3 text-left transition-all hover:border-accent hover:bg-accent/15"
-          >
-            <span className="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-xl bg-accent/20 text-accent">
-              <Sparkles size={18} />
-            </span>
-            <div className="min-w-0 flex-1">
-              <span className="block text-xs sm:text-sm font-bold text-zinc-100">
-                AI-генератор персонажа
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => setGeneratorOpen(true)}
+              className="flex min-h-12 sm:min-h-14 w-full items-center gap-3 rounded-2xl border border-accent/40 bg-accent/10 px-3.5 py-2.5 sm:px-4 sm:py-3 text-left transition-all hover:border-accent hover:bg-accent/15"
+            >
+              <span className="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-xl bg-accent/20 text-accent">
+                <Sparkles size={18} />
               </span>
-              <span className="block text-[11px] sm:text-xs text-content-secondary">
-                Сгенерировать образ и предысторию по задумке
+              <div className="min-w-0 flex-1">
+                <span className="block text-xs sm:text-sm font-bold text-zinc-100">
+                  AI-генератор персонажа
+                  <span className="ml-1.5 rounded-md bg-accent/20 px-1.5 py-0.5 text-[10px] font-semibold text-accent">
+                    V1
+                  </span>
+                </span>
+                <span className="block text-[11px] sm:text-xs text-content-secondary">
+                  Сгенерировать образ и предысторию по задумке
+                </span>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setGeneratorV2Open(true)}
+              className="flex min-h-12 sm:min-h-14 w-full items-center gap-3 rounded-2xl border border-accent/40 bg-accent/10 px-3.5 py-2.5 sm:px-4 sm:py-3 text-left transition-all hover:border-accent hover:bg-accent/15"
+            >
+              <span className="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-xl bg-accent/20 text-accent">
+                <Dna size={18} />
               </span>
-            </div>
-          </button>
+              <div className="min-w-0 flex-1">
+                <span className="block text-xs sm:text-sm font-bold text-zinc-100">
+                  Character DNA
+                  <span className="ml-1.5 rounded-md bg-accent/20 px-1.5 py-0.5 text-[10px] font-semibold text-accent">
+                    V2
+                  </span>
+                </span>
+                <span className="block text-[11px] sm:text-xs text-content-secondary">
+                  Глубокий генератор современных взрослых персонажей
+                </span>
+              </div>
+            </button>
+          </div>
 
           {/* Вкладки: оптимизированы для мобильных, исключен перенос букв */}
           <div
@@ -951,6 +996,12 @@ export function CharacterEditor({
         open={generatorOpen}
         onClose={() => setGeneratorOpen(false)}
         onApply={handleApplyGenerated}
+      />
+
+      <GeneratorV2Modal
+        open={generatorV2Open}
+        onClose={() => setGeneratorV2Open(false)}
+        onApply={handleApplyGeneratedV2}
       />
     </>
   );

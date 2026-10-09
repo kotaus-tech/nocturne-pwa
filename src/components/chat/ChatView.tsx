@@ -34,7 +34,11 @@ import type {
   ThoughtMode,
 } from "../../types";
 import { computeStatsDelta } from "../../services/metaParser";
-import { buildSystemPrompt } from "../../services/promptBuilder";
+import {
+  buildPromptParts,
+  composeTurnTail,
+} from "../../services/promptBuilder";
+import { getSliceForContext } from "../../services/contextWindow";
 import {
   buildAssistantLabeler,
   buildCharacterIndex,
@@ -147,21 +151,6 @@ interface PendingReadingPosition {
   mode: "chat" | "novel";
   anchor: ReadingAnchor | null;
   fallbackScrollTop: number;
-}
-
-function getSliceForContext(
-  allContextMessages: Message[],
-  windowSize: number,
-  steppedEnabled: boolean
-): Message[] {
-  if (!steppedEnabled || allContextMessages.length <= windowSize) {
-    return allContextMessages.slice(-windowSize);
-  }
-
-  const step = 10;
-  const overflow = allContextMessages.length - windowSize;
-  const steppedStart = Math.floor(overflow / step) * step;
-  return allContextMessages.slice(steppedStart);
 }
 
 function TypingBubble({
@@ -1161,7 +1150,9 @@ export function ChatView({
         const speakerStats = statsFor(speaker.id);
         const speakerMemory = getParticipantMemory(session, speaker.id);
 
-        const systemPrompt = buildSystemPrompt(
+        // Стабильный префикс — системным сообщением; изменчивый контекст хода
+        // уходит в хвост запроса ПОСЛЕ истории (см. composeTurnTail).
+        const promptParts = buildPromptParts(
           speaker,
           session,
           userProfile,
@@ -1180,6 +1171,7 @@ export function ChatView({
               }
             : undefined
         );
+        const systemPrompt = promptParts.system;
 
         const turns = isGroupScene
           ? messagesToTurns(sceneRecent, turnLabelFor(speaker.id))
@@ -1190,18 +1182,18 @@ export function ChatView({
           userProfile.name,
           speaker.name
         );
-        if (turnDirective) {
-          turns.push({
-            role: "user",
-            content: turnDirective,
-          });
-        } else if (targetName && speaker.id === speakers[0].id) {
-          // Игрок выбрал адресата аватаром: подсказка уходит только в запрос,
-          // в истории сообщения её нет.
-          turns.push({
-            role: "user",
-            content: `[Отвечает: ${speaker.name}. Игрок обратился к нему в первую очередь — отвечай за ${speaker.name}, остальные остаются в сцене.]`,
-          });
+        // Игрок выбрал адресата аватаром: подсказка уходит только в запрос,
+        // в истории сообщения её нет. Директива хода и подсказка — один блок.
+        const addresseeHint =
+          !turnDirective && targetName && speaker.id === speakers[0].id
+            ? `[Отвечает: ${speaker.name}. Игрок обратился к нему в первую очередь — отвечай за ${speaker.name}, остальные остаются в сцене.]`
+            : null;
+        const tail = composeTurnTail(
+          promptParts.turnContext,
+          turnDirective ?? addresseeHint
+        );
+        if (tail) {
+          turns.push({ role: "user", content: tail });
         }
 
         setStreamingCharacterId(speaker.id);
@@ -1832,7 +1824,7 @@ export function ChatView({
         directorNotes: "",
       };
 
-      const basePrompt = buildSystemPrompt(
+      const { system: basePrompt, turnContext } = buildPromptParts(
         target,
         remoteSession,
         userProfile,
@@ -1853,6 +1845,10 @@ export function ChatView({
       const systemPrompt = `${basePrompt}\n\nТы отвечаешь на СМС/сообщение от ${userProfile.name}, находясь ФИЗИЧЕСКИ ВНЕ основной сцены — ты сейчас не там, где происходит основное действие. Отвечай только текстом сообщения, коротко и естественно, как в переписке, а не как в личной встрече. Ты не видишь и не знаешь, что происходит в основной сцене прямо сейчас, если это не было тебе сообщено в этой переписке.`;
 
       const turns = messagesToTurns(thread);
+      const tail = composeTurnTail(turnContext);
+      if (tail) {
+        turns.push({ role: "user", content: tail });
+      }
 
       setStreamingCharacterId(target.id);
       const parsed = await requestRoleplayReply(
@@ -2040,7 +2036,7 @@ export function ChatView({
           !isRemoteThreadMessage(item, participants, presentCharacters)
       );
 
-      const systemPrompt = buildSystemPrompt(
+      const promptParts = buildPromptParts(
         speaker,
         session,
         userProfile!,
@@ -2062,9 +2058,14 @@ export function ChatView({
             }
           : undefined
       );
+      const systemPrompt = promptParts.system;
       const turns = isGroupScene
         ? messagesToTurns(sceneRecent, turnLabelFor(speaker.id))
         : messagesToTurns(sceneRecent);
+      const tail = composeTurnTail(promptParts.turnContext);
+      if (tail) {
+        turns.push({ role: "user", content: tail });
+      }
 
       setStreamingCharacterId(speaker.id);
       setLiveStreamedText("");

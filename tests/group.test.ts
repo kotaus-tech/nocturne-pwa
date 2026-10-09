@@ -7,7 +7,7 @@ import {
   sanitizeParticipantStats,
   sanitizeSession,
 } from "../src/db";
-import { buildSystemPrompt } from "../src/services/promptBuilder";
+import { buildPromptParts } from "../src/services/promptBuilder";
 import { messagesToTurns } from "../src/services/apiClient";
 import {
   buildAssistantLabeler,
@@ -22,6 +22,12 @@ import {
 import { deleteCharacterCascade, createSession } from "../src/utils/sessionActions";
 import { DEFAULT_STATS } from "../src/types";
 import type { Character, ChatSession, Message, UserProfile } from "../src/types";
+
+/** Полный промпт хода для проверок содержимого: префикс + динамический хвост. */
+const buildSystemPrompt = (...args: Parameters<typeof buildPromptParts>): string => {
+  const parts = buildPromptParts(...args);
+  return `${parts.system}\n\n${parts.turnContext}`;
+};
 
 /**
  * Групповые сцены: несколько персонажей в одной ветке.

@@ -13,7 +13,7 @@ import {
   resolvePresence,
 } from "../src/services/groupScene";
 import { buildRoutingPrompt, parseRoutingAnswer } from "../src/services/groupRouter";
-import { buildSystemPrompt } from "../src/services/promptBuilder";
+import { buildPromptParts } from "../src/services/promptBuilder";
 import {
   matchLeftCharacters,
   matchReturnedCharacters,
@@ -32,6 +32,12 @@ import {
 import { createGroupSession } from "../src/utils/sessionActions";
 import { DEFAULT_STATS } from "../src/types";
 import type { Character } from "../src/types";
+
+/** Полный промпт хода для проверок содержимого: префикс + динамический хвост. */
+const buildSystemPrompt = (...args: Parameters<typeof buildPromptParts>): string => {
+  const parts = buildPromptParts(...args);
+  return `${parts.system}\n\n${parts.turnContext}`;
+};
 
 /**
  * Техзаказ по групповым сценам: присутствие в сцене, выбор говорящего,

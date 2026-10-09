@@ -10,10 +10,15 @@ import {
 } from "lucide-react";
 import { Modal } from "../common/Modal";
 import type { Character, ChatSession, Message, UserProfile, ApiConfig } from "../../types";
-import { buildSystemPrompt } from "../../services/promptBuilder";
+import {
+  buildPromptParts,
+  composeTurnTail,
+} from "../../services/promptBuilder";
 import { isLocalEndpoint, messagesToTurns } from "../../services/apiClient";
 import {
   buildCharacterIndex,
+  getParticipantMemory,
+  isRemoteThreadMessage,
   statsForCharacter,
 } from "../../services/groupScene";
 import { copyTextToClipboard } from "../../utils/clipboard";
@@ -92,13 +97,25 @@ export function PromptInspectorModal({
     );
   }, [roster, session, activeSpeaker.id]);
 
-  // Сборка полного системного промпта, идентичного запросу к API
-  const systemPrompt = useMemo(() => {
-    return buildSystemPrompt(
+  // Сборка запроса так же, как в ChatView: стабильный префикс, история и
+  // эфемерный хвост хода после неё. Хвост не сохраняется в истории.
+  const promptParts = useMemo(() => {
+    const absentIds = new Set((absent ?? []).map((item) => item.character.id));
+    const presentList = (participants ?? [character]).filter(
+      (item) => !absentIds.has(item.id)
+    );
+    // Дистанционные ответы отсутствующих не попадают в основную сцену.
+    const sceneMessages = contextMessages.filter(
+      (message) => !isRemoteThreadMessage(message, participants ?? [character], presentList)
+    );
+
+    const memory = getParticipantMemory(session, activeSpeaker.id);
+
+    return buildPromptParts(
       activeSpeaker,
       session,
       userProfile,
-      contextMessages,
+      sceneMessages,
       isLocal,
       others.length > 0
         ? {
@@ -106,6 +123,10 @@ export function PromptInspectorModal({
             currentStats: speakerStats,
             absent,
             relations: session.relations,
+            personalMemory: {
+              privateNotes: memory.privateNotes,
+              intention: memory.intention,
+            },
           }
         : undefined
     );
@@ -118,10 +139,14 @@ export function PromptInspectorModal({
     others,
     absent,
     speakerStats,
+    participants,
+    character,
   ]);
 
-  // Сборка массива реплик turns
-  const turns = useMemo(() => {
+  const systemPrompt = promptParts.system;
+
+  // Сборка массива реплик turns (история окна)
+  const historyTurns = useMemo(() => {
     if (!roster) return messagesToTurns(contextMessages);
 
     const namesById = new Map(roster.map((item) => [item.id, item.name]));
@@ -133,14 +158,35 @@ export function PromptInspectorModal({
     });
   }, [contextMessages, roster, activeSpeaker.id, character.id]);
 
+  // Хвост хода: контекст без директивы. Директива продолжения/инициативы и
+  // подсказка адресата добавляются только к конкретному ручному запросу.
+  const tailText = useMemo(
+    () => composeTurnTail(promptParts.turnContext),
+    [promptParts.turnContext]
+  );
+
+  const turns = useMemo(
+    () =>
+      tailText ? [...historyTurns, { role: "user" as const, content: tailText }] : historyTurns,
+    [historyTurns, tailText]
+  );
+
   // Расчёт метрик токенов
   const systemTokens = useMemo(() => estimateTokens(systemPrompt), [systemPrompt]);
+
+  const historyText = useMemo(() => {
+    return historyTurns.map((t) => `${t.role}: ${t.content}`).join("\n\n");
+  }, [historyTurns]);
+
+  const historyTokens = useMemo(() => estimateTokens(historyText), [historyText]);
+
+  const tailTokens = useMemo(() => estimateTokens(tailText), [tailText]);
 
   const turnsText = useMemo(() => {
     return turns.map((t) => `${t.role}: ${t.content}`).join("\n\n");
   }, [turns]);
 
-  const turnsTokens = useMemo(() => estimateTokens(turnsText), [turnsText]);
+  const turnsTokens = historyTokens + tailTokens;
 
   const inputTokensTotal = systemTokens + turnsTokens;
 
@@ -181,7 +227,7 @@ export function PromptInspectorModal({
 
           <div className="rounded-2xl border border-white/[0.08] bg-[#121622]/90 p-3 shadow-inner">
             <span className="text-[10px] font-bold uppercase tracking-wider text-accent">
-              Системный промпт
+              Префикс (кэшируется)
             </span>
             <p className="mt-1 text-lg font-bold tabular-nums text-accent">
               ~{systemTokens.toLocaleString()} <span className="text-xs font-normal text-content-muted">ток.</span>
@@ -196,10 +242,10 @@ export function PromptInspectorModal({
               История сообщений
             </span>
             <p className="mt-1 text-lg font-bold tabular-nums text-info">
-              ~{turnsTokens.toLocaleString()} <span className="text-xs font-normal text-content-muted">ток.</span>
+              ~{historyTokens.toLocaleString()} <span className="text-xs font-normal text-content-muted">ток.</span>
             </p>
             <p className="text-[10px] text-content-secondary">
-              {contextMessages.length} реплик в окне
+              {historyTurns.length} реплик в окне · хвост ~{tailTokens.toLocaleString()} ток.
             </p>
           </div>
 
@@ -331,7 +377,7 @@ export function PromptInspectorModal({
                 <span>Как расходуются токены в этой ветке</span>
               </div>
               <p>
-                • При включённом <strong>ступенчатом окне</strong> системный промпт и первые сообщения диалога сохраняют фиксированное положение в KV-памяти сервера. Ru-OpenRouter и DeepSeek считывают до 90% этого текста из кэша по тарифу со скидкой.
+                • Системный префикс (правила, паспорта, синопсис) и история при <strong>ступенчатом окне</strong> совпадают побайтно между ходами, поэтому провайдер с автоматическим кэшем может переиспользовать их. Изменчивый контекст хода (шкалы, lorebook, заметки режиссёра, мысли, присутствие) идёт отдельным служебным сообщением в конце запроса и в кэш не попадает.
               </p>
               <p>
                 • Каждые 8 сообщений автоматически запускается фоновый экстрактор памяти, сохраняя важные события в синопсис и дневник персонажа.
@@ -373,7 +419,7 @@ export function PromptInspectorModal({
           <div className="space-y-2.5">
             <div className="flex items-center justify-between">
               <span className="text-xs text-content-muted">
-                Сообщений в окне: {turns.length} (~{turnsTokens} токенов)
+                Реплик в окне: {historyTurns.length} (~{historyTokens} токенов) · хвост хода: ~{tailTokens} токенов, эфемерный, в историю не сохраняется
               </span>
 
               <button
@@ -391,25 +437,32 @@ export function PromptInspectorModal({
             </div>
 
             <div className="max-h-[50vh] space-y-3 overflow-y-auto overscroll-contain pr-1">
-              {turns.map((turn, idx) => (
+              {turns.map((turn, idx) => {
+                const isTail = Boolean(tailText) && idx === turns.length - 1;
+                return (
                 <div
                   key={idx}
                   className={cn(
                     "rounded-2xl border p-3 text-xs leading-relaxed",
-                    turn.role === "user"
-                      ? "border-accent/30 bg-[#221b33]/80 text-zinc-100"
-                      : "border-white/[0.07] bg-[#121622]/80 text-zinc-200"
+                    isTail
+                      ? "border-warning/40 border-dashed bg-warning/5 text-zinc-300"
+                      : turn.role === "user"
+                        ? "border-accent/30 bg-[#221b33]/80 text-zinc-100"
+                        : "border-white/[0.07] bg-[#121622]/80 text-zinc-200"
                   )}
                 >
                   <div className="mb-1 flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-content-muted">
                     <span>
-                      #{idx + 1} · {turn.role === "user" ? userProfile.name : character.name}
+                      {isTail
+                        ? `#${idx + 1} · ХВОСТ ХОДА (служебный, после истории, не сохраняется)`
+                        : `#${idx + 1} · ${turn.role === "user" ? userProfile.name : character.name}`}
                     </span>
                     <span>~{estimateTokens(turn.content)} ток.</span>
                   </div>
                   <p className="whitespace-pre-wrap select-text">{turn.content}</p>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}

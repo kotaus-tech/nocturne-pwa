@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSystemPrompt } from "../src/services/promptBuilder";
+import { buildPromptParts } from "../src/services/promptBuilder";
 import { messagesToTurns, type ChatTurn } from "../src/services/apiClient";
 import {
   buildAssistantLabeler,
@@ -17,6 +17,12 @@ import type {
   RelationshipStats,
   UserProfile,
 } from "../src/types";
+
+/** Полный промпт хода для проверок содержимого: префикс + динамический хвост. */
+const buildSystemPrompt = (...args: Parameters<typeof buildPromptParts>): string => {
+  const parts = buildPromptParts(...args);
+  return `${parts.system}\n\n${parts.turnContext}`;
+};
 
 /**
  * Сквозной контракт группового хода: собираем ровно то, что уходит в модель,

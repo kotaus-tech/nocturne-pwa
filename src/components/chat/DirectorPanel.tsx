@@ -7,6 +7,8 @@ import {
 } from "react";
 import {
   Clapperboard,
+  Copy,
+  EyeOff,
   Sparkles,
   Loader2,
   Zap,
@@ -41,6 +43,12 @@ import {
 import { useLiveQuery } from "dexie-react-hooks";
 import { Reorder, useDragControls } from "framer-motion";
 import { Modal } from "../common/Modal";
+import { MysteryPlaceholder } from "../common/MysteryPlaceholder";
+import {
+  MYSTERY_TOASTS_LOCKED_HINT,
+  copySynopsisFromSession,
+  mysteryModePatch,
+} from "../../services/mysteryMode";
 import type { SummaryRefreshResult } from "../../services/memoryEngine";
 import { Avatar } from "../common/Avatar";
 import { AmbientPlayer } from "./AmbientPlayer";
@@ -84,6 +92,8 @@ interface Props {
   onToggleSuspenseMode?: (enabled: boolean) => void;
   onToggleNaturalSpeech?: (enabled: boolean) => void;
   onToggleToasts?: (enabled: boolean) => void;
+  /** Режим тайны: переключение через подтверждение; пишет флаг сессии. */
+  onToggleMysteryMode?: (enabled: boolean) => void;
   onTogglePacing?: (enabled: boolean) => void;
   onUpdateThoughtMode?: (mode: ThoughtMode) => void;
   onOpenInspector?: () => void;
@@ -172,6 +182,7 @@ interface SettingSwitchProps {
   onToggle: () => void;
   icon: typeof Zap;
   warning?: boolean;
+  disabled?: boolean;
 }
 
 function SettingSwitch({
@@ -181,6 +192,7 @@ function SettingSwitch({
   onToggle,
   icon: Icon,
   warning = false,
+  disabled = false,
 }: SettingSwitchProps) {
   const id = useId();
 
@@ -223,7 +235,8 @@ function SettingSwitch({
         aria-labelledby={`${id}-label`}
         aria-describedby={`${id}-description`}
         onClick={onToggle}
-        className="flex h-10 w-11 shrink-0 items-center justify-center rounded-xl"
+        disabled={disabled}
+        className="flex h-10 w-11 shrink-0 items-center justify-center rounded-xl disabled:cursor-not-allowed disabled:opacity-50"
       >
         <span
           aria-hidden="true"
@@ -404,6 +417,7 @@ export function DirectorPanel({
   onToggleSuspenseMode,
   onToggleNaturalSpeech,
   onToggleToasts,
+  onToggleMysteryMode,
   onTogglePacing,
   onUpdateThoughtMode,
   onOpenInspector,
@@ -437,6 +451,10 @@ export function DirectorPanel({
   const [suspenseMode, setSuspenseMode] = useState(!!session.suspenseMode);
   const [naturalSpeech, setNaturalSpeech] = useState(!!session.naturalSpeech);
   const [showDisclaimer, setShowDisclaimer] = useState(false);
+  /** Целевое значение режима тайны, пока открыт диалог подтверждения. */
+  const [mysteryConsent, setMysteryConsent] = useState<boolean | null>(null);
+  const mystery = Boolean(session.mysteryMode);
+  const [summaryCopied, setSummaryCopied] = useState(false);
   const [showToasts, setShowToasts] = useState(session.showRelationshipToasts !== false);
   const [realisticPacing, setRealisticPacing] = useState(session.realisticPacing !== false);
   const [expandedMemory, setExpandedMemory] = useState<Record<string, boolean>>({});
@@ -801,7 +819,25 @@ export function DirectorPanel({
     else await db.sessions.update(session.id, { naturalSpeech: next });
   };
 
+  const handleConfirmMystery = async () => {
+    const next = mysteryConsent;
+    setMysteryConsent(null);
+    if (next === null) return;
+    const patch = mysteryModePatch(next);
+    if (next) setShowToasts(false);
+    if (onToggleMysteryMode) onToggleMysteryMode(next);
+    else await db.sessions.update(session.id, patch);
+  };
+
+  const handleCopySynopsis = async () => {
+    const ok = await copySynopsisFromSession(session);
+    setSummaryCopied(ok);
+    if (ok) window.setTimeout(() => setSummaryCopied(false), 1800);
+  };
+
   const handleToggleToasts = async () => {
+    // В режиме тайны уведомления заблокированы до выхода из режима.
+    if (mystery) return;
     const next = !showToasts;
     setShowToasts(next);
     if (onToggleToasts) onToggleToasts(next);
@@ -1213,6 +1249,9 @@ export function DirectorPanel({
                           <div className="space-y-2 border-t border-white/[0.06] p-2.5">
                             {memory.privateNotes.map((note, index) => (
                               <div key={`${member.id}-${index}`} className="flex items-start gap-1.5">
+                                {mystery ? (
+                                  <MysteryPlaceholder lines={1} className="min-w-0 flex-1 p-2" />
+                                ) : (
                                 <input
                                   value={note}
                                   maxLength={MAX_PRIVATE_NOTE_LENGTH}
@@ -1224,6 +1263,7 @@ export function DirectorPanel({
                                   aria-label={`Личная заметка ${index + 1} персонажа ${member.name}`}
                                   className="input-field input-field--compact min-w-0 flex-1 text-[11px]"
                                 />
+                                )}
                                 <button
                                   type="button"
                                   onClick={() =>
@@ -1239,7 +1279,7 @@ export function DirectorPanel({
                               </div>
                             ))}
 
-                            {memory.privateNotes.length < MAX_PRIVATE_NOTES && (
+                            {!mystery && memory.privateNotes.length < MAX_PRIVATE_NOTES && (
                               <div className="flex items-center gap-1.5">
                                 <input
                                   value={newMemoryNote[member.id] ?? ""}
@@ -1276,6 +1316,10 @@ export function DirectorPanel({
                               <label className="block text-[10px] font-semibold uppercase tracking-wider text-content-muted">
                                 Активное намерение
                               </label>
+                              {mystery ? (
+                                <MysteryPlaceholder lines={1} className="mt-1.5 p-2" />
+                              ) : (
+                              <>
                               <textarea
                                 value={intentionDrafts[member.id] ?? memory.intention?.text ?? ""}
                                 maxLength={MAX_INTENTION_LENGTH}
@@ -1344,6 +1388,8 @@ export function DirectorPanel({
                                     Завершить
                                   </button>
                                 </div>
+                              )}
+                              </>
                               )}
                             </div>
                           </div>
@@ -1831,11 +1877,24 @@ export function DirectorPanel({
                 warning
               />
               <SettingSwitch
+                label="Режим тайны"
+                description="Скрывает в интерфейсе мысли, внутренний мир, уведомления, синопсис, факты, дневник и личную память. Модель получает всё как прежде; аналитика отношений остаётся видимой."
+                checked={mystery}
+                onToggle={() => setMysteryConsent(!mystery)}
+                icon={EyeOff}
+                warning
+              />
+              <SettingSwitch
                 label="Уведомления отношений"
-                description="Всплывающие плашки при переходе на новые этапы связи и сближении."
-                checked={showToasts}
+                description={
+                  mystery
+                    ? MYSTERY_TOASTS_LOCKED_HINT
+                    : "Всплывающие плашки при переходе на новые этапы связи и сближении."
+                }
+                checked={showToasts && !mystery}
                 onToggle={() => void handleToggleToasts()}
                 icon={HeartHandshake}
+                disabled={mystery}
               />
             </div>
           </section>
@@ -1852,6 +1911,13 @@ export function DirectorPanel({
               </span>
             </div>
 
+            {mystery ? (
+              // Текст не рендерится совсем: ни в textarea, ни скрытым в DOM.
+              <MysteryPlaceholder
+                lines={4}
+                note={`${charCount.toLocaleString("ru-RU")} симв.`}
+              />
+            ) : (
             <textarea
               rows={5}
               className="input-field resize-y text-xs leading-relaxed"
@@ -1864,8 +1930,10 @@ export function DirectorPanel({
               }}
               placeholder="Сюжетный синопсис пуст..."
             />
+            )}
 
-            <div className="mt-2.5 flex gap-2">
+            <div className="mt-2.5 flex flex-wrap gap-2">
+              {!mystery && (
               <button
                 type="button"
                 onClick={() => void handleSaveSummaryManual()}
@@ -1881,6 +1949,19 @@ export function DirectorPanel({
                 )}
                 <span>Сохранить</span>
               </button>
+              )}
+
+              {mystery && (
+                <button
+                  type="button"
+                  onClick={() => void handleCopySynopsis()}
+                  disabled={!session.summary}
+                  className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-2 text-xs font-medium text-content-secondary hover:bg-surface-3 disabled:opacity-50"
+                >
+                  {summaryCopied ? <Check size={14} className="text-success" /> : <Copy size={14} />}
+                  <span>{summaryCopied ? "Скопировано" : "Копировать"}</span>
+                </button>
+              )}
 
               <button
                 type="button"
@@ -1899,7 +1980,9 @@ export function DirectorPanel({
 
             {summaryError && (
               <p role="alert" className="mt-2 text-xs leading-relaxed text-danger">
-                {summaryError}
+                {mystery
+                  ? "Не удалось актуализировать синопсис. Выключите режим тайны, чтобы увидеть подробности."
+                  : summaryError}
               </p>
             )}
 
@@ -1942,6 +2025,43 @@ export function DirectorPanel({
               </button>
             </div>
           )}
+        </div>
+      </Modal>
+
+      {/* Модалка подтверждения режима тайны: отказ не меняет состояние */}
+      <Modal
+        open={mysteryConsent !== null}
+        onClose={() => setMysteryConsent(null)}
+        title={mysteryConsent ? "Включить режим тайны?" : "Выключить режим тайны?"}
+        size="md"
+      >
+        <div className="space-y-4">
+          <div className="flex items-start gap-3 rounded-2xl border border-warning/30 bg-warning/5 p-3.5">
+            <EyeOff size={20} className="mt-0.5 shrink-0 text-warning" />
+            <p className="text-xs font-medium leading-relaxed text-content">
+              {mysteryConsent
+                ? "Мысли персонажей, внутренний мир, уведомления отношений, синопсис, факты, дневник, заметки и личная память будут скрыты в интерфейсе. Модель получает всё как прежде, данные не меняются. Уведомления отношений выключатся и заблокируются до выхода из режима. Аналитика отношений остаётся видимой."
+                : "Все скрытые данные снова будут видны. Уведомления отношений останутся выключенными: включить их можно вручную."}
+            </p>
+          </div>
+
+          <div className="flex justify-end gap-2 border-t border-white/[0.08] pt-3.5">
+            <button
+              type="button"
+              onClick={() => setMysteryConsent(null)}
+              className="rounded-xl border border-white/[0.08] px-3.5 py-2 text-xs font-semibold text-content-secondary hover:bg-surface-3"
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleConfirmMystery()}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-warning px-3.5 py-2 text-xs font-semibold text-black hover:opacity-90"
+            >
+              <EyeOff size={14} />
+              <span>{mysteryConsent ? "Включить режим тайны" : "Выключить режим тайны"}</span>
+            </button>
+          </div>
         </div>
       </Modal>
 

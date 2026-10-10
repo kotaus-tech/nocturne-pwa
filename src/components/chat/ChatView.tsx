@@ -40,6 +40,10 @@ import {
 } from "../../services/promptBuilder";
 import { getSliceForContext } from "../../services/contextWindow";
 import {
+  canShowRelationshipToasts,
+  mysteryModePatch,
+} from "../../services/mysteryMode";
+import {
   buildAssistantLabeler,
   buildCharacterIndex,
   buildPersonalTranscriptSince,
@@ -743,7 +747,13 @@ export function ChatView({
     metaNoticeTimerRef.current = setTimeout(() => setMetaNotice(null), 8000);
   };
 
+  // Ref, а не замыкание: асинхронные ответы не должны увидеть устаревший флаг.
+  const mysteryModeRef = useRef(false);
+  mysteryModeRef.current = Boolean(session?.mysteryMode);
+
   const showToast = (data: ToastData) => {
+    // В режиме тайны уведомления не создаются, кроме служебных ошибок.
+    if (mysteryModeRef.current && !data.essential) return;
     if (toastTimerRef.current) {
       clearTimeout(toastTimerRef.current);
     }
@@ -760,7 +770,7 @@ export function ChatView({
     newStats: RelationshipStats,
     messageCount: number
   ) => {
-    const toastsEnabled = session?.showRelationshipToasts !== false;
+    const toastsEnabled = session ? canShowRelationshipToasts(session) : false;
     if (!toastsEnabled) return;
 
     if (messageCount - lastToastMsgCount.current < 3) return;
@@ -1084,7 +1094,7 @@ export function ChatView({
 
     try {
       const isSteppedWindow = apiConfig.steppedContextEnabled !== false;
-      const toastsEnabled = session.showRelationshipToasts !== false;
+      const toastsEnabled = canShowRelationshipToasts(session);
 
       // Групповая сцена: каждый участник отвечает своим ходом, по порядку списка.
       // Каждый следующий видит уже готовые реплики предыдущих.
@@ -1453,8 +1463,12 @@ export function ChatView({
           );
           if (isAbortError(cause)) return;
           showToast({
-            title: `Память не обновилась: ${describeCause(cause)}`,
+            // В режиме тайны причина может содержать сырой ответ модели: не показываем.
+            title: mysteryModeRef.current
+              ? "Память не обновилась. Подробности скрыты режимом тайны."
+              : `Память не обновилась: ${describeCause(cause)}`,
             type: "status",
+            essential: true,
           });
         });
       }
@@ -2214,7 +2228,7 @@ export function ChatView({
         ]
       );
 
-      const toastsEnabled = session.showRelationshipToasts !== false;
+      const toastsEnabled = canShowRelationshipToasts(session);
 
       if (toastsEnabled && parsed.feelingHint && parsed.feelingHint.trim()) {
         showToast({
@@ -2421,7 +2435,7 @@ export function ChatView({
       unsavedMessagesRef.current = 0;
 
       // Видно, что память действительно пишется (и сколько записей ушло).
-      if (session.showRelationshipToasts !== false) {
+      if (canShowRelationshipToasts(session)) {
         showToast({
           title: `Память обновлена: ${updatedFacts.length} якорей, дневник и синопсис`,
           type: "status",
@@ -2869,6 +2883,7 @@ export function ChatView({
                       });
                     }}
                     onRegenerate={() => handleRegenerate(message)}
+                    mysteryHidden={!!session.mysteryMode}
                     onShowThought={() => setThoughtMessage(message)}
                   />
 
@@ -3041,7 +3056,12 @@ export function ChatView({
           db.sessions.update(session.id, { naturalSpeech: enabled })
         }
         onToggleToasts={(enabled) =>
-          db.sessions.update(session.id, { showRelationshipToasts: enabled })
+          db.sessions.update(session.id, {
+            showRelationshipToasts: enabled && !session.mysteryMode,
+          })
+        }
+        onToggleMysteryMode={(enabled) =>
+          db.sessions.update(session.id, mysteryModePatch(enabled))
         }
         onTogglePacing={(enabled) =>
           db.sessions.update(session.id, { realisticPacing: enabled })
@@ -3133,9 +3153,9 @@ export function ChatView({
       />
 
       <ThoughtModal
-        open={!!thoughtMessage}
+        open={!!thoughtMessage && !session.mysteryMode}
         onClose={() => setThoughtMessage(null)}
-        thought={thoughtMessage?.innerThought ?? ""}
+        thought={session.mysteryMode ? "" : thoughtMessage?.innerThought ?? ""}
         characterName={character.name}
         thoughtMode={session.thoughtMode || "censor"}
         onChangeThoughtMode={handleUpdateThoughtMode}

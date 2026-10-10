@@ -11,6 +11,8 @@ import { cn } from "../../utils/cn";
 export interface ToastData {
   title: string;
   type: "feeling" | "affection" | "trust" | "tension" | "status";
+  /** Служебная ошибка: показывается даже в режиме тайны (без деталей). */
+  essential?: boolean;
 }
 
 interface Props {

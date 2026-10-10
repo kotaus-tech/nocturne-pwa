@@ -22,6 +22,7 @@ import type { Character, ChatSession, DiaryEntry, ExtractedFact } from "../../ty
 import type { TabKey } from "../layout/BottomNav";
 import { Avatar } from "../common/Avatar";
 import { Badge } from "../common/Badge";
+import { MysteryPlaceholder } from "../common/MysteryPlaceholder";
 import { FavoriteButton } from "../common/FavoriteButton";
 import { AmbientPlayer } from "../chat/AmbientPlayer";
 import { CharacterSheet } from "../characters/CharacterSheet";
@@ -46,6 +47,8 @@ interface LatestFactInfo {
   characterName: string;
   characterAvatar?: string;
   fact: ExtractedFact;
+  /** Сессия в режиме тайны: текст факта не показывается. */
+  mysteryHidden: boolean;
 }
 
 function findLatestFact(
@@ -65,6 +68,7 @@ function findLatestFact(
           characterName: character.name,
           characterAvatar: character.avatarUrl,
           fact,
+          mysteryHidden: !!session.mysteryMode,
         };
       }
     }
@@ -77,6 +81,8 @@ interface LatestDiaryInfo {
   sessionId: string;
   characterName: string;
   entry: DiaryEntry;
+  /** Сессия в режиме тайны: текст записи не показывается. */
+  mysteryHidden: boolean;
 }
 
 function findLatestDiaryEntry(
@@ -95,6 +101,7 @@ function findLatestDiaryEntry(
           sessionId: session.id,
           characterName: character.name,
           entry,
+          mysteryHidden: !!session.mysteryMode,
         };
       }
     }
@@ -689,9 +696,13 @@ export function HomePage({ onNavigate, onOpenSession }: HomePageProps) {
                   </button>
                 </div>
 
-                <blockquote className="novel-font mt-3 text-xs italic leading-relaxed text-zinc-300">
-                  «{latestFact.fact.content}»
-                </blockquote>
+                {latestFact.mysteryHidden ? (
+                  <MysteryPlaceholder lines={2} className="mt-3" />
+                ) : (
+                  <blockquote className="novel-font mt-3 text-xs italic leading-relaxed text-zinc-300">
+                    «{latestFact.fact.content}»
+                  </blockquote>
+                )}
 
                 <div className="mt-3 flex items-center gap-2 text-xs font-medium text-content-muted">
                   <Avatar
@@ -720,9 +731,13 @@ export function HomePage({ onNavigate, onOpenSession }: HomePageProps) {
                   </button>
                 </div>
 
+                {latestDiaryEntry.mysteryHidden ? (
+                  <MysteryPlaceholder lines={2} className="mt-3" />
+                ) : (
                 <blockquote className="novel-font mt-3 line-clamp-3 text-xs italic leading-relaxed text-content-secondary">
                   «{latestDiaryEntry.entry.thought}»
                 </blockquote>
+                )}
 
                 <button
                   type="button"

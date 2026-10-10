@@ -736,6 +736,7 @@ export function sanitizeSession(raw: Partial<ChatSession>): ChatSession {
     wallpaperBlur: finiteNumber(raw?.wallpaperBlur, 0),
     dynamicEvents: Boolean(raw?.dynamicEvents),
     suspenseMode: Boolean(raw?.suspenseMode),
+    mysteryMode: Boolean(raw?.mysteryMode),
     naturalSpeech: Boolean(raw?.naturalSpeech),
     showRelationshipToasts: raw?.showRelationshipToasts !== false,
     realisticPacing: raw?.realisticPacing !== false,

@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { db } from "../../db";
 import { Avatar } from "../common/Avatar";
+import { MysteryPlaceholder } from "../common/MysteryPlaceholder";
 import { newId } from "../../utils/id";
 import type { ExtractedFact, Character, ChatSession } from "../../types";
 
@@ -59,9 +60,12 @@ export function MemoryPage() {
         return false;
       }
       if (!q) return true;
+      // В режиме тайны текст и ключи скрыты: поиск по ним не работает,
+      // иначе список раскрыл бы содержимое косвенно.
+      const searchable = !item.session.mysteryMode;
       return (
-        item.fact.content.toLowerCase().includes(q) ||
-        item.fact.keys.some((k) => k.toLowerCase().includes(q)) ||
+        (searchable && item.fact.content.toLowerCase().includes(q)) ||
+        (searchable && item.fact.keys.some((k) => k.toLowerCase().includes(q))) ||
         item.character.name.toLowerCase().includes(q)
       );
     });
@@ -260,9 +264,13 @@ export function MemoryPage() {
                   </div>
                 </div>
 
-                <blockquote className="novel-font text-xs italic leading-relaxed text-zinc-300">
-                  «{fact.content}»
-                </blockquote>
+                {session.mysteryMode ? (
+                  <MysteryPlaceholder lines={2} />
+                ) : (
+                  <blockquote className="novel-font text-xs italic leading-relaxed text-zinc-300">
+                    «{fact.content}»
+                  </blockquote>
+                )}
               </div>
 
               <div className="mt-3 flex items-center justify-between border-t border-white/[0.05] pt-2 text-[10px] text-content-muted">

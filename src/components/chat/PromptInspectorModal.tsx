@@ -9,6 +9,7 @@ import {
   Info,
 } from "lucide-react";
 import { Modal } from "../common/Modal";
+import { MysteryPlaceholder } from "../common/MysteryPlaceholder";
 import type { Character, ChatSession, Message, UserProfile, ApiConfig } from "../../types";
 import {
   buildPromptParts,
@@ -201,6 +202,22 @@ export function PromptInspectorModal({
     setCopiedKey(key);
     setTimeout(() => setCopiedKey(null), 2000);
   };
+
+  // Режим тайны: инспектор целиком скрыт (в нём мысли, намерения, память).
+  if (session.mysteryMode) {
+    return (
+      <Modal open={open} onClose={onClose} title="Инспектор скрыт" size="md">
+        <div className="space-y-4">
+          <MysteryPlaceholder lines={3} />
+          <p className="text-xs leading-relaxed text-content-secondary">
+            Инспектор показывает полный запрос к модели и скрыт режимом тайны.
+            Выключите режим тайны в режиссёре, чтобы его открыть. Сам запрос при
+            этом не меняется.
+          </p>
+        </div>
+      </Modal>
+    );
+  }
 
   return (
     <Modal

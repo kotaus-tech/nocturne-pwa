@@ -350,6 +350,11 @@ export interface ChatSession {
   wallpaperBlur?: number;
   dynamicEvents?: boolean;
   suspenseMode?: boolean;
+  /**
+   * Режим тайны: скрывает в интерфейсе мысли, внутренний мир, уведомления,
+   * синопсис, факты, дневник и личную память. Только UI: модель получает всё.
+   */
+  mysteryMode?: boolean;
   naturalSpeech?: boolean;
   showRelationshipToasts?: boolean;
   realisticPacing?: boolean;

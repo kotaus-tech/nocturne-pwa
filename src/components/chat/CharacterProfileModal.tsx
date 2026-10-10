@@ -38,6 +38,7 @@ import {
 } from "../../services/memoryEngine";
 import { copyTextToClipboard } from "../../utils/clipboard";
 import { cn } from "../../utils/cn";
+import { MysteryPlaceholder } from "../common/MysteryPlaceholder";
 
 /**
  * Сообщение под вкладками персонажа. Общее для всех вкладок (Память, Дневник,
@@ -180,6 +181,8 @@ export function CharacterProfileModal({
   const id = useId();
   const tabListRef = useRef<HTMLDivElement>(null);
 
+  // Режим тайны: дневник, хроника, личная память и факты показываются заглушками.
+  const mystery = Boolean(session.mysteryMode);
   const diary = session.diary || [];
   const storyLog = session.storyLog || [];
 
@@ -738,9 +741,13 @@ export function CharacterProfileModal({
                           )}
                         </div>
 
-                        <p className="whitespace-pre-wrap text-base leading-relaxed text-content-secondary [overflow-wrap:anywhere]">
-                          {event.text}
-                        </p>
+                        {mystery ? (
+                          <MysteryPlaceholder lines={3} />
+                        ) : (
+                          <p className="whitespace-pre-wrap text-base leading-relaxed text-content-secondary [overflow-wrap:anywhere]">
+                            {event.text}
+                          </p>
+                        )}
                       </li>
                     ))}
                   </ol>
@@ -806,16 +813,26 @@ export function CharacterProfileModal({
                           className="flex gap-2.5 text-sm leading-relaxed text-content-secondary"
                         >
                           <span aria-hidden="true" className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-accent/60" />
-                          <span className="min-w-0 [overflow-wrap:anywhere]">{note}</span>
+                          {mystery ? (
+                            <MysteryPlaceholder lines={1} className="min-w-0 flex-1 p-2" />
+                          ) : (
+                            <span className="min-w-0 [overflow-wrap:anywhere]">{note}</span>
+                          )}
                         </li>
                       ))}
                     </ul>
 
                     {personalIntention?.text && (
+                      mystery ? (
+                        <div className="mt-4 border-t border-white/[0.06] pt-3">
+                          <MysteryPlaceholder lines={1} />
+                        </div>
+                      ) : (
                       <p className="mt-4 border-t border-white/[0.06] pt-3 text-sm leading-relaxed text-content-muted">
                         <span className="font-semibold text-content-secondary">Намерение: </span>
                         {personalIntention.text}
                       </p>
+                      )
                     )}
                   </section>
                 )}
@@ -850,7 +867,7 @@ export function CharacterProfileModal({
                             </h5>
 
                             <div className="flex min-w-0 flex-wrap items-center gap-2">
-                              {entry.mood && (
+                              {entry.mood && !mystery && (
                                 <span className="max-w-full text-xs font-medium leading-relaxed text-content-muted [overflow-wrap:anywhere]">
                                   {entry.mood}
                                 </span>
@@ -878,9 +895,13 @@ export function CharacterProfileModal({
                             </div>
                           </div>
 
-                          <p className="novel-font whitespace-pre-wrap text-lg italic leading-[1.8] text-content [overflow-wrap:anywhere]">
-                            «{entry.thought}»
-                          </p>
+                          {mystery ? (
+                            <MysteryPlaceholder lines={3} />
+                          ) : (
+                            <p className="novel-font whitespace-pre-wrap text-lg italic leading-[1.8] text-content [overflow-wrap:anywhere]">
+                              «{entry.thought}»
+                            </p>
+                          )}
                         </section>
                       ))}
                   </div>
@@ -946,16 +967,26 @@ export function CharacterProfileModal({
                           className="flex gap-2.5 text-sm leading-relaxed text-content-secondary"
                         >
                           <span aria-hidden="true" className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-accent/60" />
-                          <span className="min-w-0 [overflow-wrap:anywhere]">{note}</span>
+                          {mystery ? (
+                            <MysteryPlaceholder lines={1} className="min-w-0 flex-1 p-2" />
+                          ) : (
+                            <span className="min-w-0 [overflow-wrap:anywhere]">{note}</span>
+                          )}
                         </li>
                       ))}
                     </ul>
 
                     {personalIntention?.text && (
+                      mystery ? (
+                        <div className="mt-4 border-t border-white/[0.06] pt-3">
+                          <MysteryPlaceholder lines={1} />
+                        </div>
+                      ) : (
                       <p className="mt-4 border-t border-white/[0.06] pt-3 text-sm leading-relaxed text-content-muted">
                         <span className="font-semibold text-content-secondary">Намерение: </span>
                         {personalIntention.text}
                       </p>
+                      )
                     )}
                   </section>
                 )}
@@ -1009,7 +1040,7 @@ export function CharacterProfileModal({
                 ) : (
                   <div className="space-y-4">
                     {facts.map((fact, index) => {
-                      const isEditing = editingFactId === fact.id;
+                      const isEditing = !mystery && editingFactId === fact.id;
                       const editId = `${id}-edit-fact-${index}`;
 
                       return (
@@ -1030,7 +1061,7 @@ export function CharacterProfileModal({
                               </span>
                             )}
 
-                            {fact.keys.map((key, keyIndex) => (
+                            {!mystery && fact.keys.map((key, keyIndex) => (
                               <span
                                 key={keyIndex}
                                 className="max-w-full rounded-md bg-surface-3 px-2 py-1 text-xs leading-relaxed text-content-muted [overflow-wrap:anywhere]"
@@ -1088,9 +1119,13 @@ export function CharacterProfileModal({
                             </div>
                           ) : (
                             <>
-                              <p className="whitespace-pre-wrap text-base leading-relaxed text-content-secondary [overflow-wrap:anywhere]">
-                                {fact.content}
-                              </p>
+                              {mystery ? (
+                                <MysteryPlaceholder lines={2} />
+                              ) : (
+                                <p className="whitespace-pre-wrap text-base leading-relaxed text-content-secondary [overflow-wrap:anywhere]">
+                                  {fact.content}
+                                </p>
+                              )}
 
                               <div className="mt-3 flex flex-wrap items-center gap-1">
                                 {onTogglePinFact && (
@@ -1130,7 +1165,7 @@ export function CharacterProfileModal({
                                   </button>
                                 )}
 
-                                {onUpdateFact && (
+                                {onUpdateFact && !mystery && (
                                   <button
                                     type="button"
                                     onClick={() =>

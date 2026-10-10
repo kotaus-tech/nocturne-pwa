@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { db } from "../../db";
 import { Avatar } from "../common/Avatar";
+import { MysteryPlaceholder } from "../common/MysteryPlaceholder";
 import type { DiaryEntry, Character, ChatSession } from "../../types";
 
 export function DiaryPage() {
@@ -48,9 +49,12 @@ export function DiaryPage() {
         return false;
       }
       if (!q) return true;
+      // В режиме тайны текст и настроение скрыты: по ним не ищем, иначе
+      // список раскрыл бы содержимое косвенно.
+      const searchable = !item.session.mysteryMode;
       return (
-        item.entry.thought.toLowerCase().includes(q) ||
-        (item.entry.mood && item.entry.mood.toLowerCase().includes(q)) ||
+        (searchable && item.entry.thought.toLowerCase().includes(q)) ||
+        (searchable && !!item.entry.mood && item.entry.mood.toLowerCase().includes(q)) ||
         item.character.name.toLowerCase().includes(q)
       );
     });
@@ -140,7 +144,7 @@ export function DiaryPage() {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {entry.mood && (
+                  {entry.mood && !session.mysteryMode && (
                     <span className="rounded-full border border-accent/30 bg-accent/10 px-2.5 py-0.5 text-[11px] font-medium text-accent">
                       {entry.mood}
                     </span>
@@ -164,9 +168,13 @@ export function DiaryPage() {
                 </div>
               </div>
 
-              <blockquote className="novel-font border-l-2 border-accent/40 pl-4 text-xs italic leading-relaxed text-zinc-200">
-                «{entry.thought}»
-              </blockquote>
+              {session.mysteryMode ? (
+                <MysteryPlaceholder lines={2} className="ml-4" />
+              ) : (
+                <blockquote className="novel-font border-l-2 border-accent/40 pl-4 text-xs italic leading-relaxed text-zinc-200">
+                  «{entry.thought}»
+                </blockquote>
+              )}
             </article>
           ))}
         </div>

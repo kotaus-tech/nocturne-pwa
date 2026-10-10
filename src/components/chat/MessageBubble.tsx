@@ -8,6 +8,7 @@ import {
   RotateCcw,
   Trash2,
   BrainCircuit,
+  EyeOff,
   Check,
   X,
   Copy,
@@ -39,6 +40,8 @@ interface Props {
   onSwipe: (direction: -1 | 1) => void;
   onRegenerate: () => void;
   onShowThought: () => void;
+  /** Режим тайны: мысль не открывается, вместо кнопки — заглушка. */
+  mysteryHidden?: boolean;
 }
 
 export function MessageBubble({
@@ -54,6 +57,7 @@ export function MessageBubble({
   onSwipe,
   onRegenerate,
   onShowThought,
+  mysteryHidden = false,
 }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -268,7 +272,18 @@ export function MessageBubble({
               isUser ? "justify-end" : "justify-start"
             )}
           >
-            {!isUser && message.innerThought && (
+            {!isUser && message.innerThought && mysteryHidden && (
+              <span
+                role="note"
+                aria-label="Мысль скрыта режимом тайны"
+                className="flex items-center gap-1.5 rounded-xl border border-dashed border-white/[0.12] px-3 py-1.5 text-xs font-semibold text-content-muted"
+              >
+                <EyeOff size={14} aria-hidden="true" />
+                <span>Мысль скрыта</span>
+              </span>
+            )}
+
+            {!isUser && message.innerThought && !mysteryHidden && (
               <button
                 type="button"
                 onClick={onShowThought}

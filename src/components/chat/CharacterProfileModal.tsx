@@ -582,9 +582,13 @@ export function CharacterProfileModal({
                           Характер и повадки
                         </h4>
 
-                        <p className="whitespace-pre-wrap text-base leading-relaxed text-content-secondary [overflow-wrap:anywhere]">
-                          {character.personality}
-                        </p>
+                        {mystery ? (
+                          <MysteryPlaceholder lines={3} />
+                        ) : (
+                          <p className="whitespace-pre-wrap text-base leading-relaxed text-content-secondary [overflow-wrap:anywhere]">
+                            {character.personality}
+                          </p>
+                        )}
                       </section>
                     )}
 
@@ -599,9 +603,13 @@ export function CharacterProfileModal({
                           Сценарий
                         </h4>
 
-                        <p className="whitespace-pre-wrap text-base leading-relaxed text-content-secondary [overflow-wrap:anywhere]">
-                          {character.scenario}
-                        </p>
+                        {mystery ? (
+                          <MysteryPlaceholder lines={3} />
+                        ) : (
+                          <p className="whitespace-pre-wrap text-base leading-relaxed text-content-secondary [overflow-wrap:anywhere]">
+                            {character.scenario}
+                          </p>
+                        )}
                       </section>
                     )}
                   </>

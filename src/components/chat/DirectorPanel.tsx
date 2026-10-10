@@ -1422,7 +1422,16 @@ export function DirectorPanel({
                   руками.
                 </p>
 
-                {relations.length > 0 && (
+                {relations.length > 0 && mystery && (
+                  <div className="mb-2 space-y-2">
+                    {relations.map((relation) => (
+                      // Режим тайны: связи видны только как заглушки, текст не рендерится.
+                      <MysteryPlaceholder key={relation.id} lines={1} />
+                    ))}
+                  </div>
+                )}
+
+                {relations.length > 0 && !mystery && (
                   <div className="mb-2 space-y-2">
                     {relations.map((relation) => (
                       <div
@@ -1531,6 +1540,7 @@ export function DirectorPanel({
                   </div>
                 )}
 
+                {!mystery && (
                 <button
                   type="button"
                   onClick={() =>
@@ -1549,6 +1559,7 @@ export function DirectorPanel({
                   <Plus size={12} />
                   Добавить связь
                 </button>
+                )}
               </div>
             )}
           </section>

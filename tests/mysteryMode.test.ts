@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import { sanitizeSession } from "../src/db";
 import { MysteryPlaceholder, MYSTERY_LABEL } from "../src/components/common/MysteryPlaceholder";
 import { MessageBubble } from "../src/components/chat/MessageBubble";
+import { StatusCard } from "../src/components/chat/StatsPanel";
+import { StatsBadge } from "../src/components/chat/StatsBar";
 import {
   canShowRelationshipToasts,
   mysteryModePatch,
@@ -83,5 +85,33 @@ describe("режим тайны: текст не попадает в разме�
     );
     expect(shown).toContain("Мысль");
     expect(shown).not.toContain("Мысль скрыта");
+  });
+});
+
+describe("режим тайны: название статуса отношений", () => {
+  const STATUS = "Осаждённая крепость";
+  const stats = { trust: 40, affection: 50, closeness: 30, tension: 20, conflict: 10, statusTitle: STATUS } as never;
+
+  it("карточка «Динамика вашей истории» не выводит статус в режиме тайны", () => {
+    const html = renderToStaticMarkup(
+      createElement(StatusCard, { statusTitle: STATUS, subtitle: "Отношения с Полина", mysteryHidden: true })
+    );
+    expect(html).not.toContain(STATUS);
+    expect(html).toContain("Динамика вашей истории");
+    expect(html).toContain("Отношения с Полина");
+  });
+
+  it("карточка без режима тайны показывает статус", () => {
+    const html = renderToStaticMarkup(createElement(StatusCard, { statusTitle: STATUS }));
+    expect(html).toContain(STATUS);
+  });
+
+  it("кнопка аналитики в шапке не выводит статус в режиме тайны", () => {
+    const html = renderToStaticMarkup(
+      createElement(StatsBadge, { stats, onClick: () => {}, mysteryHidden: true })
+    );
+    expect(html).not.toContain(STATUS);
+    const shown = renderToStaticMarkup(createElement(StatsBadge, { stats, onClick: () => {} }));
+    expect(shown).toContain(STATUS);
   });
 });

@@ -154,7 +154,10 @@ function StoryCard({
     : "Новая глава начинается с нашей следующей реплики…";
 
   const charName = character?.name || "Неизвестный персонаж";
-  const statusTitle = session.currentStats?.statusTitle || "Осторожное знакомство";
+  // В режиме тайны статус не выводится даже на главной.
+  const statusTitle = session.mysteryMode
+    ? ""
+    : session.currentStats?.statusTitle || "Осторожное знакомство";
 
   return (
     <div
@@ -204,7 +207,7 @@ function StoryCard({
             <span>
               {messageCount === undefined
                 ? "Загрузка…"
-                : `${messageCount} ${pluralMessages(messageCount)} · ${statusTitle}`}
+                : `${messageCount} ${pluralMessages(messageCount)}${statusTitle ? ` · ${statusTitle}` : ""}`}
             </span>
           </span>
           <ArrowRight

@@ -2688,7 +2688,7 @@ export function ChatView({
     character.tagline?.trim() ||
     character.genre?.trim() ||
     (character.tags && character.tags.length > 0 ? character.tags.join(" · ") : "") ||
-    session.currentStats?.statusTitle ||
+    (!session.mysteryMode && session.currentStats?.statusTitle) ||
     "";
 
   return (
@@ -2783,7 +2783,11 @@ export function ChatView({
           </div>
 
           <div className="flex items-center gap-2.5">
-            <StatsBadge stats={stats} onClick={() => setStatsOpen(true)} />
+            <StatsBadge
+              stats={stats}
+              onClick={() => setStatsOpen(true)}
+              mysteryHidden={!!session.mysteryMode}
+            />
 
             <button
               type="button"
@@ -3004,6 +3008,7 @@ export function ChatView({
       <StatsPanel
         open={statsOpen}
         onClose={() => setStatsOpen(false)}
+        mysteryHidden={!!session.mysteryMode}
         stats={stats}
         delta={lastStatsDeltas[character.id]}
         participants={

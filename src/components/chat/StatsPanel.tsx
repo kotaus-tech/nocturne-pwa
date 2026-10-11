@@ -11,6 +11,7 @@ import { useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { Modal } from "../common/Modal";
 import { Avatar } from "../common/Avatar";
+import { MysteryPlaceholder } from "../common/MysteryPlaceholder";
 import type { RelationshipDelta, RelationshipStats } from "../../types";
 import { cn } from "../../utils/cn";
 
@@ -32,6 +33,8 @@ interface StatsPanelProps {
   /** Групповая сцена: шкалы отношений с каждым участником. */
   participants?: StatsParticipant[];
   activeParticipantId?: string;
+  /** Режим тайны: название текущего статуса («Динамика вашей истории») скрыто. */
+  mysteryHidden?: boolean;
 }
 
 /** Числовые шкалы отношений, которые показывает панель. */
@@ -126,6 +129,49 @@ function hasVisibleDelta(delta?: RelationshipDelta): boolean {
   ).some((key) => typeof delta[key] === "number" && delta[key] !== 0);
 }
 
+/**
+ * Карточка «Динамика вашей истории»: название текущего статуса.
+ * В режиме тайны название заменяется заглушкой (текст не рендерится).
+ */
+export function StatusCard({
+  statusTitle,
+  subtitle,
+  mysteryHidden = false,
+}: {
+  statusTitle?: string;
+  subtitle?: string;
+  mysteryHidden?: boolean;
+}) {
+  return (
+    <div className="flex items-start gap-3.5 rounded-2xl border border-white/[0.08] bg-[#121622]/90 p-3.5 backdrop-blur-xl shadow-lg">
+      <div
+        aria-hidden="true"
+        className="mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-white/[0.08] bg-accent/15 text-accent shadow-[0_0_24px_rgba(139,92,246,0.25)]"
+      >
+        <HeartHandshake size={22} strokeWidth={1.8} />
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <p className="text-[10px] font-bold uppercase tracking-wider text-accent/90">
+          Динамика вашей истории
+        </p>
+        {mysteryHidden ? (
+          <div className="mt-1.5">
+            <MysteryPlaceholder lines={1} className="p-2" />
+          </div>
+        ) : (
+          <h2 className="novel-font mt-0.5 text-base sm:text-lg font-bold tracking-tight text-zinc-100 leading-snug break-words whitespace-normal">
+            {statusTitle || "Осторожное знакомство"}
+          </h2>
+        )}
+        {subtitle && (
+          <p className="mt-0.5 truncate text-[11px] text-content-muted">{subtitle}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function StatsPanel({
   open,
   onClose,
@@ -133,6 +179,7 @@ export function StatsPanel({
   delta,
   participants,
   activeParticipantId,
+  mysteryHidden = false,
 }: StatsPanelProps) {
   const reducedMotion = useReducedMotion();
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -184,29 +231,11 @@ export function StatsPanel({
           </div>
         )}
 
-        {/* Карточка текущего статуса с корректным переносом слов */}
-        <div className="flex items-start gap-3.5 rounded-2xl border border-white/[0.08] bg-[#121622]/90 p-3.5 backdrop-blur-xl shadow-lg">
-          <div
-            aria-hidden="true"
-            className="mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-white/[0.08] bg-accent/15 text-accent shadow-[0_0_24px_rgba(139,92,246,0.25)]"
-          >
-            <HeartHandshake size={22} strokeWidth={1.8} />
-          </div>
-
-          <div className="min-w-0 flex-1">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-accent/90">
-              Динамика вашей истории
-            </p>
-            <h2 className="novel-font mt-0.5 text-base sm:text-lg font-bold tracking-tight text-zinc-100 leading-snug break-words whitespace-normal">
-              {shownStats.statusTitle || "Осторожное знакомство"}
-            </h2>
-            {selected && (
-              <p className="mt-0.5 truncate text-[11px] text-content-muted">
-                Отношения с {selected.name}
-              </p>
-            )}
-          </div>
-        </div>
+        <StatusCard
+          statusTitle={shownStats.statusTitle}
+          subtitle={selected ? `Отношения с ${selected.name}` : undefined}
+          mysteryHidden={mysteryHidden}
+        />
 
         {hasVisibleDelta(shownDelta) && (
           <p className="-mt-1.5 text-[10px] leading-tight text-content-muted">

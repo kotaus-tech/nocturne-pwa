@@ -31,18 +31,22 @@ export function MiniStat({
 export function StatsBadge({
   stats,
   onClick,
+  mysteryHidden = false,
 }: {
   stats: RelationshipStats;
   onClick: () => void;
+  /** Режим тайны: название статуса не показывается. */
+  mysteryHidden?: boolean;
 }) {
-  const status = stats.statusTitle || "Знакомство";
+  const status = mysteryHidden ? "" : stats.statusTitle || "Знакомство";
+  const label = mysteryHidden ? "Отношения" : `Отношения: ${status}`;
 
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-label={`Отношения: ${status}. Открыть аналитику`}
-      title={`Отношения: ${status}`}
+      aria-label={`${label}. Открыть аналитику`}
+      title={label}
       className="group flex items-center justify-center rounded-xl border border-white/[0.08] bg-[#121622]/85 p-2 shadow-sm backdrop-blur-xl transition-all duration-200 hover:border-white/[0.16] hover:bg-[#161b28] sm:flex-col sm:items-start sm:gap-1 sm:px-3 sm:py-1.5 sm:rounded-2xl shrink-0"
     >
       {/* На мобильных (< sm) отображается только компактная иконка сердца с акцентом */}
@@ -53,7 +57,7 @@ export function StatsBadge({
           fill="currentColor"
         />
         <span className="hidden sm:inline max-w-[140px] truncate text-xs font-semibold text-accent group-hover:text-accent-hover">
-          {status}
+          {mysteryHidden ? "Отношения" : status}
         </span>
       </div>
 

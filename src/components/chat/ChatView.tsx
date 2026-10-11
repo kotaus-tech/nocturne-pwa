@@ -3141,6 +3141,9 @@ export function ChatView({
           )}
 
           <InputBar
+            maxHeight={
+              viewportBox.height ? Math.round(viewportBox.height * 0.6) : undefined
+            }
             onSend={handleSend}
             onNarrate={(hint, secret) =>
               void runNarratorTurn(hint, secret)

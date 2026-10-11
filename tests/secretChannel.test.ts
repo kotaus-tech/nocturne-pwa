@@ -10,7 +10,6 @@ import {
   pruneOrphanEntries,
   publishedTextOf,
   cleanNarration,
-  isLegacyOocText,
 } from "../src/services/secretChannel";
 import type { Message } from "../src/types";
 
@@ -36,14 +35,14 @@ describe("characterView", () => {
     expect(JSON.stringify(view)).not.toContain("письмо");
   });
 
-  it("убирает сообщения, которые целиком тайные, и OOC", () => {
+  it("убирает сообщения, которые целиком тайные; OOC остаётся для персонажей", () => {
     const view = characterView([
       msg({ id: "a", text: "Тайная записка", channel: "secret" }),
       msg({ id: "b", text: "[OOC: а что там?]" }),
       msg({ id: "c", text: "[[тайно: только секрет]]" }),
       msg({ id: "d", text: "Открытая реплика" }),
     ]);
-    expect(view.map((m) => m.id)).toEqual(["d"]);
+    expect(view.map((m) => m.id)).toEqual(["b", "d"]);
   });
 
   it("не отдаёт секреты ни в каком виде", () => {
@@ -113,9 +112,7 @@ describe("ввод и текст", () => {
     expect(publishedTextOf("Я киваю. [[тайно: нож]]")).toBe("Я киваю. нож");
   });
 
-  it("распознаёт OOC и чистит ответ рассказчика", () => {
-    expect(isLegacyOocText("[OOC: привет]")).toBe(true);
-    expect(isLegacyOocText("привет")).toBe(false);
+  it("чистит ответ рассказчика", () => {
     expect(cleanNarration("<thought>мысли</thought>Текст хода")).toBe("Текст хода");
   });
 });

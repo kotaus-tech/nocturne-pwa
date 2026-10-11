@@ -11,7 +11,6 @@ import { newId } from "../utils/id";
 export const SECRET_OPEN = "[[тайно: ";
 export const SECRET_CLOSE = "]]";
 const SECRET_RE = /\[\[тайно:\s*([\s\S]*?)\]\]/g;
-const LEGACY_OOC_RE = /^\s*\[OOC:/i;
 
 export interface TextSegment {
   secret: boolean;
@@ -64,10 +63,6 @@ export function publishedTextOf(text: string): string {
     .trim();
 }
 
-export function isLegacyOocText(text: string): boolean {
-  return LEGACY_OOC_RE.test(text);
-}
-
 function currentText(message: Message): string {
   return message.swipes[message.currentSwipeIndex] ?? "";
 }
@@ -75,13 +70,12 @@ function currentText(message: Message): string {
 /** Видит ли персонаж сообщение целиком (до вырезания тайных кусков). */
 export function isCharacterVisible(message: Message): boolean {
   if (message.sender === "system") return false;
-  if ((message.channel ?? "scene") !== "scene") return false;
-  if (message.sender === "user" && isLegacyOocText(currentText(message))) return false;
+  if (message.channel === "secret") return false;
   return true;
 }
 
 /**
- * Вид истории для персонажей: без тайных и OOC-сообщений, в открытых
+ * Вид истории для персонажей: без тайных сообщений, в открытых
  * сообщениях — только открытая часть. Пустые после вырезания исчезают.
  */
 export function characterView(messages: Message[]): Message[] {
@@ -95,7 +89,7 @@ export function characterView(messages: Message[]): Message[] {
   return out;
 }
 
-/** Вид для рассказчика: всё, включая тайное и OOC, тайные куски помечены. */
+/** Вид для рассказчика: всё, включая тайное, тайные куски помечены. */
 export function narratorView(messages: Message[]): Message[] {
   return messages
     .filter((message) => message.sender !== "system")
@@ -140,7 +134,6 @@ export function journalEntriesFromMessage(message: Message): SecretEntry[] {
     return [{ id: newId(), text: body, sourceMessageId: message.id, createdAt }];
   }
 
-  if (message.channel === "ooc") return [];
 
   return splitSecretSpans(text)
     .filter((segment) => segment.secret)
@@ -224,12 +217,6 @@ export function buildNarrateDirective(
 }
 
 /** Текст команды ответа вне роли. Отвечает рассказчик, персонажи не слышат. */
-export function buildOocDirective(userName: string, question: string): string {
-  return (
-    `[Вне роли. ${userName} обращается к рассказчику напрямую: "${question}". Ответь кратко и по существу, от лица рассказчика, не от лица персонажей. Персонажи этого не слышат. Без мета-блока.]`
-  );
-}
-
 /** Убирает служебные блоки из ответа рассказчика, оставляя текст хода. */
 export function cleanNarration(raw: string): string {
   return raw

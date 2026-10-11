@@ -867,7 +867,7 @@ export function sanitizeMessage(raw: any): Message {
     isLiveSceneEcho: Boolean(raw?.isLiveSceneEcho),
     isRemoteReply: Boolean(raw?.isRemoteReply),
     channel:
-      raw?.channel === "secret" || raw?.channel === "ooc" || raw?.channel === "scene"
+      raw?.channel === "secret" || raw?.channel === "scene"
         ? raw.channel
         : undefined,
     authoredBy:

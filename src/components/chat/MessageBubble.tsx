@@ -78,7 +78,6 @@ export function MessageBubble({
   const cleanDisplayContent = fateInfo ? fateInfo.cleanText : fullText;
 
   const isOOC =
-    message.channel === "ooc" ||
     cleanDisplayContent.startsWith("[OOC:") ||
     cleanDisplayContent.startsWith("[Вне роли:");
   // Тайный ход рассказчика целиком (канал secret) либо маркеры внутри реплики игрока.

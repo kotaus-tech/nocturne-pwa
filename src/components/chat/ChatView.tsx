@@ -131,11 +131,9 @@ import {
   removeJournalEntries,
   removeEntriesForMessage,
   buildNarrateDirective,
-  buildOocDirective,
   cleanNarration,
   publishedTextOf,
   hasSecretSpans,
-  isLegacyOocText,
 } from "../../services/secretChannel";
 import { callBackgroundLLM } from "../../services/apiClient";
 import type { SecretEntry } from "../../types";
@@ -1990,14 +1988,10 @@ export function ChatView({
   }
 
   /**
-   * Рассказчик-ведущий: «ответь за меня» (ход игрока) и OOC.
+   * Рассказчик-ведущий: только «ответь за меня» (ход игрока).
    * Персонажи видят только открытую часть; рассказчик видит всё.
    */
-  async function runNarratorTurn(
-    kind: "narrate" | "ooc",
-    request: string,
-    secret = false
-  ) {
+  async function runNarratorTurn(request: string, secret = false) {
     if (!apiConfig || !character || !session || !userProfile || sending) return;
     const isLocal = isLocalEndpoint(apiConfig.baseUrl);
     if (!apiConfig.apiKey && !isLocal) {
@@ -2024,10 +2018,7 @@ export function ChatView({
         apiConfig.steppedContextEnabled !== false
       );
       const view = narratorView(recent);
-      const directive =
-        kind === "ooc"
-          ? buildOocDirective(userProfile.name, request)
-          : buildNarrateDirective(userProfile.name, request, secret);
+      const directive = buildNarrateDirective(userProfile.name, request, secret);
       const promptParts = buildPromptParts(
         character,
         session,
@@ -2053,40 +2044,28 @@ export function ChatView({
       }
 
       const now = Date.now();
-      if (kind === "ooc") {
-        await db.messages.add({
-          id: newId(),
-          sessionId: session.id,
-          sender: "assistant",
-          channel: "ooc",
-          swipes: [text],
-          currentSwipeIndex: 0,
-          timestamp: now,
-        });
-      } else {
-        const message: Message = {
-          id: newId(),
-          sessionId: session.id,
-          sender: "user",
-          channel: secret ? "secret" : "scene",
-          authoredBy: "narrator",
-          swipes: [text],
-          currentSwipeIndex: 0,
-          presentCharacterIds: isGroupScene
-            ? presentCharacters.map((item) => item.id)
-            : undefined,
-          timestamp: now,
-        };
-        await db.messages.add(message);
-        const entries = journalEntriesFromMessage(message);
-        if (entries.length > 0) {
-          await updateSecretJournal(session.id, (journal) => [
-            ...journal,
-            ...entries,
-          ]);
-        }
-        continueWithCharacters = !secret;
+      const message: Message = {
+        id: newId(),
+        sessionId: session.id,
+        sender: "user",
+        channel: secret ? "secret" : "scene",
+        authoredBy: "narrator",
+        swipes: [text],
+        currentSwipeIndex: 0,
+        presentCharacterIds: isGroupScene
+          ? presentCharacters.map((item) => item.id)
+          : undefined,
+        timestamp: now,
+      };
+      await db.messages.add(message);
+      const entries = journalEntriesFromMessage(message);
+      if (entries.length > 0) {
+        await updateSecretJournal(session.id, (journal) => [
+          ...journal,
+          ...entries,
+        ]);
       }
+      continueWithCharacters = !secret;
       await db.sessions.update(session.id, { updatedAt: Date.now() });
     } catch (cause) {
       if (isAbortError(cause)) return;
@@ -2102,11 +2081,6 @@ export function ChatView({
         .sortBy("timestamp");
       await callModelAndAppend(full, "normal");
     }
-  }
-
-  /** Очистка маркера: OOC-вопрос без префикса и скобок. */
-  function oocQuestionOf(text: string): string {
-    return text.replace(/^\[OOC:\s*/i, "").replace(/\]\s*$/, "").trim();
   }
 
   /** Публикация тайной части: секрет становится открытым, запись журнала удаляется. */
@@ -2129,12 +2103,10 @@ export function ChatView({
       ? !presentCharacters.some((item) => item.id === target.id)
       : false;
 
-    const isOoc = isLegacyOocText(text);
     const userMessage: Message = {
       id: newId(),
       sessionId: session.id,
       sender: "user",
-      channel: isOoc ? "ooc" : "scene",
       swipes: [text],
       currentSwipeIndex: 0,
       addressedTo: target?.id,
@@ -2166,12 +2138,6 @@ export function ChatView({
       .sortBy("timestamp");
 
     setTargetCharacterId(null);
-
-    // OOC не уходит персонажам: отвечает рассказчик вне роли.
-    if (isOoc) {
-      await runNarratorTurn("ooc", oocQuestionOf(text));
-      return;
-    }
 
     // Адресат — отсутствующий персонаж, вышедший на связь дистанционно:
     // отвечаем ему отдельной изолированной веткой переписки (ТЗ §6.3).
@@ -3167,7 +3133,7 @@ export function ChatView({
           <InputBar
             onSend={handleSend}
             onNarrate={(hint, secret) =>
-              void runNarratorTurn("narrate", hint, secret)
+              void runNarratorTurn(hint, secret)
             }
             onOpenDirector={() => setDirectorOpen(true)}
             onRequestSuggestions={handleGetSuggestions}

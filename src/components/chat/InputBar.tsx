@@ -48,8 +48,6 @@ interface Props {
   onSelectTarget?: (characterId: string) => void;
   /** «Ответь за меня»: рассказчик пишет ход игрока. secret=true — персонажи не узнают. */
   onNarrate?: (hint: string, secret: boolean) => void;
-  /** Высота видимой области (с учётом клавиатуры): блок ввода не выше её части. */
-  maxHeight?: number;
 }
 
 export function InputBar({
@@ -66,7 +64,6 @@ export function InputBar({
   targetId,
   onSelectTarget,
   onNarrate,
-  maxHeight,
 }: Props) {
   const [text, setText] = useState("");
   const [ooc, setOoc] = useState(false);
@@ -187,10 +184,7 @@ export function InputBar({
   );
 
   return (
-    <div
-      className="shrink-0 overflow-y-auto overscroll-contain px-3 pb-[max(12px,env(safe-area-inset-bottom))] pt-2 sm:px-6"
-      style={maxHeight ? { maxHeight: `${maxHeight}px` } : undefined}
-    >
+    <div className="px-3 pb-[max(12px,env(safe-area-inset-bottom))] pt-2 sm:px-6">
       {suggestions.length > 0 && (
         <section
           aria-label="Предложенные варианты ответа"
@@ -431,16 +425,7 @@ export function InputBar({
           onChange={(e) => {
             setText(e.target.value);
             autoGrow();
-            // Поле не должно уехать под клавиатуру, пока текст растёт.
-            requestAnimationFrame(() =>
-              taRef.current?.scrollIntoView({ block: "nearest" })
-            );
           }}
-          onFocus={() =>
-            requestAnimationFrame(() =>
-              taRef.current?.scrollIntoView({ block: "nearest" })
-            )
-          }
           onKeyDown={handleKeyDown}
           placeholder={
             narrateMode

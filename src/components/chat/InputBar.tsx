@@ -68,6 +68,8 @@ export function InputBar({
   const [text, setText] = useState("");
   const [ooc, setOoc] = useState(false);
   const [fateRoll, setFateRoll] = useState(false);
+  /** Режим «ответь за меня»: открыто / тайно. Включается кнопкой, применяется при отправке. */
+  const [narrateMode, setNarrateMode] = useState<null | "open" | "secret">(null);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
 
@@ -81,7 +83,22 @@ export function InputBar({
   };
 
   const send = () => {
-    if (!text.trim() || sending) return;
+    if (sending) return;
+
+    if (narrateMode) {
+      if (!onNarrate) return;
+      const hint = text.trim();
+      setText("");
+      setNarrateMode(null);
+      setSuggestions([]);
+      if (taRef.current) {
+        taRef.current.style.height = "auto";
+      }
+      onNarrate(hint, narrateMode === "secret");
+      return;
+    }
+
+    if (!text.trim()) return;
 
     let finalText = text.trim();
     if (ooc) {
@@ -97,6 +114,7 @@ export function InputBar({
     setText("");
     setOoc(false);
     setFateRoll(false);
+    setNarrateMode(null);
     setSuggestions([]);
 
     if (taRef.current) {
@@ -118,19 +136,6 @@ export function InputBar({
       field.setSelectionRange(caret, caret);
       autoGrow();
     });
-  };
-
-  const narrate = (secret: boolean) => {
-    if (!onNarrate || sending) return;
-    const hint = text.trim();
-    setText("");
-    setOoc(false);
-    setFateRoll(false);
-    setSuggestions([]);
-    if (taRef.current) {
-      taRef.current.style.height = "auto";
-    }
-    onNarrate(hint, secret);
   };
 
   const handleFetchSuggestions = async () => {
@@ -330,7 +335,10 @@ export function InputBar({
 
         <button
           type="button"
-          onClick={() => setOoc((prev) => !prev)}
+          onClick={() => {
+            setNarrateMode(null);
+            setOoc((prev) => !prev);
+          }}
           aria-pressed={ooc}
           title="Вне роли (OOC)"
           className={cn(
@@ -372,10 +380,17 @@ export function InputBar({
 
         <button
           type="button"
-          onClick={() => narrate(false)}
+          onClick={() => {
+            setOoc(false);
+            setNarrateMode((prev) => (prev === "open" ? null : "open"));
+          }}
           disabled={sending || !onNarrate}
-          title="Ответить за меня: открытое действие, персонажи на него реагируют"
-          className={toolButtonClass}
+          aria-pressed={narrateMode === "open"}
+          title="Ответить за меня открыто: включите режим, напишите (необязательно) и отправьте"
+          className={cn(
+            toolButtonClass,
+            narrateMode === "open" && "border-accent/50 bg-accent/15 text-accent shadow-sm"
+          )}
         >
           <UserRound size={14} className="shrink-0 text-accent" />
           <span className="hidden sm:inline">За меня · открыто</span>
@@ -384,10 +399,17 @@ export function InputBar({
 
         <button
           type="button"
-          onClick={() => narrate(true)}
+          onClick={() => {
+            setOoc(false);
+            setNarrateMode((prev) => (prev === "secret" ? null : "secret"));
+          }}
           disabled={sending || !onNarrate}
-          title="Ответить за меня: тайное действие, персонажи о нём не знают"
-          className={toolButtonClass}
+          aria-pressed={narrateMode === "secret"}
+          title="Ответить за меня тайно: включите режим, напишите (необязательно) и отправьте"
+          className={cn(
+            toolButtonClass,
+            narrateMode === "secret" && "border-accent/50 bg-accent/15 text-accent shadow-sm"
+          )}
         >
           <UserRoundX size={14} className="shrink-0 text-accent" />
           <span className="hidden sm:inline">За меня · тайно</span>
@@ -406,7 +428,11 @@ export function InputBar({
           }}
           onKeyDown={handleKeyDown}
           placeholder={
-            fateRoll
+            narrateMode
+              ? narrateMode === "secret"
+                ? "Тайное действие за вас (необязательно уточните)…"
+                : "Действие за вас (необязательно уточните)…"
+              : fateRoll
               ? "Опишите рискованное действие…"
               : ooc
                 ? "Сообщение от автора вне роли…"
@@ -429,7 +455,7 @@ export function InputBar({
           <button
             type="button"
             onClick={send}
-            disabled={!text.trim() || sending}
+            disabled={(!text.trim() && !narrateMode) || sending}
             className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-accent text-on-accent shadow-[0_0_18px_rgba(139,92,246,0.35)] transition-all hover:bg-accent-hover active:scale-95 disabled:opacity-25 disabled:shadow-none"
           >
             {sending ? (

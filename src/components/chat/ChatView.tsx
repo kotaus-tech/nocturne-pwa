@@ -123,6 +123,7 @@ import {
   type SummaryRefreshResult,
 } from "../../services/memoryEngine";
 import { renderRoleplayText } from "../../utils/textRenderer";
+import { useVisualViewportBox } from "../../utils/useVisualViewportBox";
 import {
   characterView,
   narratorView,
@@ -449,6 +450,8 @@ export function ChatView({
   /** Указатель последней обработанной хроникой реплики (безопасен к перемотке). */
   const lastChronicleMessageIdRef = useRef<string | null>(null);
   const [sending, setSending] = useState(false);
+  // Высота видимой области: при клавиатуре корень чата сжимается, поле ввода остаётся над ней.
+  const viewportBox = useVisualViewportBox();
   const [liveStreamedText, setLiveStreamedText] = useState("");
   const [streamingCharacterId, setStreamingCharacterId] = useState<string | null>(
     null
@@ -2849,7 +2852,14 @@ export function ChatView({
     "";
 
   return (
-    <div className="fixed inset-0 z-40 flex h-screen w-full min-w-0 flex-col overflow-hidden bg-[#090b10] text-content supports-[height:100dvh]:h-dvh">
+    <div
+      className="fixed inset-0 z-40 flex h-screen w-full min-w-0 flex-col overflow-hidden bg-[#090b10] text-content supports-[height:100dvh]:h-dvh"
+      style={
+        viewportBox.height !== null
+          ? { height: `${viewportBox.height}px`, top: `${viewportBox.top}px`, bottom: "auto" }
+          : undefined
+      }
+    >
       {activeWallpaper && (
         <div
           aria-hidden="true"

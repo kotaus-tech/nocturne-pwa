@@ -16,6 +16,7 @@ import {
   Square,
   EyeOff,
   UserRound,
+  UserRoundX,
 } from "lucide-react";
 import { rollFate } from "../../services/dice";
 import { insertSecretMarker } from "../../services/secretChannel";
@@ -377,7 +378,8 @@ export function InputBar({
           className={toolButtonClass}
         >
           <UserRound size={14} className="shrink-0 text-accent" />
-          <span className="truncate">За меня · открыто</span>
+          <span className="hidden sm:inline">За меня · открыто</span>
+          <span className="sr-only sm:hidden">За меня · открыто</span>
         </button>
 
         <button
@@ -387,8 +389,9 @@ export function InputBar({
           title="Ответить за меня: тайное действие, персонажи о нём не знают"
           className={toolButtonClass}
         >
-          <EyeOff size={14} className="shrink-0 text-accent" />
-          <span className="truncate">За меня · тайно</span>
+          <UserRoundX size={14} className="shrink-0 text-accent" />
+          <span className="hidden sm:inline">За меня · тайно</span>
+          <span className="sr-only sm:hidden">За меня · тайно</span>
         </button>
       </div>
 

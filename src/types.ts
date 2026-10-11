@@ -97,6 +97,14 @@ export interface Character {
   generatorVersion?: number;
 }
 
+export interface SecretEntry {
+  id: string;
+  text: string;
+  /** Сообщение, из которого появилась тайна. Удалил сообщение — запись ушла. */
+  sourceMessageId?: string;
+  createdAt: number;
+}
+
 export interface Message {
   id: string;
   sessionId: string;
@@ -120,6 +128,14 @@ export interface Message {
   isLiveSceneEcho?: boolean;
   /** Ответ отсутствующего персонажа в уже открытой дистанционной ветке. */
   isRemoteReply?: boolean;
+  /**
+   * Канал сообщения. scene — обычная сцена (видят персонажи); secret — тайное
+   * действие игрока или тайный ответ рассказчика (персонажи не видят);
+   * ooc — реплика вне роли (отвечает рассказчик, персонажи не слышат).
+   */
+  channel?: "scene" | "secret" | "ooc";
+  /** Кто написал текст: игрок или рассказчик («ответь за меня»). */
+  authoredBy?: "player" | "narrator";
   swipes: string[];
   currentSwipeIndex: number;
   innerThought?: string;
@@ -355,6 +371,11 @@ export interface ChatSession {
    * синопсис, факты, дневник и личную память. Только UI: модель получает всё.
    */
   mysteryMode?: boolean;
+  /**
+   * Тайный журнал: события, о которых персонажи не знают. Модель их помнит,
+   * персонажи — нет. Запись удаляется, когда тайна раскрыта.
+   */
+  secretJournal?: SecretEntry[];
   naturalSpeech?: boolean;
   showRelationshipToasts?: boolean;
   realisticPacing?: boolean;

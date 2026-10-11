@@ -9,6 +9,7 @@ import {
   Info,
 } from "lucide-react";
 import { Modal } from "../common/Modal";
+import { characterView } from "../../services/secretChannel";
 import { MysteryPlaceholder } from "../common/MysteryPlaceholder";
 import type { Character, ChatSession, Message, UserProfile, ApiConfig } from "../../types";
 import {
@@ -65,6 +66,8 @@ export function PromptInspectorModal({
   absent,
   speakerId,
 }: PromptInspectorModalProps) {
+  // Инспектор показывает ровно то, что уходит персонажам: без тайных действий.
+  const characterMessages = useMemo(() => characterView(contextMessages), [contextMessages]);
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
@@ -106,7 +109,7 @@ export function PromptInspectorModal({
       (item) => !absentIds.has(item.id)
     );
     // Дистанционные ответы отсутствующих не попадают в основную сцену.
-    const sceneMessages = contextMessages.filter(
+    const sceneMessages = characterMessages.filter(
       (message) => !isRemoteThreadMessage(message, participants ?? [character], presentList)
     );
 
@@ -135,7 +138,7 @@ export function PromptInspectorModal({
     activeSpeaker,
     session,
     userProfile,
-    contextMessages,
+    characterMessages,
     isLocal,
     others,
     absent,
@@ -148,16 +151,16 @@ export function PromptInspectorModal({
 
   // Сборка массива реплик turns (история окна)
   const historyTurns = useMemo(() => {
-    if (!roster) return messagesToTurns(contextMessages);
+    if (!roster) return messagesToTurns(characterMessages);
 
     const namesById = new Map(roster.map((item) => [item.id, item.name]));
 
-    return messagesToTurns(contextMessages, (message) => {
+    return messagesToTurns(characterMessages, (message) => {
       const authorId = message.characterId ?? character.id;
       if (authorId === activeSpeaker.id) return undefined;
       return namesById.get(authorId) || message.characterName;
     });
-  }, [contextMessages, roster, activeSpeaker.id, character.id]);
+  }, [characterMessages, roster, activeSpeaker.id, character.id]);
 
   // Хвост хода: контекст без директивы. Директива продолжения/инициативы и
   // подсказка адресата добавляются только к конкретному ручному запросу.

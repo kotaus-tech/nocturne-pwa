@@ -9,6 +9,7 @@ import type {
 } from "../types";
 import { activateLorebook } from "./lorebookEngine";
 import { META_PROTOCOL_INSTRUCTION } from "./metaParser";
+import { journalPromptBlock } from "./secretChannel";
 
 /** Контекст групповой сцены: другие персонажи, которые находятся рядом. */
 export interface GroupSceneContext {
@@ -487,13 +488,17 @@ export function buildPromptParts(
       `В скрытых мыслях (${thoughtFormat}) покажи рваный поток мыслей живого человека: самоирония, оценка обстановки, деталей одежды, физическая усталость или посторонние бытовые триггеры. Заземляй персонажа в моменте, запрещено жевать одну и ту же эмоцию из прошлых сообщений.`,
     tactical:
       `ФОКУС СКРЫТОЙ МЫСЛИ (ТАКТИЧЕСКИЙ РАСЧЁТ):\n` +
-      `В скрытых мыслях (${thoughtFormat}) оценивай скрытые намерения ${userProfile.name}: где он блефует или открывает слабость, чего добивается и как ${character.name} стоит повести диалог дальше, чтобы защитить свои границы или перехватить контроль.`,
+      `В скрытых мыслях (${thoughtFormat}) оценивай ТОЛЬКО то, что ${character.name} видит и слышит от ${userProfile.name}: где собеседник блефует или открывает слабость по его словам и поступкам, чего добивается и как ${character.name} стоит повести диалог дальше, чтобы защитить свои границы или перехватить контроль. Тайные действия игрока ${character.name} не знает и в мыслях их не учитывает.`,
     instinct:
       `ФОКУС СКРЫТОЙ МЫСЛИ (ИМПУЛЬС И ИНСТИНКТЫ):\n` +
       `В скрытых мыслях (${thoughtFormat}) передай физиологию и язык тела: замершее дыхание, мышечные зажимы, мурашки, сжатые челюсти, обострённое ощущение физической дистанции, зрительного контакта или внезапного адреналина. Меньше рассуждений — больше чувств момента.`,
   };
 
   dynamicParts.push(`### ${thoughtHeading}:\n${thoughtDirectives[thoughtMode] || thoughtDirectives.censor}`);
+
+  // Тайный журнал: модель помнит тайные действия игрока, персонажи — нет.
+  const journalBlock = journalPromptBlock(session.secretJournal ?? [], isLocal);
+  if (journalBlock) dynamicParts.push(journalBlock);
 
   return {
     system: parts.join("\n\n"),

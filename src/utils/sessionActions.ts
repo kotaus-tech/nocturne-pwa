@@ -8,6 +8,7 @@ import type {
   SceneRelation,
 } from "../types";
 import { emptyParticipantMemory } from "../services/groupScene";
+import { pruneOrphanEntries } from "../services/secretChannel";
 
 /** Создаёт новую ветку диалога для персонажа с его стартовым сообщением */
 export async function createSession(character: Character, title?: string): Promise<ChatSession> {
@@ -243,4 +244,12 @@ export async function rewindToMessage(sessionId: string, messageId: string, keep
   const cutIdx = keepMessage ? idx + 1 : idx;
   const toDelete = messages.slice(cutIdx).map((m) => m.id);
   if (toDelete.length) await db.messages.bulkDelete(toDelete);
+  // Записи журнала тайн, чей источник удалён откатом, тоже уходят.
+  const session = await db.sessions.get(sessionId);
+  if (session?.secretJournal?.length) {
+    const remaining = new Set(messages.slice(0, cutIdx).map((m) => m.id));
+    await db.sessions.update(sessionId, {
+      secretJournal: pruneOrphanEntries(session.secretJournal, remaining),
+    });
+  }
 }

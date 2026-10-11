@@ -14,8 +14,11 @@ import {
   Sparkles,
   Play,
   Square,
+  EyeOff,
+  UserRound,
 } from "lucide-react";
 import { rollFate } from "../../services/dice";
+import { insertSecretMarker } from "../../services/secretChannel";
 import { Avatar } from "../common/Avatar";
 import { cn } from "../../utils/cn";
 
@@ -42,6 +45,8 @@ interface Props {
   /** Выбранный адресат: его ответ ждём следующим. */
   targetId?: string | null;
   onSelectTarget?: (characterId: string) => void;
+  /** «Ответь за меня»: рассказчик пишет ход игрока. secret=true — персонажи не узнают. */
+  onNarrate?: (hint: string, secret: boolean) => void;
 }
 
 export function InputBar({
@@ -57,6 +62,7 @@ export function InputBar({
   participants,
   targetId,
   onSelectTarget,
+  onNarrate,
 }: Props) {
   const [text, setText] = useState("");
   const [ooc, setOoc] = useState(false);
@@ -95,6 +101,35 @@ export function InputBar({
     if (taRef.current) {
       taRef.current.style.height = "auto";
     }
+  };
+
+  /** Вставляет маркер секрета в позицию курсора; фокус остаётся в поле. */
+  const insertSecret = () => {
+    const element = taRef.current;
+    const start = element?.selectionStart ?? text.length;
+    const end = element?.selectionEnd ?? text.length;
+    const { value, caret } = insertSecretMarker(text, start, end);
+    setText(value);
+    requestAnimationFrame(() => {
+      const field = taRef.current;
+      if (!field) return;
+      field.focus();
+      field.setSelectionRange(caret, caret);
+      autoGrow();
+    });
+  };
+
+  const narrate = (secret: boolean) => {
+    if (!onNarrate || sending) return;
+    const hint = text.trim();
+    setText("");
+    setOoc(false);
+    setFateRoll(false);
+    setSuggestions([]);
+    if (taRef.current) {
+      taRef.current.style.height = "auto";
+    }
+    onNarrate(hint, secret);
   };
 
   const handleFetchSuggestions = async () => {
@@ -314,6 +349,46 @@ export function InputBar({
         >
           <Clapperboard size={14} className="text-accent shrink-0" />
           <span className="hidden sm:inline">Режиссер</span>
+        </button>
+      </div>
+
+      {/* Вторая строка: тайные действия и «ответь за меня». */}
+      <div className="mb-2.5 grid grid-cols-3 gap-1.5 sm:flex sm:items-center sm:gap-1.5 sm:overflow-x-auto pb-1">
+        <button
+          type="button"
+          // pointerdown + preventDefault: фокус и курсор в поле не теряются (в том числе на телефоне)
+          onPointerDown={(event) => {
+            event.preventDefault();
+            insertSecret();
+          }}
+          title="Тайная часть: скрытое действие, которое видит только рассказчик"
+          aria-label="Вставить тайную часть сообщения"
+          className={cn(toolButtonClass, "border-accent/30 bg-accent/[0.08] text-accent")}
+        >
+          <EyeOff size={14} className="shrink-0" />
+          <span className="truncate">Тайно</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => narrate(false)}
+          disabled={sending || !onNarrate}
+          title="Ответить за меня: открытое действие, персонажи на него реагируют"
+          className={toolButtonClass}
+        >
+          <UserRound size={14} className="shrink-0 text-accent" />
+          <span className="truncate">За меня · открыто</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => narrate(true)}
+          disabled={sending || !onNarrate}
+          title="Ответить за меня: тайное действие, персонажи о нём не знают"
+          className={toolButtonClass}
+        >
+          <EyeOff size={14} className="shrink-0 text-accent" />
+          <span className="truncate">За меня · тайно</span>
         </button>
       </div>
 

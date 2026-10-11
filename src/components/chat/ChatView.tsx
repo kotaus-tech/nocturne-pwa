@@ -123,6 +123,22 @@ import {
   type SummaryRefreshResult,
 } from "../../services/memoryEngine";
 import { renderRoleplayText } from "../../utils/textRenderer";
+import {
+  characterView,
+  narratorView,
+  journalEntriesFromMessage,
+  resolveRevealedAliases,
+  removeJournalEntries,
+  removeEntriesForMessage,
+  buildNarrateDirective,
+  buildOocDirective,
+  cleanNarration,
+  publishedTextOf,
+  hasSecretSpans,
+  isLegacyOocText,
+} from "../../services/secretChannel";
+import { callBackgroundLLM } from "../../services/apiClient";
+import type { SecretEntry } from "../../types";
 import { cn } from "../../utils/cn";
 
 /** Реплик в ветке, после которых фоновый экстрактор памяти делает запись. */
@@ -1112,7 +1128,7 @@ export function ChatView({
 
         const lastSpeakerId = lastAssistantSpeakerId(contextMessages);
 
-        const lastUserText = lastUserTextIn(contextMessages);
+        const lastUserText = lastUserTextIn(characterView(contextMessages));
 
         const chosen = await chooseSpeaker(
           apiConfig,
@@ -1152,7 +1168,7 @@ export function ChatView({
         );
         // SMS/дистанционный контакт видит игрок, но не активные персонажи
         // основной сцены — иначе сам факт сообщения станет метазнанием.
-        const sceneRecent = recent.filter(
+        const sceneRecent = characterView(recent).filter(
           (message) =>
             !isRemoteThreadMessage(message, participants, presentCharacters)
         );
@@ -1396,6 +1412,7 @@ export function ChatView({
         }
 
         await commitPatch(turnPatch, [assistantMessage, ...echoMessages]);
+        await applyRevealedAliases(session.id, parsed.revealedAliases, session.secretJournal ?? []);
         appended += 1;
 
         const total = (allMessages?.length ?? 0) + appended;
@@ -1570,7 +1587,7 @@ export function ChatView({
         if (!due.due) continue;
 
         const fragment = buildPersonalTranscriptSince(
-          freshMessages,
+          characterView(freshMessages),
           member.id,
           due.pointer,
           nameForMessage
@@ -1622,7 +1639,7 @@ export function ChatView({
         MEMORY_EXTRACT_INTERVAL;
       if (extractDue && freshMessages.length >= 4) {
         const fragment = buildTranscriptSince(
-          freshMessages,
+          characterView(freshMessages),
           lastChronicleMessageIdRef.current,
           nameForMessage,
           24,
@@ -1858,7 +1875,7 @@ export function ChatView({
 
       const systemPrompt = `${basePrompt}\n\nТы отвечаешь на СМС/сообщение от ${userProfile.name}, находясь ФИЗИЧЕСКИ ВНЕ основной сцены — ты сейчас не там, где происходит основное действие. Отвечай только текстом сообщения, коротко и естественно, как в переписке, а не как в личной встрече. Ты не видишь и не знаешь, что происходит в основной сцене прямо сейчас, если это не было тебе сообщено в этой переписке.`;
 
-      const turns = messagesToTurns(thread);
+      const turns = messagesToTurns(characterView(thread));
       const tail = composeTurnTail(turnContext);
       if (tail) {
         turns.push({ role: "user", content: tail });
@@ -1947,6 +1964,163 @@ export function ChatView({
     }
   }
 
+  async function updateSecretJournal(
+    sessionId: string,
+    updater: (journal: SecretEntry[]) => SecretEntry[]
+  ) {
+    const fresh = await db.sessions.get(sessionId);
+    if (!fresh) return;
+    await db.sessions.update(sessionId, {
+      secretJournal: updater(fresh.secretJournal ?? []),
+    });
+  }
+
+  /** Персонаж узнал о тайне (сигнал revealed из мета-блока): запись уходит из журнала. */
+  async function applyRevealedAliases(
+    sessionId: string,
+    aliases: string[] | undefined,
+    snapshot: SecretEntry[]
+  ) {
+    if (!aliases || aliases.length === 0) return;
+    const ids = resolveRevealedAliases(snapshot, aliases);
+    if (ids.length === 0) return;
+    await updateSecretJournal(sessionId, (journal) =>
+      removeJournalEntries(journal, ids)
+    );
+  }
+
+  /**
+   * Рассказчик-ведущий: «ответь за меня» (ход игрока) и OOC.
+   * Персонажи видят только открытую часть; рассказчик видит всё.
+   */
+  async function runNarratorTurn(
+    kind: "narrate" | "ooc",
+    request: string,
+    secret = false
+  ) {
+    if (!apiConfig || !character || !session || !userProfile || sending) return;
+    const isLocal = isLocalEndpoint(apiConfig.baseUrl);
+    if (!apiConfig.apiKey && !isLocal) {
+      setErrorMsg("Укажите API-ключ в настройках.");
+      return;
+    }
+
+    setSending(true);
+    setErrorMsg(null);
+    isNearBottomRef.current = true;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    let continueWithCharacters = false;
+    try {
+      const full = await db.messages
+        .where("sessionId")
+        .equals(session.id)
+        .sortBy("timestamp");
+      const recent = getSliceForContext(
+        full,
+        apiConfig.contextWindow,
+        apiConfig.steppedContextEnabled !== false
+      );
+      const view = narratorView(recent);
+      const directive =
+        kind === "ooc"
+          ? buildOocDirective(userProfile.name, request)
+          : buildNarrateDirective(userProfile.name, request, secret);
+      const promptParts = buildPromptParts(
+        character,
+        session,
+        userProfile,
+        view,
+        isLocal
+      );
+      const turns = messagesToTurns(view);
+      turns.push({
+        role: "user",
+        content: composeTurnTail(promptParts.turnContext, directive),
+      });
+      const raw = await callBackgroundLLM(
+        apiConfig,
+        promptParts.system,
+        turns,
+        { signal: controller.signal }
+      );
+      const text = cleanNarration(raw);
+      if (!text) {
+        setErrorMsg("Рассказчик не ответил. Попробуйте ещё раз.");
+        return;
+      }
+
+      const now = Date.now();
+      if (kind === "ooc") {
+        await db.messages.add({
+          id: newId(),
+          sessionId: session.id,
+          sender: "assistant",
+          channel: "ooc",
+          swipes: [text],
+          currentSwipeIndex: 0,
+          timestamp: now,
+        });
+      } else {
+        const message: Message = {
+          id: newId(),
+          sessionId: session.id,
+          sender: "user",
+          channel: secret ? "secret" : "scene",
+          authoredBy: "narrator",
+          swipes: [text],
+          currentSwipeIndex: 0,
+          presentCharacterIds: isGroupScene
+            ? presentCharacters.map((item) => item.id)
+            : undefined,
+          timestamp: now,
+        };
+        await db.messages.add(message);
+        const entries = journalEntriesFromMessage(message);
+        if (entries.length > 0) {
+          await updateSecretJournal(session.id, (journal) => [
+            ...journal,
+            ...entries,
+          ]);
+        }
+        continueWithCharacters = !secret;
+      }
+      await db.sessions.update(session.id, { updatedAt: Date.now() });
+    } catch (cause) {
+      if (isAbortError(cause)) return;
+      setErrorMsg(describeCause(cause));
+    } finally {
+      setSending(false);
+    }
+
+    if (continueWithCharacters) {
+      const full = await db.messages
+        .where("sessionId")
+        .equals(session.id)
+        .sortBy("timestamp");
+      await callModelAndAppend(full, "normal");
+    }
+  }
+
+  /** Очистка маркера: OOC-вопрос без префикса и скобок. */
+  function oocQuestionOf(text: string): string {
+    return text.replace(/^\[OOC:\s*/i, "").replace(/\]\s*$/, "").trim();
+  }
+
+  /** Публикация тайной части: секрет становится открытым, запись журнала удаляется. */
+  async function publishSecretMessage(message: Message) {
+    if (!session) return;
+    const swipes = [...message.swipes];
+    const current = swipes[message.currentSwipeIndex] ?? "";
+    swipes[message.currentSwipeIndex] = publishedTextOf(current);
+    await db.messages.update(message.id, { swipes, channel: "scene" });
+    await updateSecretJournal(session.id, (journal) =>
+      removeEntriesForMessage(journal, message.id)
+    );
+  }
+
   async function handleSend(text: string) {
     if (!session) return;
 
@@ -1955,10 +2129,12 @@ export function ChatView({
       ? !presentCharacters.some((item) => item.id === target.id)
       : false;
 
+    const isOoc = isLegacyOocText(text);
     const userMessage: Message = {
       id: newId(),
       sessionId: session.id,
       sender: "user",
+      channel: isOoc ? "ooc" : "scene",
       swipes: [text],
       currentSwipeIndex: 0,
       addressedTo: target?.id,
@@ -1976,6 +2152,13 @@ export function ChatView({
     await db.sessions.update(session.id, {
       updatedAt: Date.now(),
     });
+    const newEntries = journalEntriesFromMessage(userMessage);
+    if (newEntries.length > 0) {
+      await updateSecretJournal(session.id, (journal) => [
+        ...journal,
+        ...newEntries,
+      ]);
+    }
 
     const full = await db.messages
       .where("sessionId")
@@ -1983,6 +2166,12 @@ export function ChatView({
       .sortBy("timestamp");
 
     setTargetCharacterId(null);
+
+    // OOC не уходит персонажам: отвечает рассказчик вне роли.
+    if (isOoc) {
+      await runNarratorTurn("ooc", oocQuestionOf(text));
+      return;
+    }
 
     // Адресат — отсутствующий персонаж, вышедший на связь дистанционно:
     // отвечаем ему отдельной изолированной веткой переписки (ТЗ §6.3).
@@ -2045,7 +2234,7 @@ export function ChatView({
         apiConfig!.contextWindow,
         isSteppedWindow
       );
-      const sceneRecent = recent.filter(
+      const sceneRecent = characterView(recent).filter(
         (item) =>
           !isRemoteThreadMessage(item, participants, presentCharacters)
       );
@@ -2227,6 +2416,7 @@ export function ChatView({
           },
         ]
       );
+      await applyRevealedAliases(session.id, parsed.revealedAliases, session.secretJournal ?? []);
 
       const toastsEnabled = canShowRelationshipToasts(session);
 
@@ -2287,7 +2477,7 @@ export function ChatView({
       const nameForMessage = (message: Message) =>
         resolveSpeakerName(message, character, charactersById, userProfile.name);
       const fragment = buildPersonalTranscriptSince(
-        freshMessages,
+        characterView(freshMessages),
         character.id,
         null,
         nameForMessage,
@@ -2358,8 +2548,9 @@ export function ChatView({
       };
     }
 
+    const visibleMessages = characterView(allMessages);
     const targetMessages =
-      allMessages.length > 20 ? allMessages.slice(-20) : allMessages;
+      visibleMessages.length > 20 ? visibleMessages.slice(-20) : visibleMessages;
 
     const transcript = targetMessages
       .map(
@@ -2889,6 +3080,12 @@ export function ChatView({
                     onRegenerate={() => handleRegenerate(message)}
                     mysteryHidden={!!session.mysteryMode}
                     onShowThought={() => setThoughtMessage(message)}
+                    onPublish={
+                      message.channel === "secret" ||
+                      hasSecretSpans(message.swipes[message.currentSwipeIndex] ?? "")
+                        ? () => void publishSecretMessage(message)
+                        : undefined
+                    }
                   />
 
                   {isNewDay && (
@@ -2969,6 +3166,9 @@ export function ChatView({
 
           <InputBar
             onSend={handleSend}
+            onNarrate={(hint, secret) =>
+              void runNarratorTurn("narrate", hint, secret)
+            }
             onOpenDirector={() => setDirectorOpen(true)}
             onRequestSuggestions={handleGetSuggestions}
             onContinue={handleContinue}

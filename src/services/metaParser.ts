@@ -40,6 +40,11 @@ export interface ParsedResponse {
   /** Текущее намерение персонажа выполнено/отменено — его нужно очистить. */
   resolvedIntention?: boolean;
   /**
+   * Номера тайных записей журнала (T1, T2…), о которых персонаж узнал по ходу
+   * этого ответа. Такие записи перестают быть тайной и удаляются из журнала.
+   */
+  revealedAliases?: string[];
+  /**
    * Заполняется, если мета-блок был найден, но не разобрался:
    * блок убран из текста, а шкалы остались без изменений.
    */
@@ -107,6 +112,7 @@ const META_KEYS = [
   "intention",
   "resolvedIntention",
   "resolved_intention",
+  "revealed",
 ];
 
 /** Блоки ```...``` с точными границами: любой другой код в ответе не трогаем. */
@@ -562,6 +568,7 @@ export function parseMetaBlock(
   let feelingHint: string | undefined;
   let newStats: RelationshipStats | undefined;
   let metaWarning: string | undefined;
+  let revealedAliases: string[] | undefined;
 
   const blocks = findFencedBlocks(raw);
   const removals: Array<{ start: number; end: number }> = [];
@@ -795,6 +802,15 @@ export function parseMetaBlock(
     if (metaJson.resolvedIntention === true || metaJson.resolved_intention === true) {
       resolvedIntention = true;
     }
+
+    const revealedRaw = metaJson.revealed;
+    if (Array.isArray(revealedRaw)) {
+      const aliases = revealedRaw
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim().toUpperCase())
+        .filter((item) => /^T\d+$/.test(item));
+      if (aliases.length > 0) revealedAliases = aliases;
+    }
   }
 
   return {
@@ -808,6 +824,7 @@ export function parseMetaBlock(
     sceneShift,
     intention,
     resolvedIntention: resolvedIntention || undefined,
+    revealedAliases,
     metaWarning,
   };
 }

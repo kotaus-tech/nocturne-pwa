@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useReducedMotion } from "framer-motion";
 import {
   ChevronLeft,
@@ -12,6 +12,7 @@ import {
   Check,
   X,
   Copy,
+  Eye,
   Dices,
   Sparkles,
   AlertCircle,
@@ -21,6 +22,7 @@ import {
 } from "lucide-react";
 import { Avatar } from "../common/Avatar";
 import { renderRoleplayText } from "../../utils/textRenderer";
+import { splitSecretSpans, hasSecretSpans } from "../../services/secretChannel";
 import { parseFateTag, type FateOutcome } from "../../services/dice";
 import { formatMessageTime } from "../../utils/date";
 import type { Character, Message, UserProfile } from "../../types";
@@ -42,6 +44,8 @@ interface Props {
   onShowThought: () => void;
   /** Режим тайны: мысль не открывается, вместо кнопки — заглушка. */
   mysteryHidden?: boolean;
+  /** Тайная часть сообщения становится открытой; запись журнала удаляется. */
+  onPublish?: () => void;
 }
 
 export function MessageBubble({
@@ -58,6 +62,7 @@ export function MessageBubble({
   onRegenerate,
   onShowThought,
   mysteryHidden = false,
+  onPublish,
 }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -73,8 +78,13 @@ export function MessageBubble({
   const cleanDisplayContent = fateInfo ? fateInfo.cleanText : fullText;
 
   const isOOC =
+    message.channel === "ooc" ||
     cleanDisplayContent.startsWith("[OOC:") ||
     cleanDisplayContent.startsWith("[Вне роли:");
+  // Тайный ход рассказчика целиком (канал secret) либо маркеры внутри реплики игрока.
+  const wholeSecret = message.channel === "secret";
+  const hasInlineSecret = hasSecretSpans(fullText);
+  const writtenForPlayer = message.authoredBy === "narrator";
 
   const timeString = formatMessageTime(message.timestamp);
   const senderName = isUser ? userProfile.name : character.name;
@@ -193,6 +203,17 @@ export function MessageBubble({
           )}
         >
           <span className="font-semibold text-zinc-200">{senderName}</span>
+          {writtenForPlayer && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.1] bg-white/[0.04] px-1.5 py-0.5 text-[9px] font-medium text-content-secondary">
+              написано за вас · {wholeSecret ? "тайно" : "открыто"}
+            </span>
+          )}
+          {(wholeSecret || hasInlineSecret) && !writtenForPlayer && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-accent/25 bg-accent/10 px-1.5 py-0.5 text-[9px] font-medium text-accent">
+              <EyeOff size={10} />
+              тайная часть
+            </span>
+          )}
           {isRemote && remoteLabel && (
             <span className="inline-flex items-center gap-1 rounded-full border border-sky-300/20 bg-sky-300/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-sky-200">
               <MessageCircle size={10} />
@@ -257,7 +278,19 @@ export function MessageBubble({
             </div>
           ) : (
             <div className="rp-text leading-relaxed">
-              {renderRoleplayText(visibleText)}
+              {wholeSecret ? (
+                <SecretBlock>{renderRoleplayText(visibleText)}</SecretBlock>
+              ) : (
+                splitSecretSpans(visibleText).map((segment, index) =>
+                  segment.secret ? (
+                    <SecretBlock key={index}>
+                      {renderRoleplayText(segment.text)}
+                    </SecretBlock>
+                  ) : (
+                    <span key={index}>{renderRoleplayText(segment.text)}</span>
+                  )
+                )
+              )}
               {isTyping && (
                 <span className="ml-1 inline-block h-3.5 w-1 translate-y-0.5 rounded-full bg-accent animate-pulse" />
               )}
@@ -291,6 +324,18 @@ export function MessageBubble({
               >
                 <BrainCircuit size={15} />
                 <span>Мысль</span>
+              </button>
+            )}
+
+            {onPublish && (hasInlineSecret || wholeSecret) && (
+              <button
+                type="button"
+                onClick={onPublish}
+                title="Сделать тайную часть открытой: персонажи её увидят"
+                className="flex items-center gap-1.5 rounded-xl border border-accent/25 bg-accent/10 px-3 py-1.5 text-xs font-semibold text-accent transition active:scale-95"
+              >
+                <Eye size={14} />
+                <span>Опубликовать</span>
               </button>
             )}
 
@@ -420,5 +465,18 @@ function FateBadge({
       <span>{label}</span>
       <Icon size={13} className="shrink-0" />
     </div>
+  );
+}
+
+/** Тайный фрагмент: отдельный блок с пунктирной рамкой и значком. Виден только автору и рассказчику. */
+function SecretBlock({ children }: { children: ReactNode }) {
+  return (
+    <span className="my-1 block rounded-xl border border-dashed border-accent/35 bg-accent/[0.06] px-3 py-2">
+      <span className="mb-1 flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-accent">
+        <EyeOff size={10} />
+        тайно
+      </span>
+      {children}
+    </span>
   );
 }

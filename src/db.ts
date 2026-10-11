@@ -16,6 +16,7 @@ import type {
   StoryLogEntry,
   ExtractedFact,
   ThoughtMode,
+  SecretEntry,
 } from "./types";
 import { DEFAULT_API_CONFIG, DEFAULT_STATS } from "./types";
 import { newId } from "./utils/id";
@@ -737,6 +738,7 @@ export function sanitizeSession(raw: Partial<ChatSession>): ChatSession {
     dynamicEvents: Boolean(raw?.dynamicEvents),
     suspenseMode: Boolean(raw?.suspenseMode),
     mysteryMode: Boolean(raw?.mysteryMode),
+    secretJournal: sanitizeSecretJournal(raw?.secretJournal),
     naturalSpeech: Boolean(raw?.naturalSpeech),
     showRelationshipToasts: raw?.showRelationshipToasts !== false,
     realisticPacing: raw?.realisticPacing !== false,
@@ -798,6 +800,24 @@ export function sanitizeParticipantMemoryPointers(
   return { ...session, participantMemory };
 }
 
+/** Тайный журнал: записи без текста отбрасываем, длину режем. */
+export function sanitizeSecretJournal(raw: unknown): SecretEntry[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item: any): SecretEntry | null => {
+      const text = typeof item?.text === "string" ? item.text.trim().slice(0, 2000) : "";
+      if (!text) return null;
+      return {
+        id: typeof item?.id === "string" && item.id.trim() ? item.id : newId(),
+        text,
+        sourceMessageId:
+          typeof item?.sourceMessageId === "string" ? item.sourceMessageId : undefined,
+        createdAt: finiteNumber(item?.createdAt, Date.now()),
+      };
+    })
+    .filter((item): item is SecretEntry => item !== null);
+}
+
 export function sanitizeMessage(raw: any): Message {
   let swipes: string[] = ["..."];
   if (Array.isArray(raw?.swipes) && raw.swipes.length > 0) {
@@ -846,6 +866,14 @@ export function sanitizeMessage(raw: any): Message {
         : undefined,
     isLiveSceneEcho: Boolean(raw?.isLiveSceneEcho),
     isRemoteReply: Boolean(raw?.isRemoteReply),
+    channel:
+      raw?.channel === "secret" || raw?.channel === "ooc" || raw?.channel === "scene"
+        ? raw.channel
+        : undefined,
+    authoredBy:
+      raw?.authoredBy === "narrator" || raw?.authoredBy === "player"
+        ? raw.authoredBy
+        : undefined,
     sender,
     swipes,
     currentSwipeIndex: typeof raw?.currentSwipeIndex === "number"

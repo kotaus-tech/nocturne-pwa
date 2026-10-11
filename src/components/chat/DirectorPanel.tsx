@@ -9,6 +9,7 @@ import {
   Clapperboard,
   Copy,
   EyeOff,
+  Pencil,
   Sparkles,
   Loader2,
   Zap,
@@ -50,6 +51,8 @@ import {
   mysteryModePatch,
 } from "../../services/mysteryMode";
 import type { SummaryRefreshResult } from "../../services/memoryEngine";
+import { journalAlias } from "../../services/secretChannel";
+import type { SecretEntry } from "../../types";
 import { Avatar } from "../common/Avatar";
 import { AmbientPlayer } from "./AmbientPlayer";
 import { db } from "../../db";
@@ -432,6 +435,10 @@ export function DirectorPanel({
   sending = false,
 }: Props) {
   const [notes, setNotes] = useState(session.directorNotes || "");
+  // Журнал тайн: правка и удаление только вручную (запись уходит сама, когда тайна раскрыта).
+  const secretJournal: SecretEntry[] = session.secretJournal ?? [];
+  const [editingSecretId, setEditingSecretId] = useState<string | null>(null);
+  const [secretDraft, setSecretDraft] = useState("");
   const [summaryText, setSummaryText] = useState(session.summary || "");
   const [isSummarySaved, setIsSummarySaved] = useState(false);
   const [savingSummary, setSavingSummary] = useState(false);
@@ -969,6 +976,102 @@ export function DirectorPanel({
               }}
               placeholder="Введите режиссёрское указание для сцены..."
             />
+          </section>
+
+          {/* Секция: журнал тайн — то, что знает рассказчик, но не персонажи */}
+          <section className="border-t border-white/[0.08] pt-5 sm:pt-6">
+            <h3 className="mb-1.5 flex items-center gap-2 text-sm font-semibold text-content sm:text-base">
+              <EyeOff size={18} className="text-accent" />
+              <span>Журнал тайн</span>
+            </h3>
+            <p className="mb-2.5 text-xs leading-relaxed text-content-secondary">
+              Тайные действия игрока. Рассказчик их видит, персонажи — нет. Запись
+              уходит сама, когда персонаж узнал о тайне, или после публикации.
+            </p>
+            {secretJournal.length === 0 ? (
+              <p className="rounded-2xl border border-dashed border-white/[0.1] p-3 text-center text-xs text-content-muted">
+                Пока пусто
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {secretJournal.map((entry, index) => (
+                  <li
+                    key={entry.id}
+                    className="rounded-2xl border border-white/[0.08] bg-[#121622]/60 p-2.5"
+                  >
+                    <div className="mb-1.5 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-content-muted">
+                      <span className="font-semibold text-accent">{journalAlias(index)}</span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingSecretId(entry.id);
+                            setSecretDraft(entry.text);
+                          }}
+                          className="rounded-lg p-1 hover:bg-white/[0.05] hover:text-content"
+                          title="Изменить"
+                          aria-label="Изменить тайну"
+                        >
+                          <Pencil size={13} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await db.sessions.update(session.id, {
+                              secretJournal: secretJournal.filter((item) => item.id !== entry.id),
+                            });
+                          }}
+                          className="rounded-lg p-1 hover:bg-danger/10 hover:text-danger"
+                          title="Удалить"
+                          aria-label="Удалить тайну"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </div>
+                    {editingSecretId === entry.id ? (
+                      <div className="space-y-2">
+                        <textarea
+                          rows={3}
+                          value={secretDraft}
+                          onChange={(e) => setSecretDraft(e.target.value)}
+                          className="input-field resize-y text-xs leading-relaxed"
+                        />
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setEditingSecretId(null)}
+                            className="rounded-xl border border-white/[0.08] px-3 py-1.5 text-xs text-content-secondary"
+                          >
+                            Отмена
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!secretDraft.trim()}
+                            onClick={async () => {
+                              const text = secretDraft.trim();
+                              await db.sessions.update(session.id, {
+                                secretJournal: secretJournal.map((item) =>
+                                  item.id === entry.id ? { ...item, text } : item
+                                ),
+                              });
+                              setEditingSecretId(null);
+                            }}
+                            className="rounded-xl bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent disabled:opacity-40"
+                          >
+                            Сохранить
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="whitespace-pre-wrap text-xs leading-relaxed text-zinc-200">
+                        {entry.text}
+                      </p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
 
           {/* Секция: участники групповой сцены */}

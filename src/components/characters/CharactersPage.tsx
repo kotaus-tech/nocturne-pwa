@@ -12,6 +12,7 @@ import {
   Pin,
   Upload,
   Dna,
+  FileText,
 } from "lucide-react";
 import {
   db,
@@ -27,11 +28,14 @@ import { CharacterGeneratorModal } from "./CharacterGeneratorModal";
 import { GeneratorV2Modal } from "./v2/GeneratorV2Modal";
 import { GroupSceneModal } from "./GroupSceneModal";
 import { GroupGeneratorModal } from "./GroupGeneratorModal";
+import { TextDnaModal } from "./TextDnaModal";
 import {
   GROUP_SIZE_MIN,
+  GROUP_SIZE_MAX,
   type GeneratedGroup,
 } from "../../services/characterGenerator";
-import { createGroupSession } from "../../utils/sessionActions";
+import type { TextDnaResult } from "../../services/textDna";
+import { createGroupSession, createSession } from "../../utils/sessionActions";
 import { newId } from "../../utils/id";
 import { Badge } from "../common/Badge";
 import { FavoriteButton } from "../common/FavoriteButton";
@@ -114,6 +118,8 @@ export function CharactersPage({
   const [groupPickerOpen, setGroupPickerOpen] = useState(false);
   const [groupGeneratorOpen, setGroupGeneratorOpen] = useState(false);
   const [groupDnaOpen, setGroupDnaOpen] = useState(false);
+  // Text DNA: импорт готового материала, отдельный от всех генераторов.
+  const [textDnaOpen, setTextDnaOpen] = useState(false);
   // Character DNA: отдельный генератор V2 (не заменяет классический).
   const [dnaOpen, setDnaOpen] = useState(false);
   const [draggedFile, setDraggedFile] = useState<File | null>(null);
@@ -302,6 +308,54 @@ export function CharactersPage({
     setViewing(saved);
   };
 
+  /**
+   * Text DNA: применяет уже извлечённые данные, а не запускает генератор.
+   * Подготовленные id и поля совпадают с тем, что показывал предпросмотр;
+   * single/group сохраняются атомарными действиями создания сессии.
+   */
+  const handleApplyTextDna = async (result: TextDnaResult, mysteryMode: boolean) => {
+    if (result.prepared.mode === "single") {
+      const saved = sanitizeCharacter(result.prepared.character);
+      const session = await createSession(saved, result.prepared.title, {
+        persistCharacter: saved,
+        mysteryMode,
+        summary: result.prepared.summary,
+        directorNotes: result.prepared.directorNotes,
+      });
+
+      if (favoritesOnly && !saved.isFavorite) onRevealCreated?.();
+      onOpenSession(session.id);
+      return;
+    }
+
+    const prepared = result.prepared;
+    if (
+      prepared.characters.length < GROUP_SIZE_MIN ||
+      prepared.characters.length > GROUP_SIZE_MAX
+    ) {
+      throw new Error(
+        `Text DNA определил ${prepared.characters.length} основных участников. NOCTURNE поддерживает групповые сцены только на ${GROUP_SIZE_MIN}–${GROUP_SIZE_MAX} персонажей; ничего не сохранено.`
+      );
+    }
+
+    const saved = prepared.characters.map((character) => sanitizeCharacter(character));
+    const [leader, ...rest] = saved;
+    const session = await createGroupSession(leader, rest, {
+      title: prepared.title,
+      opening: prepared.opening,
+      summary: prepared.summary,
+      directorNotes: prepared.directorNotes,
+      relations: prepared.relations,
+      persistCharacters: saved,
+      mysteryMode,
+    });
+
+    if (favoritesOnly && saved.some((character) => !character.isFavorite)) {
+      onRevealCreated?.();
+    }
+    onOpenSession(session.id);
+  };
+
   const handleToggleFavorite = (characterId: string) => {
     void toggleCharacterFavorite(characterId).catch((err) => {
       console.error("Favorite toggle failed:", err);
@@ -413,6 +467,16 @@ export function CharactersPage({
           >
             <Dna size={16} strokeWidth={1.8} />
             <span>Character DNA</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setTextDnaOpen(true)}
+            title="Извлечь персонажа или сцену из готового текста другой LLM"
+            className="inline-flex min-h-11 min-w-0 max-w-full items-center justify-center gap-2 rounded-xl border border-accent/40 bg-accent/10 px-4 py-2.5 text-sm font-semibold text-accent transition-all hover:border-accent hover:bg-accent/15"
+          >
+            <FileText size={16} strokeWidth={1.8} />
+            <span>Создать из промпта</span>
           </button>
 
           <button
@@ -765,6 +829,12 @@ export function CharactersPage({
         open={dnaOpen}
         onClose={() => setDnaOpen(false)}
         onApply={handleApplyV2}
+      />
+
+      <TextDnaModal
+        open={textDnaOpen}
+        onClose={() => setTextDnaOpen(false)}
+        onApply={handleApplyTextDna}
       />
 
       <CharacterImportModal

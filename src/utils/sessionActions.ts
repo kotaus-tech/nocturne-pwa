@@ -9,25 +9,41 @@ import type {
 } from "../types";
 import { emptyParticipantMemory } from "../services/groupScene";
 import { pruneOrphanEntries } from "../services/secretChannel";
+import { mysteryModePatch } from "../services/mysteryMode";
 
-/** Создаёт новую ветку диалога для персонажа с его стартовым сообщением */
-export async function createSession(character: Character, title?: string): Promise<ChatSession> {
+export interface CreateSessionOptions {
+  /** Сохранить персонажа вместе с веткой (используется импортом Text DNA). */
+  persistCharacter?: Character;
+  /** Состояние тайны задаётся до первого отображения чата. */
+  mysteryMode?: boolean;
+  /** Общий текст, который должен попасть в контекст одиночной сцены. */
+  summary?: string;
+  directorNotes?: string;
+}
+
+/** Создаёт новую ветку диалога для персонажа с его стартовым сообщением. */
+export async function createSession(
+  character: Character,
+  title?: string,
+  options?: CreateSessionOptions
+): Promise<ChatSession> {
   const now = Date.now();
   const session: ChatSession = {
     id: newId(),
     characterId: character.id,
     title: title ?? `Ветка ${new Date(now).toLocaleDateString("ru-RU")}`,
-    directorNotes: "",
-    summary: "",
+    directorNotes: options?.directorNotes ?? "",
+    summary: options?.summary ?? "",
     currentStats: { ...character.initialStats },
     novelMode: false,
     createdAt: now,
     updatedAt: now,
+    ...(options?.mysteryMode ? mysteryModePatch(true) : {}),
   };
-  await db.sessions.add(session);
 
-  // Альтернативные приветствия карточки становятся свайпами первой реплики:
-  // игрок может перебрать варианты открытия сцены, не открывая редактор.
+  // Стартовое сообщение и карточка пишутся одной транзакцией. Старые вызовы
+  // без options получают ровно прежнее поведение, а импорт не оставляет
+  // персонажа без ветки при ошибке IndexedDB.
   const greetings = [
     character.firstMessage,
     ...(character.alternateGreetings ?? []),
@@ -42,7 +58,14 @@ export async function createSession(character: Character, title?: string): Promi
     statsSnapshot: session.currentStats,
     timestamp: now,
   };
-  await db.messages.add(firstMsg);
+
+  await db.transaction("rw", db.characters, db.sessions, db.messages, async () => {
+    if (options?.persistCharacter) {
+      await db.characters.put(options.persistCharacter);
+    }
+    await db.sessions.add(session);
+    await db.messages.add(firstMsg);
+  });
 
   return session;
 }
@@ -63,6 +86,8 @@ export async function createGroupSession(
     summary?: string;
     directorNotes?: string;
     relations?: SceneRelation[];
+    /** Состояние тайны задаётся непосредственно до первого отображения чата. */
+    mysteryMode?: boolean;
     /** Сохраняется в той же транзакции, что сессия и её первый ход. */
     persistCharacters?: Character[];
   }
@@ -118,6 +143,7 @@ export async function createGroupSession(
     novelMode: false,
     createdAt: now,
     updatedAt: now,
+    ...(options?.mysteryMode ? mysteryModePatch(true) : {}),
   };
   const messages: Message[] = [];
 

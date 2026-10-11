@@ -23,6 +23,9 @@ import { insertSecretMarker } from "../../services/secretChannel";
 import { Avatar } from "../common/Avatar";
 import { cn } from "../../utils/cn";
 
+/** Максимальная высота поля ввода: около 4 строк, дальше — прокрутка внутри поля. */
+const TEXTAREA_MAX_PX = 120;
+
 interface Props {
   onSend: (text: string) => void;
   onOpenDirector: () => void;
@@ -79,7 +82,8 @@ export function InputBar({
     const element = taRef.current;
     if (!element) return;
     element.style.height = "auto";
-    element.style.height = `${Math.min(180, Math.max(52, element.scrollHeight))}px`;
+    // Поле растёт максимум примерно до 4 строк, дальше прокручивается само.
+    element.style.height = `${Math.min(TEXTAREA_MAX_PX, Math.max(52, element.scrollHeight))}px`;
   };
 
   const send = () => {
@@ -438,7 +442,7 @@ export function InputBar({
                 ? "Сообщение от автора вне роли…"
                 : `Что вы скажете ${characterName}?`
           }
-          className="block max-h-44 min-h-[44px] min-w-0 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-relaxed text-zinc-100 placeholder:text-content-muted focus:outline-none sm:text-base"
+          className="block min-h-[44px] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-2 py-2 text-sm leading-relaxed text-zinc-100 placeholder:text-content-muted focus:outline-none sm:text-base"
         />
 
         {sending && onStop ? (

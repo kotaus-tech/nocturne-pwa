@@ -20,12 +20,78 @@ import {
 } from "../apiClient";
 import { extractJsonBlock } from "../jsonRepair";
 
-/** Ответ модели не удалось разобрать в JSON. */
-export class V2JsonError extends Error {}
+export type V2JsonErrorKind =
+  | "empty"
+  | "no_json"
+  | "invalid_json"
+  | "incomplete_json"
+  | "output_limit";
 
-interface V2Turn {
+export interface V2UsageMetadata {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+}
+
+/** Метаданные завершения, которые провайдеры возвращают вместе с текстом. */
+export interface V2ResponseMetadata {
+  provider: "gemini" | "openai-compatible";
+  finishReason?: string;
+  usage?: V2UsageMetadata;
+  rawTextLength: number;
+  /** JSON-блок не закрылся в полученном тексте. */
+  incompleteJson?: boolean;
+}
+
+/** Ответ модели не удалось разобрать в JSON. */
+export class V2JsonError extends Error {
+  readonly kind: V2JsonErrorKind;
+  readonly metadata?: V2ResponseMetadata;
+  /** Используется только для компактного correction; не показывается в UI/логах. */
+  readonly rawText?: string;
+
+  constructor(
+    message: string,
+    kind: V2JsonErrorKind = "invalid_json",
+    metadata?: V2ResponseMetadata,
+    rawText?: string
+  ) {
+    super(message);
+    this.name = "V2JsonError";
+    this.kind = kind;
+    this.metadata = metadata;
+    this.rawText = rawText;
+  }
+}
+
+/** Провайдер сообщил, что генерация упёрлась в лимит output-токенов. */
+export class V2OutputLimitError extends V2JsonError {
+  constructor(message: string, metadata?: V2ResponseMetadata) {
+    super(message, "output_limit", metadata);
+    this.name = "V2OutputLimitError";
+  }
+}
+
+/** Ответ HTTP 200 содержит отказ/ошибку провайдера вместо результата модели. */
+export class V2ProviderError extends Error {
+  readonly metadata?: V2ResponseMetadata;
+
+  constructor(message: string, metadata?: V2ResponseMetadata) {
+    super(message);
+    this.name = "V2ProviderError";
+    this.metadata = metadata;
+  }
+}
+
+export interface V2Turn {
   role: "user" | "assistant" | "model";
   content: string;
+}
+
+export interface V2JsonResult<T = any> {
+  value: T;
+  rawText: string;
+  metadata: V2ResponseMetadata;
 }
 
 /**
@@ -84,16 +150,121 @@ function extractModelText(data: any): string {
   return "";
 }
 
-/** Терпимый разбор ответа в JSON-объект: терпит обёртки и обрыв ответа. */
+function usageMetadata(data: any): V2UsageMetadata | undefined {
+  const raw = data?.usage ?? data?.usageMetadata;
+  if (!raw || typeof raw !== "object") return undefined;
+
+  const inputTokens =
+    raw.prompt_tokens ??
+    raw.promptTokenCount ??
+    raw.input_tokens ??
+    raw.inputTokenCount ??
+    raw.prompt_eval_count;
+  const outputTokens =
+    raw.completion_tokens ??
+    raw.candidatesTokenCount ??
+    raw.output_tokens ??
+    raw.outputTokenCount ??
+    raw.eval_count;
+  const totalTokens =
+    raw.total_tokens ??
+    raw.totalTokenCount ??
+    (typeof raw.prompt_eval_count === "number" && typeof raw.eval_count === "number"
+      ? raw.prompt_eval_count + raw.eval_count
+      : undefined);
+
+  const result: V2UsageMetadata = {};
+  if (typeof inputTokens === "number" && Number.isFinite(inputTokens)) {
+    result.inputTokens = inputTokens;
+  }
+  if (typeof outputTokens === "number" && Number.isFinite(outputTokens)) {
+    result.outputTokens = outputTokens;
+  }
+  if (typeof totalTokens === "number" && Number.isFinite(totalTokens)) {
+    result.totalTokens = totalTokens;
+  }
+
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function responseMetadata(
+  data: any,
+  rawText: string,
+  provider: V2ResponseMetadata["provider"]
+): V2ResponseMetadata {
+  const choice = data?.choices?.[0];
+  const candidate = data?.candidates?.[0];
+  const message = data?.message;
+  const finishReason =
+    choice?.finish_reason ??
+    choice?.finishReason ??
+    candidate?.finishReason ??
+    candidate?.finish_reason ??
+    message?.done_reason ??
+    data?.done_reason;
+
+  return {
+    provider,
+    ...(typeof finishReason === "string" && finishReason.trim()
+      ? { finishReason: finishReason.trim() }
+      : {}),
+    usage: usageMetadata(data),
+    rawTextLength: rawText.length,
+  };
+}
+
+function isOutputLimitReason(reason?: string): boolean {
+  if (!reason) return false;
+  return /^(length|max_tokens|max_tokens_reached|maximum_tokens|token_limit)$/i.test(
+    reason.trim()
+  );
+}
+
+function isNormalFinishReason(reason?: string): boolean {
+  if (!reason) return true;
+  return /^(stop|end_turn|completed|complete)$/i.test(reason.trim());
+}
+
+function providerErrorMessage(data: any): string | null {
+  if (!data || typeof data !== "object") return null;
+  const choice = Array.isArray(data.choices) ? data.choices[0] : undefined;
+  const candidates = [
+    data.error,
+    choice?.error,
+    choice?.message?.error,
+    choice?.message?.refusal,
+    choice?.refusal,
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim().slice(0, 240);
+    }
+    if (typeof candidate === "object") {
+      const message = candidate.message ?? candidate.detail ?? candidate.reason;
+      if (typeof message === "string" && message.trim()) {
+        return message.trim().slice(0, 240);
+      }
+    }
+  }
+
+  if (choice?.finish_reason === "error") {
+    return "Провайдер вернул ошибку в ответе (finish_reason: error).";
+  }
+
+  return null;
+}
+
+/** Терпимый разбор, сохранённый для старых V2/Group DNA вызовов. */
 export function parseV2Json(raw: string): any {
   const text = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
   const extracted = extractJsonBlock(text);
 
   if (!extracted) {
     throw new V2JsonError(
-      text
-        ? `Модель ответила текстом вместо JSON: «${text.slice(0, 160)}».`
-        : "Модель вернула пустой ответ."
+      text ? "Модель ответила текстом вместо JSON." : "Модель вернула пустой ответ.",
+      text ? "no_json" : "empty"
     );
   }
 
@@ -107,20 +278,61 @@ export function parseV2Json(raw: string): any {
         // уходим в ошибку ниже
       }
     }
-    throw new V2JsonError("Модель вернула некорректный JSON.");
+    throw new V2JsonError("Модель вернула некорректный JSON.", "invalid_json");
   }
 }
 
-/**
- * Запрос диалога в JSON-режиме. `turns` — последовательность ролей,
- * где для коррекционного повтора можно передать [инструкция, битый ответ,
- * задание исправить].
- */
-export async function requestV2Json(
+function parseV2JsonStrict(
+  raw: string,
+  metadata: V2ResponseMetadata
+): any {
+  const text = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+
+  // Проверяем finish_reason до попытки угадать структуру: при MAX_TOKENS
+  // даже случайно разобравшийся префикс нельзя считать полным ответом.
+  if (isOutputLimitReason(metadata.finishReason)) {
+    throw new V2OutputLimitError(
+      `Генерация остановлена провайдером по лимиту вывода (${metadata.finishReason}).`,
+      metadata
+    );
+  }
+
+  if (!text) {
+    throw new V2JsonError("Модель вернула пустой ответ.", "empty", metadata, text);
+  }
+
+  const extracted = extractJsonBlock(text);
+  if (!extracted) {
+    throw new V2JsonError("Модель ответила текстом вместо JSON.", "no_json", metadata, text);
+  }
+
+  if (extracted.closers) {
+    throw new V2JsonError(
+      "JSON-ответ не закрыт; вероятно, вывод оборван.",
+      "incomplete_json",
+      { ...metadata, incompleteJson: true },
+      text
+    );
+  }
+
+  try {
+    return JSON.parse(extracted.block);
+  } catch {
+    throw new V2JsonError("Модель вернула некорректный JSON.", "invalid_json", metadata, text);
+  }
+}
+
+interface RawV2Response {
+  rawText: string;
+  metadata: V2ResponseMetadata;
+  data: any;
+}
+
+async function requestV2Raw(
   apiConfig: ApiConfig,
   turns: V2Turn[],
-  maxTokens = 4600
-): Promise<any> {
+  maxTokens: number
+): Promise<RawV2Response> {
   // Локальным моделям нужна разумная температура и выключенные размышления.
   const temperature = 0.9;
 
@@ -159,10 +371,24 @@ export async function requestV2Json(
     }
 
     const data = await readJsonResponse(res);
-    return parseV2Json(extractModelText(data));
+    const rawText = extractModelText(data);
+    const metadata = responseMetadata(data, rawText, "gemini");
+    if (
+      metadata.finishReason &&
+      !isOutputLimitReason(metadata.finishReason) &&
+      !isNormalFinishReason(metadata.finishReason)
+    ) {
+      throw new V2ProviderError(
+        `Провайдер остановил генерацию с кодом ${metadata.finishReason}.`,
+        metadata
+      );
+    }
+    const providerError = providerErrorMessage(data);
+    if (providerError) throw new V2ProviderError(providerError, metadata);
+    return { rawText, metadata, data };
   }
 
-  // OpenAI-совместимые и Ollama
+  // OpenAI-совместимые и Ollama.
   const { isOllama, primaryUrl, fallbackUrl } = resolveEndpoints(apiConfig.baseUrl);
 
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -187,7 +413,7 @@ export async function requestV2Json(
     bodyPayload.format = "json";
     bodyPayload.options = {
       temperature,
-      num_ctx: apiConfig.localNumCtx ?? 8192,
+      num_ctx: apiConfig.localNumCtx ?? 16_384,
       num_predict: maxTokens,
     };
   } else {
@@ -217,5 +443,57 @@ export async function requestV2Json(
   }
 
   const data = await readJsonResponse(res);
-  return parseV2Json(extractModelText(data));
+  const rawText = extractModelText(data);
+  const metadata = responseMetadata(data, rawText, "openai-compatible");
+  if (
+    metadata.finishReason &&
+    !isOutputLimitReason(metadata.finishReason) &&
+    !isNormalFinishReason(metadata.finishReason)
+  ) {
+    throw new V2ProviderError(
+      `Провайдер остановил генерацию с кодом ${metadata.finishReason}.`,
+      metadata
+    );
+  }
+  const providerError = providerErrorMessage(data);
+  if (providerError) throw new V2ProviderError(providerError, metadata);
+  return { rawText, metadata, data };
+}
+
+/** Strict JSON request used by Text DNA; it preserves finish_reason and usage. */
+export async function requestV2JsonDetailed(
+  apiConfig: ApiConfig,
+  turns: V2Turn[],
+  maxTokens = 4600
+): Promise<V2JsonResult> {
+  const response = await requestV2Raw(apiConfig, turns, maxTokens);
+  const value = parseV2JsonStrict(response.rawText, response.metadata);
+  return { value, rawText: response.rawText, metadata: response.metadata };
+}
+
+/**
+ * Backward-compatible V2 request. Existing Character DNA and Group DNA keep
+ * their tolerant JSON repair behavior; Text DNA uses requestV2JsonDetailed.
+ */
+export async function requestV2Json(
+  apiConfig: ApiConfig,
+  turns: V2Turn[],
+  maxTokens = 4600
+): Promise<any> {
+  try {
+    const response = await requestV2Raw(apiConfig, turns, maxTokens);
+    return parseV2Json(response.rawText);
+  } catch (cause) {
+    // Старые Character DNA/Group DNA ветки ожидают V2JsonError и сами
+    // выполняют свой прежний correction-протокол. Подробный Text DNA путь
+    // использует requestV2JsonDetailed и получает V2ProviderError напрямую.
+    if (cause instanceof V2ProviderError) {
+      throw new V2JsonError(
+        "Провайдер вернул отказ вместо JSON.",
+        "no_json",
+        cause.metadata
+      );
+    }
+    throw cause;
+  }
 }

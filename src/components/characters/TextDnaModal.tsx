@@ -15,11 +15,14 @@ import { Modal } from "../common/Modal";
 import { getApiConfig } from "../../db";
 import { isLocalEndpoint } from "../../services/apiClient";
 import {
+  createTextDnaTask,
   extractTextDna,
+  isTextDnaTaskCompatible,
   type TextDnaMode,
   type TextDnaPreparedGroup,
   type TextDnaPreparedSingle,
   type TextDnaResult,
+  type TextDnaTask,
 } from "../../services/textDna";
 import { cn } from "../../utils/cn";
 
@@ -304,6 +307,7 @@ export function TextDnaModal({ open, onClose, onApply }: Props) {
   const operationRef = useRef(false);
   const tokenRef = useRef(0);
   const wasOpenRef = useRef(false);
+  const taskRef = useRef<TextDnaTask | null>(null);
   const sourceId = useId();
 
   useEffect(() => {
@@ -315,6 +319,7 @@ export function TextDnaModal({ open, onClose, onApply }: Props) {
       setResult(null);
       setError(null);
       setApplying(false);
+      taskRef.current = null;
       operationRef.current = false;
     }
     wasOpenRef.current = open;
@@ -323,18 +328,31 @@ export function TextDnaModal({ open, onClose, onApply }: Props) {
   const handleClose = () => {
     tokenRef.current += 1;
     operationRef.current = false;
+    taskRef.current = null;
     setApplying(false);
     onClose();
+  };
+
+  const resetTask = () => {
+    taskRef.current = null;
+    setResult(null);
+    setError(null);
   };
 
   const handleGenerate = async () => {
     if (operationRef.current || !source.trim()) return;
     operationRef.current = true;
     const token = ++tokenRef.current;
+    const task = isTextDnaTaskCompatible(taskRef.current, source, mode)
+      ? taskRef.current
+      : createTextDnaTask(source, mode);
+    taskRef.current = task;
     setError(null);
     setStep("working");
     setWorkingLabel(
-      source.length > 10_000
+      task.evidence.length > 0 || task.index || Object.keys(task.cards).length > 0
+        ? "Продолжаем только незавершённый этап…"
+        : source.length > 10_000
         ? "Размечаем длинный исходник и сохраняем связи между секциями…"
         : "Извлекаем персонажа и авторские правила…"
     );
@@ -345,7 +363,7 @@ export function TextDnaModal({ open, onClose, onApply }: Props) {
         throw new Error("Не указан API-ключ в Настройках приложения.");
       }
 
-      const extracted = await extractTextDna(apiConfig, source, mode);
+      const extracted = await extractTextDna(apiConfig, source, mode, { task });
       if (token !== tokenRef.current) return;
 
       setResult(extracted);
@@ -419,14 +437,20 @@ export function TextDnaModal({ open, onClose, onApply }: Props) {
                 selected={mode === "single"}
                 title="Одиночный персонаж"
                 description="Одна полноценная карточка и новая личная сцена."
-                onClick={() => setMode("single")}
+                onClick={() => {
+                  if (mode !== "single") resetTask();
+                  setMode("single");
+                }}
               />
               <ModeCard
                 mode="group"
                 selected={mode === "group"}
                 title="Групповая сцена"
                 description="Основной состав 2–4 участников, общая сцена и отношения."
-                onClick={() => setMode("group")}
+                onClick={() => {
+                  if (mode !== "group") resetTask();
+                  setMode("group");
+                }}
               />
             </div>
           </div>
@@ -468,7 +492,12 @@ export function TextDnaModal({ open, onClose, onApply }: Props) {
             <textarea
               id={sourceId}
               value={source}
-              onChange={(event) => setSource(event.target.value)}
+              onChange={(event) => {
+                setSource(event.target.value);
+                taskRef.current = null;
+                setResult(null);
+                setError(null);
+              }}
               placeholder="Вставьте сюда полный текст внешней LLM…"
               spellCheck={false}
               className="min-h-[44vh] w-full resize-y rounded-2xl border border-white/[0.09] bg-[#0d1119] p-4 text-sm leading-relaxed text-content outline-none transition-colors placeholder:text-content-muted focus:border-accent/60 focus:ring-1 focus:ring-accent/30 [overflow-wrap:anywhere]"
@@ -518,7 +547,14 @@ export function TextDnaModal({ open, onClose, onApply }: Props) {
             </button>
             <button type="button" onClick={() => void handleGenerate()} disabled={!source.trim() || operationRef.current} className="inline-flex min-h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-on-accent hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 sm:flex-[2]">
               <FileText size={17} />
-              <span>Извлечь и подготовить</span>
+              <span>
+                {taskRef.current &&
+                (taskRef.current.evidence.length > 0 ||
+                  taskRef.current.index ||
+                  Object.keys(taskRef.current.cards).length > 0)
+                  ? "Продолжить обработку"
+                  : "Извлечь и подготовить"}
+              </span>
             </button>
           </div>
         </div>

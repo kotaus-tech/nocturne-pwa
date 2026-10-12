@@ -477,11 +477,46 @@ function normalizeCoverage(
       issues.push(`${path}[${index}]: ожидается объект покрытия`);
       return;
     }
-    const sectionId = nonEmptyString(item.sectionId);
-    const section = known.get(sectionId);
+    const declaredSectionId = nonEmptyString(item.sectionId);
+    const sourceStart = item.sourceStart;
+    const sourceEnd = item.sourceEnd;
+
+    // Некоторые модели теряют стабильный id, хотя сохраняют порядок и точные
+    // диапазоны. Это безопасно исправить на клиенте: id принадлежит исходнику,
+    // а не модели. Не исправляем неизвестный id без подтверждения диапазоном.
+    const rangeSection =
+      typeof sourceStart === "number" &&
+      Number.isFinite(sourceStart) &&
+      typeof sourceEnd === "number" &&
+      Number.isFinite(sourceEnd)
+        ? sections.find(
+            (candidate) =>
+              candidate.start === sourceStart &&
+              candidate.end === sourceEnd &&
+              !seen.has(candidate.id)
+          )
+        : undefined;
+    const positionalSection =
+      !declaredSectionId &&
+      !rangeSection &&
+      value.length === sections.length
+        ? sections.find((candidate) => candidate.id === sections[index].id && !seen.has(candidate.id))
+        : undefined;
+    const declaredSection = known.get(declaredSectionId);
+    const section = declaredSection ?? rangeSection ?? positionalSection;
+    const sectionId = section?.id ?? "";
+
     if (!section) {
-      issues.push(`${path}[${index}].sectionId: неизвестная секция «${sectionId}»`);
+      issues.push(`${path}[${index}].sectionId: неизвестная секция «${declaredSectionId}»`);
       return;
+    }
+    if (
+      declaredSection &&
+      typeof sourceStart === "number" &&
+      typeof sourceEnd === "number" &&
+      (sourceStart !== section.start || sourceEnd !== section.end)
+    ) {
+      issues.push(`${path}[${index}].sectionId: id не соответствует диапазону секции`);
     }
     if (seen.has(sectionId)) {
       issues.push(`${path}[${index}].sectionId: секция повторена`);
@@ -489,16 +524,16 @@ function normalizeCoverage(
     }
     seen.add(sectionId);
 
-    const sourceStart = item.sourceStart;
-    const sourceEnd = item.sourceEnd;
+    const hasStart = sourceStart !== undefined;
+    const hasEnd = sourceEnd !== undefined;
+    const validStart = typeof sourceStart === "number" && Number.isFinite(sourceStart);
+    const validEnd = typeof sourceEnd === "number" && Number.isFinite(sourceEnd);
     if (
-      typeof sourceStart !== "number" ||
-      !Number.isFinite(sourceStart) ||
-      typeof sourceEnd !== "number" ||
-      !Number.isFinite(sourceEnd) ||
-      sourceStart !== section.start ||
-      sourceEnd !== section.end ||
-      sourceStart > sourceEnd
+      (hasStart && !validStart) ||
+      (hasEnd && !validEnd) ||
+      (validStart && sourceStart !== section.start) ||
+      (validEnd && sourceEnd !== section.end) ||
+      (validStart && validEnd && sourceStart > sourceEnd)
     ) {
       issues.push(`${path}[${index}]: диапазон не соответствует секции ${sectionId}`);
     }
@@ -784,7 +819,7 @@ const EXTRACTION_RULES = `
 `;
 
 function coverageInstruction(sections: TextDnaSourceSection[]): string {
-  return `Для каждого исходного блока верни ровно одну запись в coverage. Перенеси id и границы без изменений и перечисли в retainedFacts факты, правила, диалоги и сведения, которые ты реально сохранил. Если что-то не удалось разложить, положи его дословно в preservedMaterial. Блоки: ${JSON.stringify(
+  return `Для каждого исходного блока верни ровно одну запись в coverage. Скопируй sectionId, sourceStart и sourceEnd буквально из списка ниже, не оставляй sectionId пустым и не переименовывай его. В retainedFacts перечисли факты, правила, диалоги и сведения, которые ты реально сохранил; массив не должен быть пустым. Если что-то не удалось разложить, положи его дословно в preservedMaterial. Блоки: ${JSON.stringify(
     sections.map(({ id, start, end }) => ({ id, start, end }))
   )}`;
 }
@@ -885,10 +920,16 @@ function validateChunkEvidence(
 ): { value?: TextDnaChunkEvidence; issues: string[] } {
   const issues: string[] = [];
   if (!isRecord(value)) return { issues: ["ответ секции не является объектом"] };
-  if (value.sectionId !== section.id) issues.push(`sectionId: ожидался ${section.id}`);
+  // sectionId принадлежит клиенту: если модель его не повторила, исходная
+  // секция уже известна вызывающему коду. Непустой чужой id по-прежнему ошибка.
+  if (value.sectionId !== undefined && nonEmptyString(value.sectionId) && value.sectionId !== section.id) {
+    issues.push(`sectionId: ожидался ${section.id}`);
+  }
 
   const entitiesRaw = value.entities;
-  if (!Array.isArray(entitiesRaw)) issues.push("entities: нужен массив");
+  if (entitiesRaw !== undefined && !Array.isArray(entitiesRaw)) {
+    issues.push("entities: ожидается массив");
+  }
   const entities: Array<{ name: string; aliases: string[] }> = [];
   (Array.isArray(entitiesRaw) ? entitiesRaw : []).forEach((item, index) => {
     if (!isRecord(item) || !nonEmptyString(item.name)) {
@@ -902,7 +943,9 @@ function validateChunkEvidence(
   });
 
   const evidenceRaw = value.evidence;
-  if (!Array.isArray(evidenceRaw)) issues.push("evidence: нужен массив");
+  if (evidenceRaw !== undefined && !Array.isArray(evidenceRaw)) {
+    issues.push("evidence: ожидается массив");
+  }
   const evidence: TextDnaChunkEvidence["evidence"] = [];
   (Array.isArray(evidenceRaw) ? evidenceRaw : []).forEach((item, index) => {
     if (!isRecord(item)) {

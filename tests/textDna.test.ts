@@ -10,6 +10,7 @@ import {
   extractTextDna,
   prepareTextDnaPayload,
   splitTextForTextDna,
+  validateTextDnaPayload,
   type TextDnaGroupPayload,
   type TextDnaSinglePayload,
 } from "../src/services/textDna";
@@ -136,13 +137,11 @@ describe("Text DNA: lossless source handling", () => {
   it("строит карту секций перед финальным сведением длинного текста", async () => {
     const source = "ИМЯ Мира. Секрет архива.\n" + "Деталь исходного материала. ".repeat(700);
     const sections = splitTextForTextDna(source);
-    const evidenceResponses = sections.map((section) => ({
-      sectionId: section.id,
+    const evidenceResponses = sections.map(() => ({
+      // sectionId и пустые массивы намеренно потеряны: их можно восстановить
+      // из клиентского порядка, не отправляя дорогой повторный запрос.
       entities: [{ name: "Мира", aliases: ["она"] }],
       evidence: [{ subject: "Мира", category: "rule", text: "Не раскрывать секрет архива.", sourceQuote: "секрет архива" }],
-      sharedContext: [],
-      relations: [],
-      unmappedMaterial: [],
     }));
     const final = singlePayload(sections);
     const fetchMock = mockFetchWithQueue([...evidenceResponses, final]);
@@ -172,6 +171,27 @@ describe("Text DNA: typed extraction and mapping", () => {
     expect(result.prepared.character.alternateGreetings?.[0]).toContain("Я ждала");
     expect(result.prepared.character.lorebook[0].content).toContain("письмо");
     expect(result.prepared.directorNotes).toContain("право выбора");
+  });
+
+  it("восстанавливает потерянные sectionId по точным диапазонам без нового запроса", () => {
+    const source = "A".repeat(21_000);
+    const sections = splitTextForTextDna(source);
+    const payload = singlePayload(sections).coverage.map((item) => ({
+      ...item,
+      sectionId: "",
+    }));
+    const checked = validateTextDnaPayload(
+      { ...singlePayload(sections), coverage: payload },
+      "single",
+      sections
+    );
+
+    expect(checked.ok).toBe(true);
+    if (checked.ok) {
+      expect(checked.payload.coverage.map((item) => item.sectionId)).toEqual(
+        sections.map((section) => section.id)
+      );
+    }
   });
 
   it("выстраивает общую сцену, направленные связи и отдельные карточки группы", () => {

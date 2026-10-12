@@ -44,6 +44,11 @@ export const TEXT_DNA_CARD_OUTPUT_TOKENS = 4_200;
 /** Порог, после которого индекс строится ограниченными пачками свидетельств. */
 export const TEXT_DNA_INDEX_INPUT_MAX_CHARS = 45_000;
 export const TEXT_DNA_INDEX_BATCH_CHARS = 32_000;
+/** Карточка также не получает весь ledger одним необозримым запросом. */
+export const TEXT_DNA_CARD_INPUT_MAX_CHARS = 38_000;
+export const TEXT_DNA_CARD_BATCH_CHARS = 28_000;
+export const TEXT_DNA_INDEX_MERGE_BATCH_CHARS = 24_000;
+export const TEXT_DNA_CARD_MERGE_BATCH_CHARS = 24_000;
 /** Correction не должен переносить в новый запрос бесконечный ответ модели. */
 export const TEXT_DNA_CORRECTION_MAX_CHARS = 18_000;
 
@@ -273,8 +278,15 @@ export interface TextDnaTask {
   evidence: TextDnaChunkEvidence[];
   /** Частичные индексы остаются до merge и позволяют не начинать заново. */
   indexFragments?: TextDnaSynthesisIndex[];
+  /** Очередь и результаты bounded merge сохраняются для повтора только сбойной порции. */
+  indexMergeQueue?: TextDnaSynthesisIndex[][];
+  indexMergeResults?: TextDnaSynthesisIndex[];
   index?: TextDnaSynthesisIndex;
   cards: Record<string, TextDnaCharacter>;
+  /** Частичные карточки нужны только если evidence одной карточки велик. */
+  cardFragments: Record<string, TextDnaCharacter[]>;
+  cardMergeQueues?: Record<string, TextDnaCharacter[][]>;
+  cardMergeResults?: Record<string, TextDnaCharacter[]>;
   payload?: TextDnaPayload;
   corrected: boolean;
 }
@@ -916,6 +928,7 @@ export function createTextDnaTask(source: string, mode: TextDnaMode): TextDnaTas
     sections,
     evidence: [],
     cards: {},
+    cardFragments: {},
     corrected: false,
   };
 }
@@ -978,7 +991,9 @@ export function buildTextDnaCorrectionPrompt(
   return [
     "Text DNA: исправь только предыдущий ответ.",
     "Верни один полный JSON по краткой схеме ниже, без Markdown и пояснений.",
-    `Ошибки проверки: ${issues.slice(0, 12).join("; ") || "ответ не разобран как JSON"}`,
+    `Ошибки проверки: ${
+      issues.slice(0, 12).map((issue) => issue.slice(0, 240)).join("; ") || "ответ не разобран как JSON"
+    }`,
     `Краткая ожидаемая схема:\n${schemaHint}`,
     `Предыдущий ответ модели:\n${compactPreviousResponse(previous)}`,
     "Не добавляй технические id или offsets исходника: их назначает клиент.",
@@ -1003,9 +1018,11 @@ function formatFailureMessage(
     return `Этап «${stage}» получил повреждённый JSON. Автоматическая попытка исправления не помогла; исходный текст остался в окне.`;
   }
   if (kind === "schema") {
-    return `Этап «${stage}» вернул JSON, который не соответствует схеме: ${issues
+    const safeIssues = issues
       .slice(0, 4)
-      .join("; ")}. Исходный текст остался в окне.`;
+      .map((issue) => issue.slice(0, 240))
+      .join("; ");
+    return `Этап «${stage}» вернул JSON, который не соответствует схеме: ${safeIssues}. Исходный текст остался в окне.`;
   }
   if (kind === "context") {
     return `Исходный материал не помещается в контекст выбранной модели на этапе «${stage}». Текст не был обрезан и ничего не сохранено.`;
@@ -1322,7 +1339,8 @@ function buildCardPrompt(
   mode: TextDnaMode,
   participant: TextDnaParticipantIndex,
   index: TextDnaSynthesisIndex,
-  evidence: TextDnaChunkEvidence[]
+  evidence: TextDnaChunkEvidence[],
+  partial = false
 ): string {
   const shared = evidence.map((item) => ({
     sectionId: item.sectionId,
@@ -1334,9 +1352,12 @@ function buildCardPrompt(
     sectionId: item.sectionId,
     evidence: item.evidence,
   }));
+  const stage = partial
+    ? "ЭТАП 3A: собери частичный черновик одной карточки только по этой порции свидетельств. Заполняй только то, что подтверждено этой порцией; не пытайся угадывать отсутствующие поля."
+    : "ЭТАП 3: собери одну индивидуальную карточку из уже проверенного индекса и относящихся к ней свидетельств.";
   return `${EXTRACTION_RULES}
 
-ЭТАП 3: собери одну индивидуальную карточку из уже проверенного индекса и относящихся к ней свидетельств. Не выдумывай, не меняй авторские формулировки и не добавляй key/id/offsets в ответ — key назначен клиентом. Всё, что нельзя безопасно разложить по полям, положи в character.preservedMaterial.
+${stage} Не выдумывай, не меняй авторские формулировки и не добавляй key/id/offsets в ответ — key назначен клиентом. Всё, что нельзя безопасно разложить по полям, положи в character.preservedMaterial.
 
 Режим: ${mode}
 Текущий участник: ${JSON.stringify(participant)}
@@ -1347,6 +1368,26 @@ ${JSON.stringify(selected)}
 ${JSON.stringify(shared)}
 
 Верни только объект по схеме:
+${CARD_SCHEMA}`;
+}
+
+function buildCardMergePrompt(
+  mode: TextDnaMode,
+  participant: TextDnaParticipantIndex,
+  index: TextDnaSynthesisIndex,
+  fragments: TextDnaCharacter[]
+): string {
+  return `${EXTRACTION_RULES}
+
+ЭТАП 3B: объедини проверенные частичные черновики одной карточки. Сохрани все подтверждённые факты, цитаты, правила и preservedMaterial; при конфликте не выдумывай разрешение, а сохрани обе формулировки. Не добавляй key/id/offsets — key назначает клиент.
+
+Режим: ${mode}
+Текущий участник: ${JSON.stringify(participant)}
+Общий индекс сцены/сессии: ${JSON.stringify(index)}
+ЧАСТИЧНЫЕ ЧЕРНОВИКИ:
+${JSON.stringify(fragments)}
+
+Верни одну полную карточку только по схеме:
 ${CARD_SCHEMA}`;
 }
 
@@ -1492,14 +1533,16 @@ async function collectEvidence(
   return { evidence: task.evidence, corrected };
 }
 
-function evidenceBatches(evidence: TextDnaChunkEvidence[]): TextDnaChunkEvidence[][] {
-  const batches: TextDnaChunkEvidence[][] = [];
-  let current: TextDnaChunkEvidence[] = [];
+function boundedBatches<T>(items: T[], maxChars: number): T[][] {
+  const batches: T[][] = [];
+  let current: T[] = [];
   let currentSize = 2;
 
-  for (const item of evidence) {
+  for (const item of items) {
     const itemSize = JSON.stringify(item).length + 1;
-    if (current.length > 0 && currentSize + itemSize > TEXT_DNA_INDEX_BATCH_CHARS) {
+    // An individual evidence item can be larger than the soft budget. It is
+    // still kept intact; dropping or truncating it would silently lose facts.
+    if (current.length > 0 && currentSize + itemSize > maxChars) {
       batches.push(current);
       current = [];
       currentSize = 2;
@@ -1509,6 +1552,13 @@ function evidenceBatches(evidence: TextDnaChunkEvidence[]): TextDnaChunkEvidence
   }
   if (current.length > 0) batches.push(current);
   return batches;
+}
+
+function evidenceBatches(
+  evidence: TextDnaChunkEvidence[],
+  maxChars = TEXT_DNA_INDEX_BATCH_CHARS
+): TextDnaChunkEvidence[][] {
+  return boundedBatches(evidence, maxChars);
 }
 
 async function synthesizeIndex(
@@ -1552,19 +1602,50 @@ async function synthesizeIndex(
     task.corrected ||= result.corrected;
   }
 
-  const merged = await requestStructured(
-    apiConfig,
-    buildIndexMergePrompt(task.mode, fragments),
-    (value) => normalizeSynthesisIndex(value, task.mode),
-    "сведение индекса состава и сцены",
-    task.mode === "single" ? INDEX_SINGLE_SCHEMA : INDEX_GROUP_SCHEMA,
-    TEXT_DNA_INDEX_OUTPUT_TOKENS
+  let mergeQueue = task.indexMergeQueue;
+  let mergeResults = task.indexMergeResults ? [...task.indexMergeResults] : [];
+  if (!mergeQueue) {
+    mergeQueue = boundedBatches(fragments, TEXT_DNA_INDEX_MERGE_BATCH_CHARS);
+    mergeResults = [];
+    task.indexMergeQueue = mergeQueue;
+    task.indexMergeResults = [];
+  }
+
+  // If the evidence produced many partial indexes, merge them hierarchically.
+  // A failed merge leaves its queue/results in the in-memory task, so retrying
+  // starts at the failed merge portion and never re-requests source sections.
+  while (mergeQueue.length > 0) {
+    for (let mergeIndex = mergeResults.length; mergeIndex < mergeQueue.length; mergeIndex += 1) {
+      const merged = await requestStructured(
+        apiConfig,
+        buildIndexMergePrompt(task.mode, mergeQueue[mergeIndex]),
+        (value) => normalizeSynthesisIndex(value, task.mode),
+        `сведение индекса состава и сцены, порция ${mergeIndex + 1}/${mergeQueue.length}`,
+        task.mode === "single" ? INDEX_SINGLE_SCHEMA : INDEX_GROUP_SCHEMA,
+        TEXT_DNA_INDEX_OUTPUT_TOKENS
+      );
+      mergeResults[mergeIndex] = merged.value;
+      task.indexMergeResults = [...mergeResults];
+      corrected ||= merged.corrected;
+      task.corrected ||= merged.corrected;
+    }
+
+    if (mergeResults.length === 1) {
+      task.index = mergeResults[0];
+      task.indexFragments = fragments;
+      return { index: mergeResults[0], corrected };
+    }
+
+    mergeQueue = boundedBatches(mergeResults, TEXT_DNA_INDEX_MERGE_BATCH_CHARS);
+    mergeResults = [];
+    task.indexMergeQueue = mergeQueue;
+    task.indexMergeResults = [];
+  }
+
+  throw new TextDnaError(
+    formatFailureMessage("сведение индекса состава и сцены", "schema"),
+    "schema"
   );
-  task.index = merged.value;
-  task.indexFragments = fragments;
-  corrected ||= merged.corrected;
-  task.corrected ||= merged.corrected;
-  return { index: merged.value, corrected };
 }
 
 function subjectMatches(
@@ -1592,6 +1673,75 @@ function evidenceForParticipant(
     .filter((section) => section.evidence.length > 0);
 }
 
+function validateCardDraft(
+  value: unknown,
+  fallbackName: string,
+  requireName: boolean
+): { value?: TextDnaCharacter; issues: string[] } {
+  const issues: string[] = [];
+  if (!isRecord(value)) return { issues: ["ответ карточки не является объектом"] };
+  const draft = normalizeCharacter(value.character ?? value, "character", issues, false);
+  if (!draft.name && requireName) issues.push("character.name: имя обязательно");
+  if (!draft.name && !requireName) draft.name = fallbackName;
+  if (issues.length > 0) return { issues };
+  return { value: draft, issues };
+}
+
+async function mergeCardFragments(
+  apiConfig: ApiConfig,
+  task: TextDnaTask,
+  mode: TextDnaMode,
+  participant: TextDnaParticipantIndex,
+  index: TextDnaSynthesisIndex,
+  fragments: TextDnaCharacter[]
+): Promise<{ value: TextDnaCharacter; corrected: boolean }> {
+  task.cardMergeQueues ??= {};
+  task.cardMergeResults ??= {};
+  let mergeQueue = task.cardMergeQueues[participant.key];
+  let mergeResults = task.cardMergeResults[participant.key]
+    ? [...task.cardMergeResults[participant.key]]
+    : [];
+
+  if (!mergeQueue) {
+    mergeQueue = boundedBatches(fragments, TEXT_DNA_CARD_MERGE_BATCH_CHARS);
+    mergeResults = [];
+    task.cardMergeQueues[participant.key] = mergeQueue;
+    task.cardMergeResults[participant.key] = [];
+  }
+
+  let corrected = false;
+  while (mergeQueue.length > 0) {
+    for (let mergeIndex = mergeResults.length; mergeIndex < mergeQueue.length; mergeIndex += 1) {
+      const result = await requestStructured(
+        apiConfig,
+        buildCardMergePrompt(mode, participant, index, mergeQueue[mergeIndex]),
+        (value) => validateCardDraft(value, participant.name, true),
+        `сведение карточки «${participant.name}», порция ${mergeIndex + 1}/${mergeQueue.length}`,
+        CARD_SCHEMA,
+        TEXT_DNA_CARD_OUTPUT_TOKENS
+      );
+      mergeResults[mergeIndex] = result.value;
+      task.cardMergeResults[participant.key] = [...mergeResults];
+      corrected ||= result.corrected;
+      task.corrected ||= result.corrected;
+    }
+
+    if (mergeResults.length === 1) {
+      return { value: mergeResults[0], corrected };
+    }
+
+    mergeQueue = boundedBatches(mergeResults, TEXT_DNA_CARD_MERGE_BATCH_CHARS);
+    mergeResults = [];
+    task.cardMergeQueues[participant.key] = mergeQueue;
+    task.cardMergeResults[participant.key] = [];
+  }
+
+  throw new TextDnaError(
+    formatFailureMessage(`сведение карточки «${participant.name}»`, "schema"),
+    "schema"
+  );
+}
+
 async function synthesizeCards(
   apiConfig: ApiConfig,
   task: TextDnaTask,
@@ -1604,32 +1754,61 @@ async function synthesizeCards(
   for (const participant of participants) {
     if (task.cards[participant.key]) continue;
     const selected = evidenceForParticipant(task.evidence, participant, index.mode);
-    const result = await requestStructured(
+    const selectedSize = JSON.stringify(selected).length;
+    const hasMergeState = Boolean(task.cardMergeQueues?.[participant.key]);
+
+    if (selectedSize <= TEXT_DNA_CARD_INPUT_MAX_CHARS && !hasMergeState) {
+      const result = await requestStructured(
+        apiConfig,
+        buildCardPrompt(task.mode, participant, index, selected),
+        (value) => validateCardDraft(value, participant.name, true),
+        `карточка «${participant.name}»`,
+        CARD_SCHEMA,
+        TEXT_DNA_CARD_OUTPUT_TOKENS
+      );
+      task.cards[participant.key] = {
+        ...result.value,
+        ...(index.mode === "group" ? { key: participant.key } : {}),
+      };
+      corrected ||= result.corrected;
+      task.corrected ||= result.corrected;
+      continue;
+    }
+
+    task.cardFragments ??= {};
+    const batches = evidenceBatches(selected, TEXT_DNA_CARD_BATCH_CHARS);
+    const fragments = task.cardFragments[participant.key]
+      ? [...task.cardFragments[participant.key]]
+      : [];
+    for (let batchIndex = fragments.length; batchIndex < batches.length; batchIndex += 1) {
+      const result = await requestStructured(
+        apiConfig,
+        buildCardPrompt(task.mode, participant, index, batches[batchIndex], true),
+        (value) => validateCardDraft(value, participant.name, false),
+        `частичный черновик карточки «${participant.name}», порция ${batchIndex + 1}/${batches.length}`,
+        CARD_SCHEMA,
+        TEXT_DNA_CARD_OUTPUT_TOKENS
+      );
+      fragments[batchIndex] = result.value;
+      task.cardFragments[participant.key] = [...fragments];
+      corrected ||= result.corrected;
+      task.corrected ||= result.corrected;
+    }
+
+    const merged = await mergeCardFragments(
       apiConfig,
-      buildCardPrompt(task.mode, participant, index, selected),
-      (value) => {
-        const issues: string[] = [];
-        if (!isRecord(value)) return { issues: ["ответ карточки не является объектом"] };
-        const draft = normalizeCharacter(
-          value.character ?? value,
-          "character",
-          issues,
-          false
-        );
-        if (!draft.name) issues.push("character.name: имя обязательно");
-        if (issues.length > 0) return { issues };
-        return { value: draft, issues };
-      },
-      `карточка «${participant.name}»`,
-      CARD_SCHEMA,
-      TEXT_DNA_CARD_OUTPUT_TOKENS
+      task,
+      task.mode,
+      participant,
+      index,
+      fragments
     );
     task.cards[participant.key] = {
-      ...result.value,
+      ...merged.value,
       ...(index.mode === "group" ? { key: participant.key } : {}),
     };
-    corrected ||= result.corrected;
-    task.corrected ||= result.corrected;
+    corrected ||= merged.corrected;
+    task.corrected ||= merged.corrected;
   }
 
   return { cards: task.cards, corrected };

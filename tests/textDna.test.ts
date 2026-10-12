@@ -7,6 +7,7 @@ import {
   createTextDnaTask,
   extractTextDna,
   isTextDnaTaskCompatible,
+  TEXT_DNA_CARD_BATCH_CHARS,
   TEXT_DNA_INDEX_BATCH_CHARS,
   TEXT_DNA_INDEX_INPUT_MAX_CHARS,
   prepareTextDnaPayload,
@@ -191,16 +192,17 @@ function longSource(): string {
   ].join("\n\n");
 }
 
-function expectedIndexBatchCount(
+function expectedEvidenceBatchCount(
   facts: string[],
-  sections: Array<{ id: string }>
+  sections: Array<{ id: string }>,
+  maxChars: number
 ): number {
   let batches = 0;
   let size = 2;
   facts.forEach((fact, index) => {
     const item = { sectionId: sections[index].id, ...chunkEvidence(fact) };
     const itemSize = JSON.stringify(item).length + 1;
-    if (size > 2 && size + itemSize > TEXT_DNA_INDEX_BATCH_CHARS) {
+    if (size > 2 && size + itemSize > maxChars) {
       batches += 1;
       size = 2;
     }
@@ -208,6 +210,13 @@ function expectedIndexBatchCount(
   });
   if (facts.length > 0) batches += 1;
   return batches;
+}
+
+function expectedIndexBatchCount(
+  facts: string[],
+  sections: Array<{ id: string }>
+): number {
+  return expectedEvidenceBatchCount(facts, sections, TEXT_DNA_INDEX_BATCH_CHARS);
 }
 
 function mockFetchWithQueue(values: unknown[]) {
@@ -483,19 +492,23 @@ describe("Text DNA: resumable long task", () => {
     const source = longSource();
     const sections = splitTextForTextDna(source);
     const facts = sections.map((_, index) => `BATCH_FACT_${index}_${"x".repeat(16_000)}`);
-    const batches = expectedIndexBatchCount(facts, sections);
+    const indexBatches = expectedIndexBatchCount(facts, sections);
+    const cardBatches = expectedEvidenceBatchCount(facts, sections, TEXT_DNA_CARD_BATCH_CHARS);
     expect(JSON.stringify(facts).length).toBeGreaterThan(TEXT_DNA_INDEX_INPUT_MAX_CHARS);
 
     const fetchMock = mockFetchWithQueue([
       ...facts.map((fact) => chunkEvidence(fact)),
-      ...Array.from({ length: batches }, () => synthesisIndex()),
+      ...Array.from({ length: indexBatches }, () => synthesisIndex()),
       synthesisIndex(),
+      ...Array.from({ length: cardBatches }, () => cardResponse()),
       cardResponse(),
     ]);
 
     const result = await extractTextDna(apiConfig, source, "single");
 
-    expect(fetchMock).toHaveBeenCalledTimes(sections.length + batches + 2);
+    expect(fetchMock).toHaveBeenCalledTimes(
+      sections.length + indexBatches + 1 + cardBatches + 1
+    );
     if (result.prepared.mode !== "single") throw new Error("expected single");
     expect(result.prepared.directorNotes).toContain("BATCH_FACT_0");
     expect(result.prepared.directorNotes).toContain(`BATCH_FACT_${facts.length - 1}`);

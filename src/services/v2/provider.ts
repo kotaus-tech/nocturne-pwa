@@ -198,10 +198,17 @@ function responseMetadata(
   const finishReason =
     choice?.finish_reason ??
     choice?.finishReason ??
+    choice?.stop_reason ??
     candidate?.finishReason ??
     candidate?.finish_reason ??
+    candidate?.stopReason ??
+    candidate?.stop_reason ??
     message?.done_reason ??
-    data?.done_reason;
+    message?.doneReason ??
+    data?.done_reason ??
+    data?.doneReason ??
+    data?.finish_reason ??
+    data?.stop_reason;
 
   return {
     provider,
@@ -253,6 +260,15 @@ function providerErrorMessage(data: any): string | null {
     return "Провайдер вернул ошибку в ответе (finish_reason: error).";
   }
 
+  const blockReason =
+    data.promptFeedback?.blockReason ??
+    data.prompt_feedback?.block_reason ??
+    data.blockReason ??
+    data.block_reason;
+  if (typeof blockReason === "string" && blockReason.trim()) {
+    return `Провайдер заблокировал ответ (${blockReason.trim().slice(0, 120)}).`;
+  }
+
   return null;
 }
 
@@ -263,7 +279,9 @@ export function parseV2Json(raw: string): any {
 
   if (!extracted) {
     throw new V2JsonError(
-      text ? "Модель ответила текстом вместо JSON." : "Модель вернула пустой ответ.",
+      text
+        ? `Модель ответила текстом вместо JSON: «${text.slice(0, 160)}».`
+        : "Модель вернула пустой ответ.",
       text ? "no_json" : "empty"
     );
   }

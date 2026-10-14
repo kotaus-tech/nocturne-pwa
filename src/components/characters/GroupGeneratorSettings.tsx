@@ -11,6 +11,7 @@ import {
 import type { GroupPreferences } from "../../services/groupGenerator/types";
 import { cn } from "../../utils/cn";
 import { ErrorBanner } from "./GroupGeneratorFeedback";
+import { MysteryModeToggle } from "./MysteryModeToggle";
 
 interface Props {
   prefs: GroupPreferences;
@@ -21,6 +22,8 @@ interface Props {
   onApplyPreset: (presetId: string) => void;
   onSurprise: () => void;
   onGenerate: () => void;
+  mysteryMode: boolean;
+  onMysteryModeChange: (enabled: boolean) => void;
   error: string | null;
 }
 
@@ -33,6 +36,8 @@ export function GroupGeneratorSettings({
   onApplyPreset,
   onSurprise,
   onGenerate,
+  mysteryMode,
+  onMysteryModeChange,
   error,
 }: Props) {
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -268,6 +273,8 @@ export function GroupGeneratorSettings({
               ))}
             </div>
           </div>
+
+          <MysteryModeToggle enabled={mysteryMode} onChange={onMysteryModeChange} />
 
           {error && <ErrorBanner message={error} />}
 

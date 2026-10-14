@@ -29,7 +29,7 @@ import {
   parseGeneratedGroup,
   parseModelJson,
 } from "../src/services/characterGenerator";
-import { createGroupSession } from "../src/utils/sessionActions";
+import { createGroupSession, createSession } from "../src/utils/sessionActions";
 import { DEFAULT_STATS } from "../src/types";
 import type { Character } from "../src/types";
 
@@ -645,6 +645,34 @@ describe("групповая сцена: создание ветки", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0].characterId).toBe("c-1");
     expect(messages[0].swipes[0]).toBe("*Ночь. Все трое в мастерской.*");
+  });
+
+  it("ставит режим тайны до первого сообщения и сохраняет одиночную ветку атомарно", async () => {
+    const session = await createSession(cast[0], "Скрытая ветка", {
+      persistCharacter: cast[0],
+      mysteryMode: true,
+    });
+
+    expect(session.mysteryMode).toBe(true);
+    expect(session.showRelationshipToasts).toBe(false);
+    expect((await db.characters.get(cast[0].id))?.name).toBe("Ая");
+    expect((await db.sessions.get(session.id))?.mysteryMode).toBe(true);
+    expect((await db.messages.where("sessionId").equals(session.id).count())).toBe(1);
+  });
+
+  it("создаёт групповую тайную ветку с одним экземпляром каждого участника", async () => {
+    const session = await createGroupSession(cast[0], [cast[1], cast[2]], {
+      opening: "*Свет гаснет.*",
+      persistCharacters: cast,
+      mysteryMode: true,
+    });
+
+    expect(session.mysteryMode).toBe(true);
+    expect(session.showRelationshipToasts).toBe(false);
+    expect(session.characterIds).toEqual(["c-2", "c-3"]);
+    expect(await db.characters.count()).toBe(3);
+    expect(await db.sessions.count()).toBe(1);
+    expect(await db.messages.where("sessionId").equals(session.id).count()).toBe(1);
   });
 
   it("лидер не дублируется, если его передали в списке участников", async () => {

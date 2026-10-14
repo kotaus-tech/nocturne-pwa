@@ -237,7 +237,7 @@ export function CharactersPage({
    * AI-группа: сохраняем всех героев в библиотеку и сразу открываем общую
    * ветку — опенинг становится первым сообщением сцены.
    */
-  const handleApplyGroup = async (group: GeneratedGroup) => {
+  const handleApplyGroup = async (group: GeneratedGroup, mysteryMode = false) => {
     const now = Date.now();
 
     const entries = group.characters.map((draft, index) => ({
@@ -284,6 +284,7 @@ export function CharactersPage({
       summary: group.summary,
       relations,
       persistCharacters: saved,
+      mysteryMode,
     });
 
     onOpenSession(session.id);
@@ -293,11 +294,23 @@ export function CharactersPage({
    * Character DNA (V2): модалка уже собрала полную карточку из blueprint —
    * сохраняем её целиком и сразу показываем. Классический генератор не задет.
    */
-  const handleApplyV2 = async (character: Character) => {
+  const handleApplyV2 = async (character: Character, mysteryMode = false) => {
     const saved = sanitizeCharacter({
       ...character,
       createdAt: Number.isFinite(character.createdAt) ? character.createdAt : Date.now(),
     });
+
+    if (mysteryMode) {
+      // createSession пишет персонажа, сессию и первое сообщение одной
+      // транзакцией, уже с mysteryMode=true до монтирования ChatView.
+      const session = await createSession(saved, undefined, {
+        persistCharacter: saved,
+        mysteryMode: true,
+      });
+      if (favoritesOnly && !saved.isFavorite) onRevealCreated?.();
+      onOpenSession(session.id);
+      return;
+    }
 
     await db.characters.put(saved);
 

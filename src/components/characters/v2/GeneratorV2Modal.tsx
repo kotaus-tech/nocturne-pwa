@@ -9,7 +9,7 @@
 // Шаги: настройки → генерация → результат с частичной перегенерацией.
 // =============================================================
 
-import { useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   AlertCircle,
   Check,
@@ -49,12 +49,13 @@ import type {
 } from "../../../services/v2/v2types";
 import type { Character } from "../../../types";
 import { cn } from "../../../utils/cn";
+import { MysteryModeToggle } from "../MysteryModeToggle";
 
 interface Props {
   open: boolean;
   onClose: () => void;
   /** Готовый персонаж (со всеми полями карточки) отдаётся наружу. */
-  onApply: (character: Character) => void | Promise<void>;
+  onApply: (character: Character, mysteryMode?: boolean) => void | Promise<void>;
 }
 
 type Step = "settings" | "working" | "result";
@@ -109,8 +110,20 @@ export function GeneratorV2Modal({ open, onClose, onApply }: Props) {
   const [corrected, setCorrected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [mysteryMode, setMysteryMode] = useState(false);
+  const generatingRef = useRef(false);
 
   const ideaId = useId();
+
+  useEffect(() => {
+    if (!open) return;
+    setStep("settings");
+    setBlueprint(null);
+    setCorrected(false);
+    setError(null);
+    setSaving(false);
+    setMysteryMode(false);
+  }, [open]);
 
   // ------------------------------------------------------------
   // выбор опций
@@ -200,6 +213,8 @@ export function GeneratorV2Modal({ open, onClose, onApply }: Props) {
   };
 
   const handleGenerate = async () => {
+    if (generatingRef.current) return;
+    generatingRef.current = true;
     setError(null);
     setStep("working");
     setWorkingLabel("Собираем ДНК персонажа… Это может занять до минуты.");
@@ -211,6 +226,16 @@ export function GeneratorV2Modal({ open, onClose, onApply }: Props) {
       }
 
       const result = await generateV2Blueprint(apiConfig, buildPrefs());
+      if (mysteryMode) {
+        // Не устанавливаем result-step: при включённой тайне генератор сразу
+        // передаёт готового персонажа в атомарное создание сессии.
+        const character = blueprintToCharacter(result.blueprint, {
+          preferenceNames: preferenceNames(),
+        });
+        await onApply(character, true);
+        onClose();
+        return;
+      }
       setBlueprint(result.blueprint);
       setCorrected(result.corrected);
       setStep("result");
@@ -219,6 +244,8 @@ export function GeneratorV2Modal({ open, onClose, onApply }: Props) {
         cause instanceof Error ? cause.message : "Не удалось сгенерировать персонажа."
       );
       setStep("settings");
+    } finally {
+      generatingRef.current = false;
     }
   };
 
@@ -251,7 +278,7 @@ export function GeneratorV2Modal({ open, onClose, onApply }: Props) {
       const character = blueprintToCharacter(blueprint, {
         preferenceNames: preferenceNames(),
       });
-      await onApply(character);
+      await onApply(character, false);
       onClose();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Не удалось сохранить персонажа.");
@@ -526,6 +553,8 @@ export function GeneratorV2Modal({ open, onClose, onApply }: Props) {
               </div>
             )}
           </div>
+
+          <MysteryModeToggle enabled={mysteryMode} onChange={setMysteryMode} />
 
           {error && <ErrorBanner message={error} />}
 

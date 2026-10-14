@@ -5,7 +5,6 @@ import {
   Check,
   FileText,
   Loader2,
-  LockKeyhole,
   MessageCircle,
   RotateCcw,
   Save,
@@ -25,6 +24,7 @@ import {
   type TextDnaTask,
 } from "../../services/textDna";
 import { cn } from "../../utils/cn";
+import { MysteryModeToggle } from "./MysteryModeToggle";
 
 interface Props {
   open: boolean;
@@ -366,12 +366,12 @@ export function TextDnaModal({ open, onClose, onApply }: Props) {
       const extracted = await extractTextDna(apiConfig, source, mode, { task });
       if (token !== tokenRef.current) return;
 
-      setResult(extracted);
       if (mysteryMode) {
         setApplying(true);
         await onApply(extracted, true);
         if (token === tokenRef.current) onClose();
       } else {
+        setResult(extracted);
         setStep("preview");
       }
     } catch (cause) {
@@ -508,36 +508,7 @@ export function TextDnaModal({ open, onClose, onApply }: Props) {
             </div>
           </div>
 
-          <div className="rounded-2xl border border-accent/25 bg-accent/5 p-3.5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-start gap-2.5">
-                <LockKeyhole size={18} className="mt-0.5 shrink-0 text-accent" />
-                <div>
-                  <p className="text-sm font-semibold text-content">Режим тайны</p>
-                  <p className="mt-1 max-w-xl text-xs leading-relaxed text-content-secondary">
-                    {mysteryMode
-                      ? "Включён: после обработки карточки сохранятся, и чат откроется сразу без подробного предпросмотра."
-                      : "Выключен: сначала покажем полный предпросмотр, а сохранение произойдёт только после подтверждения."}
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={mysteryMode}
-                onClick={() => setMysteryMode((value) => !value)}
-                className={cn(
-                  "inline-flex min-h-10 items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors",
-                  mysteryMode
-                    ? "border-accent/50 bg-accent/15 text-accent"
-                    : "border-white/[0.1] bg-surface-2 text-content-secondary hover:bg-surface-3"
-                )}
-              >
-                <span className={cn("h-2.5 w-2.5 rounded-full", mysteryMode ? "bg-accent" : "bg-content-muted")} />
-                {mysteryMode ? "Включён" : "Выключен"}
-              </button>
-            </div>
-          </div>
+          <MysteryModeToggle enabled={mysteryMode} onChange={setMysteryMode} />
 
           {error && <ErrorBanner message={error} />}
 

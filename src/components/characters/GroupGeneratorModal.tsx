@@ -20,7 +20,7 @@ interface Props {
   open: boolean;
   onClose: () => void;
   /** Сохраняет карточки и сразу создаёт общую ветку с опенингом. */
-  onApplyGroup: (group: GeneratedGroup) => void | Promise<void>;
+  onApplyGroup: (group: GeneratedGroup, mysteryMode?: boolean) => void | Promise<void>;
 }
 
 type Step = "settings" | "working" | "result";
@@ -51,12 +51,14 @@ export function GroupGeneratorModal({ open, onClose, onApplyGroup }: Props) {
   const [workingLabel, setWorkingLabel] = useState("Собираем ансамбль…");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [mysteryMode, setMysteryMode] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setStep("settings");
     setError(null);
     setSaving(false);
+    setMysteryMode(false);
   }, [open]);
 
   const setPreference = <K extends keyof GroupPreferences>(key: K, value: GroupPreferences[K]) => {
@@ -150,6 +152,13 @@ export function GroupGeneratorModal({ open, onClose, onApplyGroup }: Props) {
         throw new Error("Не указан API-ключ в Настройках приложения!");
       }
       const generated = await generateGroupBlueprint(apiConfig, prefs);
+      if (mysteryMode) {
+        // В тайном режиме результат не попадает в промежуточный экран: сначала
+        // атомарно сохраняем персонажей и сессию, затем родитель открывает чат.
+        await onApplyGroup(generated.group, true);
+        onClose();
+        return;
+      }
       setResult(generated);
       setStep("result");
     } catch (cause) {
@@ -187,7 +196,7 @@ export function GroupGeneratorModal({ open, onClose, onApplyGroup }: Props) {
     setSaving(true);
     setError(null);
     try {
-      await onApplyGroup(result.group);
+      await onApplyGroup(result.group, false);
       onClose();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Не удалось создать групповую ветку.");
@@ -225,6 +234,8 @@ export function GroupGeneratorModal({ open, onClose, onApplyGroup }: Props) {
           onApplyPreset={applyPreset}
           onSurprise={surprise}
           onGenerate={() => void handleGenerate()}
+          mysteryMode={mysteryMode}
+          onMysteryModeChange={setMysteryMode}
           error={error}
         />
       )}

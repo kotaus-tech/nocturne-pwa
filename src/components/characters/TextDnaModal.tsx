@@ -1,587 +1,617 @@
-import { useEffect, useId, useRef, useState } from "react";
+import React, { useState, useRef, useCallback } from 'react';
 import {
-  AlertCircle,
-  ArrowLeft,
-  Check,
-  FileText,
-  Loader2,
-  MessageCircle,
-  RotateCcw,
-  Save,
+  X,
+  Sparkles,
+  User,
   Users,
-} from "lucide-react";
-import { Modal } from "../common/Modal";
-import { getApiConfig } from "../../db";
-import { isLocalEndpoint } from "../../services/apiClient";
+  Upload,
+  FileText,
+  Eye,
+  EyeOff,
+  ClipboardPaste,
+  Trash2,
+  ShieldAlert,
+  CheckCircle2,
+  AlertTriangle,
+  Loader2,
+  Lock,
+} from 'lucide-react';
 import {
   createTextDnaTask,
   extractTextDna,
-  isTextDnaTaskCompatible,
   type TextDnaMode,
-  type TextDnaPreparedGroup,
-  type TextDnaPreparedSingle,
   type TextDnaResult,
   type TextDnaTask,
-} from "../../services/textDna";
-import { cn } from "../../utils/cn";
-import { MysteryModeToggle } from "./MysteryModeToggle";
+} from '../../services/textDna';
 
-interface Props {
+export interface TextDnaModalProps {
   open: boolean;
   onClose: () => void;
-  /** Результат уже извлечён и готов к атомарному сохранению в родительском потоке. */
-  onApply: (result: TextDnaResult, mysteryMode: boolean) => void | Promise<void>;
+  onApply: (result: TextDnaResult, mysteryMode: boolean) => void;
+  defaultMode?: TextDnaMode;
 }
 
-type Step = "mode" | "input" | "working" | "preview";
+type ModalStep = 'mode' | 'input' | 'working' | 'preview';
 
-function ErrorBanner({ message }: { message: string }) {
-  return (
-    <div
-      role="alert"
-      className="flex items-start gap-2.5 rounded-2xl border border-danger/30 bg-danger/5 p-3.5 text-sm text-danger"
-    >
-      <AlertCircle size={17} className="mt-0.5 shrink-0" aria-hidden="true" />
-      <p className="min-w-0 whitespace-pre-wrap leading-relaxed [overflow-wrap:anywhere]">
-        {message}
-      </p>
-    </div>
-  );
-}
-
-function TextBlock({ title, value }: { title: string; value?: string }) {
-  if (!value?.trim()) return null;
-  return (
-    <section className="rounded-2xl border border-white/[0.07] bg-surface-2/45 p-3.5">
-      <h4 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-accent">
-        {title}
-      </h4>
-      <p className="whitespace-pre-wrap text-sm leading-relaxed text-content [overflow-wrap:anywhere]">
-        {value}
-      </p>
-    </section>
-  );
-}
-
-function StatsLine({ stats }: { stats: TextDnaPreparedSingle["character"]["initialStats"] }) {
-  return (
-    <div className="flex flex-wrap gap-1.5 text-[11px] text-content-secondary">
-      <span className="rounded-lg border border-white/[0.07] bg-surface-2 px-2 py-1">Доверие {stats.trust}</span>
-      <span className="rounded-lg border border-white/[0.07] bg-surface-2 px-2 py-1">Привязанность {stats.affection}</span>
-      <span className="rounded-lg border border-white/[0.07] bg-surface-2 px-2 py-1">Близость {stats.closeness}</span>
-      <span className="rounded-lg border border-white/[0.07] bg-surface-2 px-2 py-1">Напряжение {stats.tension}</span>
-      <span className="rounded-lg border border-white/[0.07] bg-surface-2 px-2 py-1">Конфликт {stats.conflict}</span>
-      {stats.attraction !== undefined && (
-        <span className="rounded-lg border border-white/[0.07] bg-surface-2 px-2 py-1">Влечение {stats.attraction}</span>
-      )}
-      {stats.statusTitle && (
-        <span className="rounded-lg border border-accent/25 bg-accent/10 px-2 py-1 text-accent">
-          {stats.statusTitle}
-        </span>
-      )}
-    </div>
-  );
-}
-
-function CharacterPreview({
-  character,
-  index,
-}: {
-  character: TextDnaPreparedSingle["character"];
-  index?: number;
-}) {
-  const labels = [character.age, character.genre].filter(Boolean).join(" · ");
-  return (
-    <article className="space-y-3 rounded-3xl border border-white/[0.08] bg-[#121622]/75 p-4 sm:p-5">
-      <div className="flex items-start gap-3">
-        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-accent/10 text-accent">
-          <span className="text-sm font-bold">{index !== undefined ? index + 1 : "✦"}</span>
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-accent">
-            Импортированный персонаж
-          </p>
-          <h3 className="mt-0.5 text-xl font-bold text-zinc-100 [overflow-wrap:anywhere]">
-            {character.name}
-          </h3>
-          {labels && <p className="mt-1 text-xs text-content-secondary">{labels}</p>}
-          {character.tagline && <p className="mt-1 text-sm text-content-secondary">{character.tagline}</p>}
-        </div>
-      </div>
-
-      {(character.tags ?? []).length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {(character.tags ?? []).map((tag) => (
-            <span key={tag} className="rounded-full border border-white/[0.08] bg-surface-2 px-2.5 py-1 text-[11px] text-content-secondary">
-              {tag}
-            </span>
-          ))}
-        </div>
-      )}
-
-      <StatsLine stats={character.initialStats} />
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        <TextBlock title="Первое впечатление" value={character.firstImpression} />
-        <TextBlock title="Стартовая точка" value={character.startingPoint} />
-        <TextBlock title="Цитата персонажа" value={character.summaryQuote} />
-        <TextBlock title="Внешность и описание" value={character.description} />
-        <TextBlock title="Личность и поведение" value={character.personality} />
-        <TextBlock title="Предыстория и сценарий" value={character.scenario} />
-        <TextBlock title="Системные инструкции" value={character.systemPrompt} />
-      </div>
-
-      <TextBlock title="Первое сообщение" value={character.firstMessage} />
-
-      {character.alternateGreetings && character.alternateGreetings.length > 0 && (
-        <section className="rounded-2xl border border-accent/20 bg-accent/5 p-3.5">
-          <h4 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-accent">
-            Альтернативные приветствия · свайпы
-          </h4>
-          <div className="space-y-2">
-            {character.alternateGreetings.map((greeting, greetingIndex) => (
-              <p key={`${greetingIndex}-${greeting.slice(0, 20)}`} className="whitespace-pre-wrap text-sm leading-relaxed text-content [overflow-wrap:anywhere]">
-                {greeting}
-              </p>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {character.lorebook.length > 0 && (
-        <section className="rounded-2xl border border-white/[0.07] bg-surface-2/35 p-3.5">
-          <h4 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-accent">
-            Лорбук · {character.lorebook.length}
-          </h4>
-          <div className="space-y-3">
-            {character.lorebook.map((entry, entryIndex) => (
-              <div key={`${entryIndex}-${entry.content.slice(0, 20)}`}>
-                {entry.keys.length > 0 && (
-                  <div className="mb-1 flex flex-wrap gap-1">
-                    {entry.keys.map((key) => (
-                      <span key={key} className="rounded-md bg-surface-3 px-1.5 py-0.5 text-[10px] text-content-muted">
-                        {key}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                <p className="whitespace-pre-wrap text-xs leading-relaxed text-content-secondary [overflow-wrap:anywhere]">
-                  {entry.content}
-                </p>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-    </article>
-  );
-}
-
-function SinglePreview({ prepared }: { prepared: TextDnaPreparedSingle }) {
-  return (
-    <div className="space-y-4">
-      <div className="rounded-2xl border border-accent/25 bg-accent/5 p-3.5">
-        <p className="text-xs font-semibold uppercase tracking-wider text-accent">Готово к созданию одиночной сцены</p>
-        <p className="mt-1 text-sm leading-relaxed text-content-secondary">
-          Ниже показаны именно поля карточки и сессии, которые будут сохранены. Ничего не записано до подтверждения.
-        </p>
-      </div>
-      <CharacterPreview character={prepared.character} />
-      <div className="grid gap-3 sm:grid-cols-2">
-        <TextBlock title="Название новой сессии" value={prepared.title} />
-        <TextBlock title="Синопсис сессии" value={prepared.summary} />
-        <div className="sm:col-span-2">
-          <TextBlock title="Правила и дополнительные сведения сессии" value={prepared.directorNotes} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function GroupPreview({ prepared }: { prepared: TextDnaPreparedGroup }) {
-  return (
-    <div className="space-y-4">
-      <section className="rounded-2xl border border-accent/25 bg-accent/5 p-4">
-        <p className="text-[11px] font-semibold uppercase tracking-wider text-accent">Общая сцена</p>
-        <h3 className="mt-1 text-xl font-bold text-zinc-100 [overflow-wrap:anywhere]">
-          {prepared.title || "Импортированная сцена"}
-        </h3>
-        <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-content-secondary [overflow-wrap:anywhere]">
-          {prepared.summary || "Общие обстоятельства не были выделены отдельно."}
-        </p>
-      </section>
-
-      <section className="rounded-2xl border border-accent/25 bg-accent/5 p-4">
-        <div className="mb-2 flex items-center gap-2">
-          <MessageCircle size={15} className="text-accent" />
-          <h4 className="text-[11px] font-semibold uppercase tracking-wider text-accent">Общий опенинг</h4>
-        </div>
-        <p className="whitespace-pre-wrap text-sm leading-relaxed text-content [overflow-wrap:anywhere]">
-          {prepared.opening || "В исходнике общий опенинг не найден."}
-        </p>
-      </section>
-
-      <div>
-        <div className="mb-3 flex items-center gap-2">
-          <Users size={16} className="text-accent" />
-          <h4 className="text-sm font-semibold text-content">Основные участники · {prepared.characters.length}</h4>
-        </div>
-        <div className="space-y-3">
-          {prepared.characters.map((character, index) => (
-            <CharacterPreview key={character.id} character={character} index={index} />
-          ))}
-        </div>
-      </div>
-
-      {prepared.relations.length > 0 && (
-        <section className="rounded-2xl border border-white/[0.08] bg-surface-2/35 p-4">
-          <h4 className="mb-3 text-sm font-semibold text-content">Отношения участников</h4>
-          <div className="space-y-2">
-            {prepared.relations.map((relation) => (
-              <div key={relation.id} className="rounded-xl border border-white/[0.07] bg-[#0f131d]/70 p-3">
-                <p className="text-xs font-semibold text-accent">
-                  {prepared.characters.find((item) => item.id === relation.from)?.name ?? "Участник"}
-                  <span className="px-1 text-content-muted">→</span>
-                  {prepared.characters.find((item) => item.id === relation.to)?.name ?? "Участник"}
-                </p>
-                <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-content-secondary [overflow-wrap:anywhere]">
-                  {relation.text}
-                </p>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      <TextBlock title="Общие правила и дополнительные сведения сцены" value={prepared.directorNotes} />
-    </div>
-  );
-}
-
-function ModeCard({
-  mode,
-  selected,
-  title,
-  description,
-  onClick,
-}: {
-  mode: TextDnaMode;
-  selected: boolean;
-  title: string;
-  description: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={selected}
-      onClick={onClick}
-      className={cn(
-        "flex min-h-36 min-w-0 flex-col items-start rounded-2xl border p-4 text-left transition-all",
-        selected
-          ? "border-accent/60 bg-accent/10 shadow-[0_0_20px_rgba(139,92,246,0.12)]"
-          : "border-white/[0.08] bg-surface-2/55 hover:border-accent/35 hover:bg-surface-3"
-      )}
-    >
-      <div className="flex w-full items-center justify-between gap-2">
-        <span className={cn("flex h-10 w-10 items-center justify-center rounded-xl", selected ? "bg-accent/20 text-accent" : "bg-surface-3 text-content-secondary")}>
-          {mode === "single" ? <FileText size={19} /> : <Users size={19} />}
-        </span>
-        {selected && <Check size={18} className="text-accent" aria-hidden="true" />}
-      </div>
-      <span className={cn("mt-4 text-sm font-semibold", selected ? "text-accent" : "text-content")}>{title}</span>
-      <span className="mt-1 text-xs leading-relaxed text-content-secondary">{description}</span>
-    </button>
-  );
-}
-
-export function TextDnaModal({ open, onClose, onApply }: Props) {
-  const [step, setStep] = useState<Step>("mode");
-  const [mode, setMode] = useState<TextDnaMode>("single");
-  const [source, setSource] = useState("");
-  const [mysteryMode, setMysteryMode] = useState(false);
+export const TextDnaModal: React.FC<TextDnaModalProps> = ({
+  open,
+  onClose,
+  onApply,
+  defaultMode = 'group',
+}) => {
+  const [step, setStep] = useState<ModalStep>('mode');
+  const [mode, setMode] = useState<TextDnaMode>(defaultMode);
+  const [sourceText, setSourceText] = useState<string>('');
+  const [isPromptHidden, setIsPromptHidden] = useState<boolean>(false);
+  const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState<boolean>(false);
+  const [mysteryMode, setMysteryMode] = useState<boolean>(false);
+  const [task, setTask] = useState<TextDnaTask | null>(null);
   const [result, setResult] = useState<TextDnaResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [workingLabel, setWorkingLabel] = useState("Составляем карту исходного материала…");
-  const [applying, setApplying] = useState(false);
-  const operationRef = useRef(false);
-  const tokenRef = useRef(0);
-  const wasOpenRef = useRef(false);
-  const taskRef = useRef<TextDnaTask | null>(null);
-  const sourceId = useId();
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (open && !wasOpenRef.current) {
-      setStep("mode");
-      setMode("single");
-      setSource("");
-      setMysteryMode(false);
-      setResult(null);
-      setError(null);
-      setApplying(false);
-      taskRef.current = null;
-      operationRef.current = false;
-    }
-    wasOpenRef.current = open;
-  }, [open]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const hiddenTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const handleClose = () => {
-    tokenRef.current += 1;
-    operationRef.current = false;
-    taskRef.current = null;
-    setApplying(false);
-    onClose();
-  };
+  const charCount = sourceText.length;
+  const lineCount = sourceText ? sourceText.split(/\r?\n/).length : 0;
+  const approxTokens = sourceText ? Math.max(1, Math.ceil(charCount / 3.8)) : 0;
 
-  const resetTask = () => {
-    taskRef.current = null;
+  const handleReset = useCallback(() => {
+    setStep('mode');
+    setSourceText('');
+    setUploadedFileName(null);
+    setTask(null);
     setResult(null);
-    setError(null);
-  };
+    setErrorMsg(null);
+    setIsDraggingFile(false);
+  }, []);
 
-  const handleGenerate = async () => {
-    if (operationRef.current || !source.trim()) return;
-    operationRef.current = true;
-    const token = ++tokenRef.current;
-    const task = isTextDnaTaskCompatible(taskRef.current, source, mode)
-      ? taskRef.current
-      : createTextDnaTask(source, mode);
-    taskRef.current = task;
-    setError(null);
-    setStep("working");
-    setWorkingLabel(
-      task.evidence.length > 0 || task.index || Object.keys(task.cards).length > 0
-        ? "Продолжаем только незавершённый этап…"
-        : source.length > 10_000
-        ? "Размечаем длинный исходник и сохраняем связи между секциями…"
-        : "Извлекаем персонажа и авторские правила…"
-    );
+  const readUploadedTextFile = useCallback(async (file: File) => {
+    setErrorMsg(null);
+    const isTextLike =
+      file.type.startsWith('text/') ||
+      /\.(txt|md|markdown|json|log|csv|prompt)$/i.test(file.name);
+
+    if (!isTextLike) {
+      setErrorMsg('Пожалуйста, выберите или перетащите текстовый файл (.txt, .md, .json).');
+      return;
+    }
 
     try {
-      const apiConfig = await getApiConfig();
-      if (!apiConfig || (!apiConfig.apiKey && !isLocalEndpoint(apiConfig.baseUrl))) {
-        throw new Error("Не указан API-ключ в Настройках приложения.");
+      const content = await file.text();
+      if (!content.trim()) {
+        setErrorMsg(`Файл «${file.name}» пуст.`);
+        return;
       }
-
-      const extracted = await extractTextDna(apiConfig, source, mode, { task });
-      if (token !== tokenRef.current) return;
-
-      if (mysteryMode) {
-        setApplying(true);
-        await onApply(extracted, true);
-        if (token === tokenRef.current) onClose();
-      } else {
-        setResult(extracted);
-        setStep("preview");
-      }
-    } catch (cause) {
-      if (token !== tokenRef.current) return;
-      setError(cause instanceof Error ? cause.message : "Не удалось обработать исходный текст.");
-      setStep("input");
-      setResult(null);
-    } finally {
-      if (token === tokenRef.current) {
-        operationRef.current = false;
-        setApplying(false);
-      }
+      setSourceText(content);
+      setUploadedFileName(file.name);
+      setTask(null);
+    } catch {
+      setErrorMsg(`Не удалось прочитать текстовый файл «${file.name}».`);
     }
-  };
+  }, []);
 
-  const handleApplyPreview = async () => {
-    if (!result || operationRef.current) return;
-    operationRef.current = true;
-    setApplying(true);
-    setError(null);
+  const handleFileInputChange = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) {
+        await readUploadedTextFile(file);
+      }
+      if (e.target) {
+        e.target.value = '';
+      }
+    },
+    [readUploadedTextFile]
+  );
+
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingFile(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingFile(false);
+  }, []);
+
+  const handleDrop = useCallback(
+    async (e: React.DragEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsDraggingFile(false);
+
+      const file = e.dataTransfer.files?.[0];
+      if (file) {
+        await readUploadedTextFile(file);
+        return;
+      }
+
+      const droppedText = e.dataTransfer.getData('text/plain');
+      if (droppedText && droppedText.trim()) {
+        setSourceText(droppedText);
+        setUploadedFileName(null);
+        setTask(null);
+      }
+    },
+    [readUploadedTextFile]
+  );
+
+  const handlePasteFromClipboard = useCallback(async () => {
     try {
-      await onApply(result, false);
-      onClose();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Не удалось сохранить импортированный результат.");
-    } finally {
-      operationRef.current = false;
-      setApplying(false);
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        setSourceText(text);
+        setUploadedFileName(null);
+        setTask(null);
+        setErrorMsg(null);
+      }
+    } catch {
+      hiddenTextareaRef.current?.focus();
     }
-  };
+  }, []);
 
-  const goToInput = () => {
-    if (operationRef.current) return;
-    setResult(null);
-    setError(null);
-    setStep("input");
-  };
+  const handleStartExtraction = useCallback(async () => {
+    if (!sourceText.trim()) {
+      setErrorMsg('Вставьте текст промпта или перетащите .txt файл.');
+      return;
+    }
+
+    setErrorMsg(null);
+    setStep('working');
+    const activeTask =
+      task && task.sourceText === sourceText && task.mode === mode
+        ? task
+        : createTextDnaTask(sourceText, mode, 'ru');
+    setTask(activeTask);
+
+    try {
+      const extracted = await extractTextDna({
+        text: sourceText,
+        mode,
+        preferredLanguage: 'ru',
+        mysteryMode,
+        task: activeTask,
+        onProgress: (updated) => setTask({ ...updated }),
+      });
+      setResult(extracted);
+      setStep('preview');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Ошибка при извлечении TextDNA';
+      setErrorMsg(msg);
+      setStep('input');
+    }
+  }, [sourceText, mode, mysteryMode, task]);
+
+  if (!open) return null;
 
   return (
-    <Modal
-      open={open}
-      onClose={handleClose}
-      variant="sheet"
-      size="lg"
-      title="Создать из промпта · Text DNA"
-    >
-      {step === "mode" && (
-        <div className="space-y-6">
-          <div className="flex items-start gap-3">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-accent/10 text-accent">
-              <FileText size={21} strokeWidth={1.7} />
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+      <div className="relative w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0d1017] text-slate-100 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+        {/* Шапка модального окна */}
+        <div className="flex items-center justify-between border-b border-white/10 px-6 py-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500/20 text-indigo-400">
+              <Sparkles className="h-5 w-5" />
             </div>
-            <p className="min-w-0 text-sm leading-relaxed text-content-secondary sm:text-base">
-              Вставьте готовый материал другой LLM. Text DNA не придумывает героя по пресетам, а переносит факты, правила, связи, секреты и исходные сообщения в формат NOCTURNE.
-            </p>
-          </div>
-
-          <div>
-            <p className="mb-3 text-sm font-medium text-content-secondary">Что создаём?</p>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <ModeCard
-                mode="single"
-                selected={mode === "single"}
-                title="Одиночный персонаж"
-                description="Одна полноценная карточка и новая личная сцена."
-                onClick={() => {
-                  if (mode !== "single") resetTask();
-                  setMode("single");
-                }}
-              />
-              <ModeCard
-                mode="group"
-                selected={mode === "group"}
-                title="Групповая сцена"
-                description="Основной состав 2–4 участников, общая сцена и отношения."
-                onClick={() => {
-                  if (mode !== "group") resetTask();
-                  setMode("group");
-                }}
-              />
-            </div>
-          </div>
-
-          {error && <ErrorBanner message={error} />}
-
-          <div className="flex flex-wrap justify-end gap-2 border-t border-white/[0.07] pt-4">
-            <button type="button" onClick={handleClose} className="inline-flex min-h-11 items-center justify-center rounded-xl px-4 py-2.5 text-sm font-medium text-content-muted hover:bg-surface-2 hover:text-content">
-              Закрыть
-            </button>
-            <button type="button" onClick={() => { setError(null); setStep("input"); }} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-on-accent hover:bg-accent-hover">
-              Продолжить
-              <ArrowLeft size={16} className="rotate-180" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {step === "input" && (
-        <div className="space-y-5">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-xs font-semibold uppercase tracking-wider text-accent">
-                {mode === "single" ? "Одиночный персонаж" : "Групповая сцена"}
-              </p>
-              <p className="mt-1 text-sm leading-relaxed text-content-secondary">
-                Вставьте текст как есть: карточку, системный промпт, сценарий, диалоги или их комбинацию.
+            <div>
+              <h2 className="text-base font-semibold text-white">
+                TextDNA — Прямой импорт без пресетов
+              </h2>
+              <p className="text-xs text-slate-400">
+                Однозапросное преобразование больших промптов в карточки по схеме GroupDNA V2
               </p>
             </div>
-            <button type="button" onClick={() => { setError(null); setStep("mode"); }} className="inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-2 text-xs font-medium text-content-secondary hover:bg-surface-3 hover:text-content">
-              <ArrowLeft size={14} /> Режим
-            </button>
           </div>
-
-          <div>
-            <label htmlFor={sourceId} className="mb-2 block text-sm font-medium text-content-secondary">
-              Исходный материал
-            </label>
-            <textarea
-              id={sourceId}
-              value={source}
-              onChange={(event) => {
-                setSource(event.target.value);
-                taskRef.current = null;
-                setResult(null);
-                setError(null);
-              }}
-              placeholder="Вставьте сюда полный текст внешней LLM…"
-              spellCheck={false}
-              className="min-h-[44vh] w-full resize-y rounded-2xl border border-white/[0.09] bg-[#0d1119] p-4 text-sm leading-relaxed text-content outline-none transition-colors placeholder:text-content-muted focus:border-accent/60 focus:ring-1 focus:ring-accent/30 [overflow-wrap:anywhere]"
-            />
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-content-muted">
-              <span>{source.length.toLocaleString("ru-RU")} символов · переносы строк сохраняются</span>
-              <span>Текст не обрезается автоматически</span>
-            </div>
-          </div>
-
-          <MysteryModeToggle enabled={mysteryMode} onChange={setMysteryMode} />
-
-          {error && <ErrorBanner message={error} />}
-
-          <div className="flex flex-wrap gap-2 border-t border-white/[0.07] pt-4">
-            <button type="button" onClick={() => { setError(null); setStep("mode"); }} className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-2.5 text-sm font-medium text-content-secondary hover:bg-surface-3 hover:text-content sm:flex-none sm:px-4">
-              <ArrowLeft size={16} /> Назад
-            </button>
-            <button type="button" onClick={() => void handleGenerate()} disabled={!source.trim() || operationRef.current} className="inline-flex min-h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-on-accent hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 sm:flex-[2]">
-              <FileText size={17} />
-              <span>
-                {taskRef.current &&
-                (taskRef.current.evidence.length > 0 ||
-                  taskRef.current.index ||
-                  Object.keys(taskRef.current.cards).length > 0)
-                  ? "Продолжить обработку"
-                  : "Извлечь и подготовить"}
-              </span>
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-slate-400 hover:bg-white/5 hover:text-white transition"
+            aria-label="Закрыть"
+          >
+            <X className="h-5 w-5" />
+          </button>
         </div>
-      )}
 
-      {step === "working" && (
-        <div className="flex min-h-[46vh] flex-col items-center justify-center gap-4 py-12 text-center">
-          <Loader2 size={35} className="animate-spin text-accent" aria-hidden="true" />
-          <p className="text-base font-semibold text-zinc-100">{workingLabel}</p>
-          <p className="max-w-lg text-sm leading-relaxed text-content-secondary">
-            Исходный текст остаётся в поле ввода. При большом объёме сервис сначала строит карту имён, фактов, отношений и секций, затем сводит её в типизированные данные.
-          </p>
-          <p className="text-xs text-content-muted">{source.length.toLocaleString("ru-RU")} символов · частичные данные не сохраняются</p>
-        </div>
-      )}
-
-      {step === "preview" && result && (
-        <div className="space-y-5">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-xs font-semibold uppercase tracking-wider text-accent">Предпросмотр импорта</p>
-              <h3 className="mt-1 text-xl font-bold text-zinc-100">Данные извлечены без сохранения</h3>
-              <p className="mt-1 text-xs text-content-muted">
-                {result.sourceLength.toLocaleString("ru-RU")} символов · {result.sourceSections.length} секц.
-                {result.corrected ? " · ответ модели исправлен повторным запросом" : ""}
+        {/* Тело модального окна */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-5">
+          {step === 'mode' && (
+            <div className="space-y-4">
+              <p className="text-sm text-slate-300">
+                Выберите формат импорта. Весь ваш текст или <code className="text-indigo-300">.txt</code> файл будет обработан за один прямой запрос к API: длинные описания аккуратно сожмутся в ёмкие тезисы без отсебятины и с сохранением всех имён, секретов, правил и стартовых диалогов.
               </p>
-            </div>
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-1 text-[11px] font-medium text-success">
-              <Check size={13} /> Проверено
-            </span>
-          </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode('single');
+                    setStep('input');
+                  }}
+                  className={`flex flex-col items-start gap-2 rounded-xl border p-4 text-left transition ${
+                    mode === 'single'
+                      ? 'border-indigo-500/60 bg-indigo-500/10'
+                      : 'border-white/10 bg-white/[0.02] hover:bg-white/[0.05]'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 text-indigo-400 font-medium">
+                    <User className="h-4 w-4" />
+                    <span>Одиночный персонаж</span>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    Создаёт карточку одного персонажа, его секреты, лорбук и стартовую сессию.
+                  </p>
+                </button>
 
-          {result.prepared.mode === "single" ? (
-            <SinglePreview prepared={result.prepared} />
-          ) : (
-            <GroupPreview prepared={result.prepared} />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode('group');
+                    setStep('input');
+                  }}
+                  className={`flex flex-col items-start gap-2 rounded-xl border p-4 text-left transition ${
+                    mode === 'group'
+                      ? 'border-indigo-500/60 bg-indigo-500/10'
+                      : 'border-white/10 bg-white/[0.02] hover:bg-white/[0.05]'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 text-indigo-400 font-medium">
+                    <Users className="h-4 w-4" />
+                    <span>Групповая сцена (ансамбль)</span>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    Создаёт всех персонажей из промпта, граф отношений, асимметрию знаний и общую сцену.
+                  </p>
+                </button>
+              </div>
+            </div>
           )}
 
-          {error && <ErrorBanner message={error} />}
+          {step === 'input' && (
+            <div className="space-y-4">
+              {/* Верхняя панель управления вводом: загрузка файла, буфер обмена, скрытие промпта */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".txt,.md,.markdown,.json,text/plain,text/markdown"
+                    onChange={handleFileInputChange}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-white/10 transition"
+                  >
+                    <Upload className="h-3.5 w-3.5 text-indigo-400" />
+                    <span>Загрузить .txt файл</span>
+                  </button>
 
-          <div className="space-y-3 border-t border-white/[0.07] pt-5">
-            <button type="button" onClick={() => void handleApplyPreview()} disabled={applying} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-accent px-4 py-3 text-base font-semibold text-on-accent hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50">
-              {applying ? <Loader2 size={19} className="animate-spin" /> : <Save size={19} />}
-              {applying ? "Создаём персонажей и чат…" : "Создать персонажей и открыть чат"}
-            </button>
-            <div className="flex flex-wrap gap-2">
-              <button type="button" onClick={goToInput} disabled={applying} className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-2.5 text-sm font-medium text-content-secondary hover:bg-surface-3 hover:text-content disabled:opacity-50">
-                <ArrowLeft size={16} /> К исходному тексту
+                  <button
+                    type="button"
+                    onClick={handlePasteFromClipboard}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-white/10 transition"
+                  >
+                    <ClipboardPaste className="h-3.5 w-3.5 text-indigo-400" />
+                    <span>Вставить</span>
+                  </button>
+
+                  {sourceText.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSourceText('');
+                        setUploadedFileName(null);
+                        setTask(null);
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/20 bg-rose-500/10 px-2.5 py-1.5 text-xs text-rose-300 hover:bg-rose-500/20 transition"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span>Очистить</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Кнопка скрытия/маскировки содержимого промпта (защита от спойлеров) */}
+                <button
+                  type="button"
+                  onClick={() => setIsPromptHidden((prev) => !prev)}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+                    isPromptHidden
+                      ? 'border-amber-500/40 bg-amber-500/15 text-amber-300'
+                      : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
+                  }`}
+                  title="Скрыть содержимое промпта, чтобы не читать спойлеры при вставке или перетаскивании файла"
+                >
+                  {isPromptHidden ? (
+                    <>
+                      <EyeOff className="h-3.5 w-3.5 text-amber-400" />
+                      <span>Текст скрыт (показать)</span>
+                    </>
+                  ) : (
+                    <>
+                      <Eye className="h-3.5 w-3.5 text-slate-400" />
+                      <span>Скрыть содержимое</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Зона ввода и Drag-and-Drop для .txt файлов */}
+              <div
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                className={`relative rounded-xl border transition ${
+                  isDraggingFile
+                    ? 'border-indigo-400 bg-indigo-500/15 ring-2 ring-indigo-500/30'
+                    : 'border-white/10 bg-black/40'
+                }`}
+              >
+                {isPromptHidden ? (
+                  /* Скрытый режим: пользователь может вставлять, печатать или перетаскивать .txt без чтения текста */
+                  <div
+                    onClick={() => hiddenTextareaRef.current?.focus()}
+                    className="relative flex flex-col items-center justify-center min-h-[240px] p-6 text-center cursor-text select-none"
+                  >
+                    <textarea
+                      ref={hiddenTextareaRef}
+                      value={sourceText}
+                      onChange={(e) => {
+                        setSourceText(e.target.value);
+                        setUploadedFileName(null);
+                        setTask(null);
+                      }}
+                      placeholder="Секретный режим ввода..."
+                      aria-label="Скрытое поле ввода промпта"
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-text resize-none"
+                    />
+
+                    <div className="pointer-events-none flex flex-col items-center max-w-md space-y-3">
+                      <div
+                        className={`flex h-12 w-12 items-center justify-center rounded-2xl border ${
+                          charCount > 0
+                            ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-400'
+                            : 'border-amber-500/30 bg-amber-500/10 text-amber-400'
+                        }`}
+                      >
+                        {charCount > 0 ? (
+                          <CheckCircle2 className="h-6 w-6" />
+                        ) : (
+                          <Lock className="h-6 w-6" />
+                        )}
+                      </div>
+
+                      {charCount > 0 ? (
+                        <>
+                          <div className="space-y-1">
+                            <p className="text-sm font-medium text-emerald-300">
+                              Секретный промпт загружен и скрыт от чтения
+                            </p>
+                            <p className="text-xs text-slate-400">
+                              Содержимое надёжно находится в поле ввода. Вы можете сразу запускать извлечение или заменить его новым текстом / файлом.
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                            {uploadedFileName && (
+                              <span className="inline-flex items-center gap-1 rounded-md bg-indigo-500/20 px-2.5 py-1 text-xs text-indigo-300">
+                                <FileText className="h-3.5 w-3.5" />
+                                {uploadedFileName}
+                              </span>
+                            )}
+                            <span className="rounded-md bg-white/10 px-2.5 py-1 text-xs text-slate-200">
+                              {charCount.toLocaleString('ru-RU')} симв.
+                            </span>
+                            <span className="rounded-md bg-white/10 px-2.5 py-1 text-xs text-slate-200">
+                              ~{approxTokens.toLocaleString('ru-RU')} токенов
+                            </span>
+                            <span className="rounded-md bg-white/10 px-2.5 py-1 text-xs text-slate-200">
+                              {lineCount.toLocaleString('ru-RU')} стр.
+                            </span>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium text-amber-200">
+                            Режим скрытого промпта активен
+                          </p>
+                          <p className="text-xs text-slate-400">
+                            Кликните сюда и нажмите <kbd className="rounded bg-white/10 px-1.5 py-0.5 text-[11px]">Ctrl+V</kbd>, перетащите <code className="text-indigo-300">.txt</code> файл в эту область или нажмите «Вставить» — текст загрузится, но останется невидимым.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="relative">
+                    <textarea
+                      value={sourceText}
+                      onChange={(e) => {
+                        setSourceText(e.target.value);
+                        setUploadedFileName(null);
+                        setTask(null);
+                      }}
+                      placeholder="Вставьте сюда готовый промпт любой длины (10k–50k+ токенов) или просто перетащите .txt файл в это окно..."
+                      rows={10}
+                      className="w-full rounded-xl bg-transparent p-4 text-sm text-slate-100 placeholder-slate-500 focus:outline-none resize-y min-h-[240px]"
+                    />
+                  </div>
+                )}
+
+                {isDraggingFile && (
+                  <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center rounded-xl bg-indigo-950/85 backdrop-blur-xs">
+                    <Upload className="h-8 w-8 text-indigo-300 mb-2 animate-bounce" />
+                    <p className="text-sm font-medium text-white">
+                      Отпустите файл, чтобы загрузить промпт в TextDNA
+                    </p>
+                    <p className="text-xs text-indigo-300">
+                      Поддерживаются .txt, .md и текстовые файлы
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
+                <div className="flex flex-wrap items-center gap-2">
+                  {uploadedFileName && (
+                    <span className="inline-flex items-center gap-1 rounded-md border border-indigo-500/30 bg-indigo-500/10 px-2 py-0.5 text-indigo-300">
+                      <FileText className="h-3 w-3" />
+                      Файл: {uploadedFileName}
+                    </span>
+                  )}
+                  <span>
+                    Объём: <strong className="text-slate-200">{charCount.toLocaleString('ru-RU')}</strong> симв. (~
+                    <strong className="text-slate-200">{approxTokens.toLocaleString('ru-RU')}</strong> токенов)
+                  </span>
+                  <span className="text-emerald-400">• 1 прямой запрос к API</span>
+                </div>
+
+                <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={mysteryMode}
+                    onChange={(e) => setMysteryMode(e.target.checked)}
+                    className="rounded border-white/20 bg-white/5 text-indigo-500 focus:ring-indigo-500"
+                  />
+                  <span className="text-slate-300">Режим тайны (скрыть секреты в UI)</span>
+                </label>
+              </div>
+
+              {errorMsg && (
+                <div className="flex items-start gap-2.5 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3.5 text-xs text-rose-200">
+                  <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="font-medium">Ошибка обработки</p>
+                    <p className="text-rose-300/90">{errorMsg}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {step === 'working' && (
+            <div className="flex flex-col items-center justify-center py-12 text-center space-y-4">
+              <Loader2 className="h-10 w-10 text-indigo-400 animate-spin" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-white">
+                  {task?.message || 'Формируем карточки персонажей и сцену за 1 запрос...'}
+                </p>
+                <p className="text-xs text-slate-400">
+                  Исходный материал ({charCount.toLocaleString('ru-RU')} симв.) уплотняется в структурированные тезисы без потери фактов
+                </p>
+              </div>
+            </div>
+          )}
+
+          {step === 'preview' && result && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
+                <div className="flex items-center gap-3">
+                  <CheckCircle2 className="h-5 w-5 text-emerald-400 shrink-0" />
+                  <div>
+                    <p className="text-sm font-medium text-emerald-200">
+                      Импорт TextDNA успешно завершён ({result.coverage.apiRequestsCount} запрос к API)
+                    </p>
+                    <p className="text-xs text-emerald-300/80">
+                      Персонажей: {result.coverage.characterCount} • Записей лора:{' '}
+                      {result.coverage.loreCount} • Правил и секретов:{' '}
+                      {result.coverage.preservedRulesCount}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {isPromptHidden || mysteryMode ? (
+                <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-200 flex items-center gap-2.5">
+                  <ShieldAlert className="h-4 w-4 text-amber-400 shrink-0" />
+                  <span>
+                    Подробности карточек и секреты скрыты от предпросмотра, чтобы сохранить интригу перед началом чата.
+                  </span>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                  {result.mode === 'single' ? (
+                    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3.5 space-y-1">
+                      <p className="text-sm font-semibold text-white">{result.character.name}</p>
+                      <p className="text-xs text-indigo-300">{result.character.tagline}</p>
+                      <p className="text-xs text-slate-400 line-clamp-3">
+                        {result.character.description}
+                      </p>
+                    </div>
+                  ) : (
+                    result.characters.map((ch) => (
+                      <div
+                        key={ch.id}
+                        className="rounded-xl border border-white/10 bg-white/[0.03] p-3.5 space-y-1"
+                      >
+                        <p className="text-sm font-semibold text-white">{ch.name}</p>
+                        <p className="text-xs text-indigo-300">{ch.tagline}</p>
+                        <p className="text-xs text-slate-400 line-clamp-2">{ch.description}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Подвал модального окна */}
+        <div className="flex items-center justify-between border-t border-white/10 bg-black/30 px-6 py-4">
+          {step === 'input' ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setStep('mode')}
+                className="rounded-lg px-3 py-2 text-xs font-medium text-slate-400 hover:text-white transition"
+              >
+                ← Сменить режим ({mode === 'group' ? 'Группа' : 'Одиночный'})
               </button>
-              <button type="button" onClick={goToInput} disabled={applying} className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium text-content-muted hover:bg-surface-2 hover:text-content disabled:opacity-50">
-                <RotateCcw size={16} /> Обработать снова
+              <button
+                type="button"
+                onClick={handleStartExtraction}
+                disabled={!sourceText.trim()}
+                className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-xs font-semibold text-white shadow-lg shadow-indigo-600/25 hover:bg-indigo-500 disabled:opacity-40 transition"
+              >
+                <Sparkles className="h-4 w-4" />
+                <span>Преобразовать в карточки (1 запрос)</span>
+              </button>
+            </>
+          ) : step === 'preview' && result ? (
+            <>
+              <button
+                type="button"
+                onClick={handleReset}
+                className="rounded-lg px-3 py-2 text-xs font-medium text-slate-400 hover:text-white transition"
+              >
+                Загрузить другой текст
+              </button>
+              <button
+                type="button"
+                onClick={() => onApply(result, mysteryMode)}
+                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-semibold text-white hover:bg-emerald-500 transition"
+              >
+                <CheckCircle2 className="h-4 w-4" />
+                <span>Применить и создать</span>
+              </button>
+            </>
+          ) : (
+            <div className="ml-auto">
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-lg px-4 py-2 text-xs text-slate-400 hover:text-white transition"
+              >
+                Отмена
               </button>
             </div>
-          </div>
+          )}
         </div>
-      )}
-    </Modal>
+      </div>
+    </div>
   );
-}
+};
+
+export default TextDnaModal;

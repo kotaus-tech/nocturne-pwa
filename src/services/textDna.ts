@@ -892,12 +892,6 @@ async function requestStructured<T>(
     } catch (cause) {
       if (cause instanceof TextDnaError) throw cause;
 
-      if (isContextFailure(cause)) {
-        const diagnostics = diagnosticsFromMetadata(label, attempt, "context");
-        logDiagnostics(diagnostics);
-        throw new TextDnaContextError(formatFailureMessage(label, "context"), diagnostics);
-      }
-
       if (cause instanceof V2OutputLimitError) {
         const diagnostics = diagnosticsFromMetadata(label, attempt, "output_limit", cause.metadata);
         logDiagnostics(diagnostics);
@@ -905,6 +899,12 @@ async function requestStructured<T>(
           formatFailureMessage(label, "output_limit"),
           diagnostics
         );
+      }
+
+      if (isContextFailure(cause)) {
+        const diagnostics = diagnosticsFromMetadata(label, attempt, "context");
+        logDiagnostics(diagnostics);
+        throw new TextDnaContextError(formatFailureMessage(label, "context"), diagnostics);
       }
 
       if (cause instanceof V2JsonError) {

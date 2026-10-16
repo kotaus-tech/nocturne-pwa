@@ -1,13 +1,16 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type DragEvent } from "react";
 import {
   AlertCircle,
   ArrowLeft,
   Check,
+  Eye,
+  EyeOff,
   FileText,
   Loader2,
   MessageCircle,
   RotateCcw,
   Save,
+  Upload,
   Users,
 } from "lucide-react";
 import { Modal } from "../common/Modal";
@@ -24,6 +27,11 @@ import {
   type TextDnaTask,
 } from "../../services/textDna";
 import { cn } from "../../utils/cn";
+import {
+  isTextDnaTextFile,
+  readTextDnaFile,
+  toggleTextDnaSourceVisibility,
+} from "../../utils/textDnaFile";
 import { MysteryModeToggle } from "./MysteryModeToggle";
 
 interface Props {
@@ -299,15 +307,21 @@ export function TextDnaModal({ open, onClose, onApply }: Props) {
   const [step, setStep] = useState<Step>("mode");
   const [mode, setMode] = useState<TextDnaMode>("single");
   const [source, setSource] = useState("");
+  const [sourceVisible, setSourceVisible] = useState(true);
+  const [isDragging, setIsDragging] = useState(false);
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [fileNotice, setFileNotice] = useState<string | null>(null);
   const [mysteryMode, setMysteryMode] = useState(false);
   const [result, setResult] = useState<TextDnaResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [workingLabel, setWorkingLabel] = useState("Составляем карту исходного материала…");
+  const [workingLabel, setWorkingLabel] = useState("Отправляем полный исходник одним запросом…");
   const [applying, setApplying] = useState(false);
   const operationRef = useRef(false);
   const tokenRef = useRef(0);
+  const fileReadTokenRef = useRef(0);
   const wasOpenRef = useRef(false);
   const taskRef = useRef<TextDnaTask | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const sourceId = useId();
 
   useEffect(() => {
@@ -315,11 +329,16 @@ export function TextDnaModal({ open, onClose, onApply }: Props) {
       setStep("mode");
       setMode("single");
       setSource("");
+      setSourceVisible(true);
+      setIsDragging(false);
+      setFileName(null);
+      setFileNotice(null);
       setMysteryMode(false);
       setResult(null);
       setError(null);
       setApplying(false);
       taskRef.current = null;
+      fileReadTokenRef.current += 1;
       operationRef.current = false;
     }
     wasOpenRef.current = open;
@@ -327,8 +346,10 @@ export function TextDnaModal({ open, onClose, onApply }: Props) {
 
   const handleClose = () => {
     tokenRef.current += 1;
+    fileReadTokenRef.current += 1;
     operationRef.current = false;
     taskRef.current = null;
+    setIsDragging(false);
     setApplying(false);
     onClose();
   };
@@ -337,6 +358,69 @@ export function TextDnaModal({ open, onClose, onApply }: Props) {
     taskRef.current = null;
     setResult(null);
     setError(null);
+  };
+
+  const handleSourceChange = (nextSource: string) => {
+    setSource(nextSource);
+    setFileName(null);
+    setFileNotice(null);
+    resetTask();
+  };
+
+  const handleFile = async (file: File | null | undefined) => {
+    if (!file) return;
+    if (!isTextDnaTextFile(file)) {
+      setError("Выберите обычный текстовый файл с расширением .txt. Другие форматы не импортируются.");
+      setFileNotice(null);
+      return;
+    }
+
+    const readToken = ++fileReadTokenRef.current;
+    setError(null);
+    setFileNotice(null);
+    try {
+      const text = await readTextDnaFile(file);
+      if (readToken !== fileReadTokenRef.current) return;
+      if (!text.trim()) {
+        setError("TXT-файл пуст. Текущий исходный текст не изменён.");
+        return;
+      }
+      const replacesExisting = source.trim().length > 0;
+      setSource(text);
+      setFileName(file.name);
+      setFileNotice(
+        replacesExisting
+          ? `Текущий текст заменён содержимым «${file.name}».`
+          : `Загружен файл «${file.name}».`
+      );
+      resetTask();
+    } catch (cause) {
+      if (readToken !== fileReadTokenRef.current) return;
+      setError(cause instanceof Error ? cause.message : "Не удалось прочитать TXT-файл.");
+    }
+  };
+
+  const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      setIsDragging(false);
+    }
+  };
+
+  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsDragging(false);
+    const files = event.dataTransfer.files;
+    if (files.length !== 1) {
+      setError("Перетащите один .txt-файл за раз. Текущий текст не изменён.");
+      return;
+    }
+    void handleFile(files[0]);
   };
 
   const handleGenerate = async () => {
@@ -350,11 +434,9 @@ export function TextDnaModal({ open, onClose, onApply }: Props) {
     setError(null);
     setStep("working");
     setWorkingLabel(
-      task.evidence.length > 0 || task.index || Object.keys(task.cards).length > 0
-        ? "Продолжаем только незавершённый этап…"
-        : source.length > 10_000
-        ? "Размечаем длинный исходник и сохраняем связи между секциями…"
-        : "Извлекаем персонажа и авторские правила…"
+      task.payload
+        ? "Показываем уже проверенный результат…"
+        : "Отправляем полный исходник одним запросом…"
     );
 
     try {
@@ -485,27 +567,91 @@ export function TextDnaModal({ open, onClose, onApply }: Props) {
             </button>
           </div>
 
-          <div>
-            <label htmlFor={sourceId} className="mb-2 block text-sm font-medium text-content-secondary">
-              Исходный материал
-            </label>
-            <textarea
-              id={sourceId}
-              value={source}
-              onChange={(event) => {
-                setSource(event.target.value);
-                taskRef.current = null;
-                setResult(null);
-                setError(null);
-              }}
-              placeholder="Вставьте сюда полный текст внешней LLM…"
-              spellCheck={false}
-              className="min-h-[44vh] w-full resize-y rounded-2xl border border-white/[0.09] bg-[#0d1119] p-4 text-sm leading-relaxed text-content outline-none transition-colors placeholder:text-content-muted focus:border-accent/60 focus:ring-1 focus:ring-accent/30 [overflow-wrap:anywhere]"
-            />
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-content-muted">
-              <span>{source.length.toLocaleString("ru-RU")} символов · переносы строк сохраняются</span>
-              <span>Текст не обрезается автоматически</span>
+          <div
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            className={cn(
+              "rounded-2xl border p-3 transition-colors sm:p-4",
+              isDragging
+                ? "border-accent bg-accent/10"
+                : "border-white/[0.08] bg-surface-2/25"
+            )}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label htmlFor={sourceId} className="text-sm font-medium text-content-secondary">
+                Исходный материал
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".txt,text/plain"
+                  className="sr-only"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    void handleFile(file);
+                    event.currentTarget.value = "";
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="inline-flex min-h-9 items-center gap-1.5 rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-2 text-xs font-medium text-content-secondary hover:bg-surface-3 hover:text-content"
+                >
+                  <Upload size={14} />
+                  Выбрать .txt
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = toggleTextDnaSourceVisibility({ source, visible: sourceVisible });
+                    setSource(next.source);
+                    setSourceVisible(next.visible);
+                    setError(null);
+                  }}
+                  aria-pressed={sourceVisible}
+                  className="inline-flex min-h-9 items-center gap-1.5 rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-2 text-xs font-medium text-content-secondary hover:bg-surface-3 hover:text-content"
+                >
+                  {sourceVisible ? <EyeOff size={14} /> : <Eye size={14} />}
+                  {sourceVisible ? "Скрыть текст" : "Показать текст"}
+                </button>
+              </div>
             </div>
+
+            <div className="relative mt-3">
+              <textarea
+                id={sourceId}
+                value={source}
+                onChange={(event) => handleSourceChange(event.target.value)}
+                placeholder="Вставьте сюда полный текст внешней LLM…"
+                spellCheck={false}
+                aria-label={sourceVisible ? "Исходный материал" : "Скрытый исходный материал"}
+                className={cn(
+                  "min-h-[40vh] w-full resize-y rounded-2xl border border-white/[0.09] bg-[#0d1119] p-4 text-sm leading-relaxed outline-none transition-colors placeholder:text-content-muted focus:border-accent/60 focus:ring-1 focus:ring-accent/30 [overflow-wrap:anywhere]",
+                  sourceVisible
+                    ? "text-content"
+                    : "text-transparent caret-accent selection:bg-accent/30 selection:text-transparent placeholder:text-transparent"
+                )}
+              />
+              {!sourceVisible && (
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-2xl border border-dashed border-white/[0.09] p-6 text-center">
+                  <p className="max-w-md text-sm leading-relaxed text-content-muted">
+                    Исходник скрыт визуально, но сохранён без изменений: {source.length.toLocaleString("ru-RU")} символов.
+                    Вставка, редактирование, загрузка файла и запуск доступны в этом состоянии.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-content-muted">
+              <span>
+                {source.length.toLocaleString("ru-RU")} символов · переносы строк сохраняются
+                {fileName ? ` · ${fileName}` : ""}
+              </span>
+              <span>Перетащите сюда один .txt или выберите файл · текст не обрезается</span>
+            </div>
+            {fileNotice && <p className="mt-2 text-xs text-success">{fileNotice}</p>}
           </div>
 
           <MysteryModeToggle enabled={mysteryMode} onChange={setMysteryMode} />
@@ -518,14 +664,7 @@ export function TextDnaModal({ open, onClose, onApply }: Props) {
             </button>
             <button type="button" onClick={() => void handleGenerate()} disabled={!source.trim() || operationRef.current} className="inline-flex min-h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-on-accent hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 sm:flex-[2]">
               <FileText size={17} />
-              <span>
-                {taskRef.current &&
-                (taskRef.current.evidence.length > 0 ||
-                  taskRef.current.index ||
-                  Object.keys(taskRef.current.cards).length > 0)
-                  ? "Продолжить обработку"
-                  : "Извлечь и подготовить"}
-              </span>
+              <span>Извлечь и подготовить</span>
             </button>
           </div>
         </div>
@@ -536,7 +675,7 @@ export function TextDnaModal({ open, onClose, onApply }: Props) {
           <Loader2 size={35} className="animate-spin text-accent" aria-hidden="true" />
           <p className="text-base font-semibold text-zinc-100">{workingLabel}</p>
           <p className="max-w-lg text-sm leading-relaxed text-content-secondary">
-            Исходный текст остаётся в поле ввода. При большом объёме сервис сначала строит карту имён, фактов, отношений и секций, затем сводит её в типизированные данные.
+            Полный исходный текст отправляется одним structured-JSON запросом. Промежуточные фрагменты и частичные данные не сохраняются; при технической ошибке повтор проверяет только ответ модели.
           </p>
           <p className="text-xs text-content-muted">{source.length.toLocaleString("ru-RU")} символов · частичные данные не сохраняются</p>
         </div>
@@ -549,8 +688,8 @@ export function TextDnaModal({ open, onClose, onApply }: Props) {
               <p className="text-xs font-semibold uppercase tracking-wider text-accent">Предпросмотр импорта</p>
               <h3 className="mt-1 text-xl font-bold text-zinc-100">Данные извлечены без сохранения</h3>
               <p className="mt-1 text-xs text-content-muted">
-                {result.sourceLength.toLocaleString("ru-RU")} символов · {result.sourceSections.length} секц.
-                {result.corrected ? " · ответ модели исправлен повторным запросом" : ""}
+                {result.sourceLength.toLocaleString("ru-RU")} символов · полный источник
+                {result.corrected ? " · ответ модели исправлен техническим повтором" : ""}
               </p>
             </div>
             <span className="inline-flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-1 text-[11px] font-medium text-success">

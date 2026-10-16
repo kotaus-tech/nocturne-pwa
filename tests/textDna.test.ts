@@ -1,22 +1,22 @@
 import "fake-indexeddb/auto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { db, sanitizeCharacter } from "../src/db";
-import { DEFAULT_STATS } from "../src/types";
-import { createGroupSession, createSession } from "../src/utils/sessionActions";
+import { createSession } from "../src/utils/sessionActions";
 import {
   createTextDnaTask,
   extractTextDna,
   isTextDnaTaskCompatible,
-  TEXT_DNA_CARD_BATCH_CHARS,
-  TEXT_DNA_INDEX_BATCH_CHARS,
-  TEXT_DNA_INDEX_INPUT_MAX_CHARS,
-  prepareTextDnaPayload,
   splitTextForTextDna,
   validateTextDnaPayload,
   type TextDnaGroupPayload,
   type TextDnaSinglePayload,
 } from "../src/services/textDna";
-import type { ApiConfig, Character } from "../src/types";
+import {
+  isTextDnaTextFile,
+  readTextDnaFile,
+  toggleTextDnaSourceVisibility,
+} from "../src/utils/textDnaFile";
+import type { ApiConfig } from "../src/types";
 
 const apiConfig: ApiConfig = {
   mode: "openai",
@@ -29,10 +29,7 @@ const apiConfig: ApiConfig = {
 
 function responseFor(
   value: unknown,
-  options: {
-    finishReason?: string;
-    usage?: Record<string, number>;
-  } = {}
+  options: { finishReason?: string; usage?: Record<string, number> } = {}
 ): Response {
   const content = typeof value === "string" ? value : JSON.stringify(value);
   return new Response(
@@ -53,6 +50,7 @@ function characterPayload(name: string, key?: string) {
   return {
     ...(key ? { key } : {}),
     name,
+    aliases: name === "Мира" ? ["Мир", "Архивистка"] : [],
     tagline: "сохранённая подпись",
     age: "29",
     genre: "неонуар",
@@ -66,18 +64,16 @@ function characterPayload(name: string, key?: string) {
     systemPrompt: "Не раскрывай секрет без естественного повода. Говори короткими фразами.",
     firstMessage: "*Закрывает папку.* — Ты пришёл раньше.",
     alternateGreetings: ["— Я ждала этого разговора."],
-    initialStats: { ...DEFAULT_STATS, trust: 21 },
+    initialStats: { trust: 21, affection: 30, closeness: 20, tension: 10, conflict: 0, statusTitle: "Знакомство" },
     lorebook: [{ keys: ["архив"], content: "В архиве лежит письмо, которого никто не должен найти." }],
     preservedMaterial: ["Авторское правило: не решай за игрока и не сглаживай противоречия."],
   };
 }
 
-function singlePayload(
-  sectionIds: Array<{ id: string; start: number; end: number }>
-): TextDnaSinglePayload {
+function singleResponse(): TextDnaSinglePayload {
   return {
     mode: "single",
-    character: characterPayload("Мира") as TextDnaSinglePayload["character"],
+    character: characterPayload("Мира"),
     session: {
       title: "Ночной архив",
       summary: "Встреча в архиве после полуночи.",
@@ -85,38 +81,17 @@ function singlePayload(
       preservedMaterial: ["Дословная инструкция сцены: оставляй игроку право выбора."],
     },
     preservedMaterial: ["Фрагмент, который нельзя было разложить по полям."],
-    coverage: sectionIds.map((section) => ({
-      sectionId: section.id,
-      sourceStart: section.start,
-      sourceEnd: section.end,
-      retainedFacts: ["имя", "событие", "правило"],
-    })),
+    // Это поле намеренно отсутствует в настоящем LLM-ответе в тестах direct flow.
+    coverage: [],
   };
 }
 
-function semanticSinglePayload(
-  sectionCount = 1
-): Omit<TextDnaSinglePayload, "coverage"> & {
-  coverage: Array<{ retainedFacts: string[] }>;
-} {
-  const payload = singlePayload(
-    Array.from({ length: sectionCount }, (_, index) => ({
-      id: `source-${index + 1}`,
-      start: index * 10,
-      end: (index + 1) * 10,
-    }))
-  );
-  return {
-    ...payload,
-    coverage: Array.from({ length: sectionCount }, (_, index) => ({
-      retainedFacts: [`semantic fact ${index + 1}`],
-    })),
-  };
+function modelSingleResponse(): Omit<TextDnaSinglePayload, "coverage"> {
+  const { coverage: _coverage, ...withoutCoverage } = singleResponse();
+  return withoutCoverage;
 }
 
-function groupPayload(
-  sectionIds: Array<{ id: string; start: number; end: number }>
-): TextDnaGroupPayload {
+function groupResponse(): Omit<TextDnaGroupPayload, "coverage"> {
   return {
     mode: "group",
     scene: {
@@ -134,89 +109,13 @@ function groupPayload(
       characterPayload("Мира", "mira"),
       characterPayload("Илья", "ilya"),
       characterPayload("Соня", "sonya"),
-    ] as TextDnaGroupPayload["characters"],
+    ],
     relations: [
-      { fromKey: "mira", toKey: "ilya", text: "Мира считает, что Илья спрятал письмо; Илья уверен, что она ошибается." },
-      { fromKey: "ilya", toKey: "sonya", text: "Илья не знает, что Соня уже видела печать раньше." },
+      { fromKey: "mira", toKey: "ilya", text: "Мира считает, что Илья спрятал письмо." },
+      { fromKey: "ilya", toKey: "sonya", text: "Илья не знает, что Соня уже видела печать." },
     ],
-    preservedMaterial: ["Деталь сцены: Соня знает правду, но считает это только своей догадкой."],
-    coverage: sectionIds.map((section) => ({
-      sectionId: section.id,
-      sourceStart: section.start,
-      sourceEnd: section.end,
-      retainedFacts: ["состав", "отношение", "секрет"],
-    })),
+    preservedMaterial: ["Соня знает правду, но считает это только своей догадкой."],
   };
-}
-
-function chunkEvidence(fact: string) {
-  return {
-    entities: [{ name: "Мира", aliases: ["она"] }],
-    evidence: [
-      {
-        subject: "Мира",
-        category: "rule",
-        text: fact,
-        sourceQuote: fact,
-      },
-    ],
-    sharedContext: ["Общая сцена сохраняет право игрока на выбор."],
-    relations: ["Мира подозревает архивиста."],
-    unmappedMaterial: ["Авторская формулировка, которую нельзя потерять."],
-  };
-}
-
-function synthesisIndex() {
-  return {
-    mode: "single",
-    character: { key: "main", name: "Мира", aliases: ["она"] },
-    session: {
-      title: "Ночной архив",
-      summary: "Встреча в архиве после полуночи.",
-      directorNotes: "Не раскрывай тайну авторским голосом.",
-      preservedMaterial: [],
-    },
-    preservedMaterial: [],
-  };
-}
-
-function cardResponse(name = "Мира") {
-  return { character: characterPayload(name) };
-}
-
-function longSource(): string {
-  return [
-    `СЕКЦИЯ А. ${"Первый факт о Мире и правило архива. ".repeat(260)}`,
-    `СЕКЦИЯ Б. ${"Второй факт о Мире, её секрет и диалог. ".repeat(260)}`,
-    `СЕКЦИЯ В. ${"Третий факт о сцене и сохранённая авторская инструкция. ".repeat(260)}`,
-  ].join("\n\n");
-}
-
-function expectedEvidenceBatchCount(
-  facts: string[],
-  sections: Array<{ id: string }>,
-  maxChars: number
-): number {
-  let batches = 0;
-  let size = 2;
-  facts.forEach((fact, index) => {
-    const item = { sectionId: sections[index].id, ...chunkEvidence(fact) };
-    const itemSize = JSON.stringify(item).length + 1;
-    if (size > 2 && size + itemSize > maxChars) {
-      batches += 1;
-      size = 2;
-    }
-    size += itemSize;
-  });
-  if (facts.length > 0) batches += 1;
-  return batches;
-}
-
-function expectedIndexBatchCount(
-  facts: string[],
-  sections: Array<{ id: string }>
-): number {
-  return expectedEvidenceBatchCount(facts, sections, TEXT_DNA_INDEX_BATCH_CHARS);
 }
 
 function mockFetchWithQueue(values: unknown[]) {
@@ -236,6 +135,10 @@ function mockFetchWithQueue(values: unknown[]) {
   });
 }
 
+function requestBody(fetchMock: ReturnType<typeof mockFetchWithQueue>, index = 0): Record<string, unknown> {
+  return JSON.parse(String(fetchMock.mock.calls[index][1]?.body)) as Record<string, unknown>;
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   await db.characters.clear();
@@ -243,314 +146,50 @@ afterEach(async () => {
   await db.messages.clear();
 });
 
-describe("Text DNA: lossless source handling", () => {
-  it("делит большой исходник без потери порядка, переводов строк и хвоста", () => {
-    const source = `${"Раздел первый. Факт и правило.\n\n".repeat(700)}ФИНАЛЬНЫЙ_ФАКТ_НЕ_ТЕРЯТЬ`;
-    const sections = splitTextForTextDna(source, 1_000);
-
-    expect(sections.length).toBeGreaterThan(1);
-    expect(sections.map((section) => section.text).join("")).toBe(source);
-    expect(sections[0].start).toBe(0);
-    expect(sections.at(-1)?.end).toBe(source.length);
-  });
-
-  it("обрабатывает длинный материал по evidence → index → отдельная карточка", async () => {
-    const source = longSource();
-    const sections = splitTextForTextDna(source);
-    const facts = sections.map((_, index) => `FACT_FROM_SECTION_${index + 1}`);
-    const fetchMock = mockFetchWithQueue([
-      ...facts.map((fact) => chunkEvidence(fact)),
-      synthesisIndex(),
-      cardResponse(),
-    ]);
+describe("Text DNA: direct full-source architecture", () => {
+  it("делает ровно один основной API-вызов для одного полного исходника", async () => {
+    const source = "UNIQUE_SOURCE_MARKER\nИмя Мира, её биография, секрет и первое сообщение.";
+    const fetchMock = mockFetchWithQueue([modelSingleResponse()]);
 
     const result = await extractTextDna(apiConfig, source, "single");
 
-    expect(fetchMock).toHaveBeenCalledTimes(sections.length + 2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(result.sourceLength).toBe(source.length);
-    expect(result.sourceSections).toHaveLength(sections.length);
-    expect(result.prepared.mode).toBe("single");
-    if (result.prepared.mode === "single") {
-      expect(result.prepared.directorNotes).toContain("FACT_FROM_SECTION_1");
-      expect(result.prepared.directorNotes).toContain(`FACT_FROM_SECTION_${sections.length}`);
-    }
+    expect(result.sourceSections).toEqual([{ id: "source-1", start: 0, end: source.length }]);
+    const serializedRequest = JSON.stringify(requestBody(fetchMock));
+    expect(serializedRequest.match(/UNIQUE_SOURCE_MARKER/g)).toHaveLength(1);
   });
-});
 
-describe("Text DNA: coverage belongs to the client", () => {
-  it("восстанавливает все пустые sectionId по точным диапазонам", () => {
-    const source = "A".repeat(21_000);
-    const sections = splitTextForTextDna(source);
-    const payload = singlePayload(sections).coverage.map((item) => ({
-      ...item,
-      sectionId: "",
-    }));
-    const checked = validateTextDnaPayload(
-      { ...singlePayload(sections), coverage: payload },
-      "single",
-      sections
+  it("отправляет компактную схему без coverage/evidence/index и строит coverage на клиенте", async () => {
+    const source = "Короткий материал о Мире.";
+    const fetchMock = mockFetchWithQueue([modelSingleResponse()]);
+    const result = await extractTextDna(apiConfig, source, "single");
+    const body = requestBody(fetchMock);
+    const prompt = JSON.stringify(body);
+
+    expect(prompt).not.toContain('"coverage"');
+    expect(prompt).not.toContain('"evidence"');
+    expect(prompt).not.toContain('"index"');
+    expect(result.payload.coverage).toHaveLength(1);
+    expect(result.payload.coverage[0].sourceStart).toBe(0);
+    expect(result.payload.coverage[0].sourceEnd).toBe(source.length);
+  });
+
+  it("сохраняет имена, алиасы, карточку, секреты, правила, диалоги, лорбук и дополнительные сведения", async () => {
+    mockFetchWithQueue([modelSingleResponse()]);
+
+    const result = await extractTextDna(
+      apiConfig,
+      "Материал с противоречием версии возраста и авторским правилом.",
+      "single"
     );
 
-    expect(checked.ok).toBe(true);
-    if (checked.ok) {
-      expect(checked.payload.coverage.map((item) => item.sectionId)).toEqual(
-        sections.map((section) => section.id)
-      );
-    }
-  });
-
-  it("принимает semantic coverage без технических id и offsets", () => {
-    const source = "Короткий исходный материал.";
-    const sections = splitTextForTextDna(source);
-    const checked = validateTextDnaPayload(
-      semanticSinglePayload(sections.length),
-      "single",
-      sections
-    );
-
-    expect(checked.ok).toBe(true);
-    if (checked.ok) {
-      expect(checked.payload.coverage[0]).toEqual({
-        sectionId: sections[0].id,
-        sourceStart: sections[0].start,
-        sourceEnd: sections[0].end,
-        retainedFacts: ["semantic fact 1"],
-      });
-    }
-  });
-
-  it("отвергает отсутствующую запись покрытия", () => {
-    const source = "A".repeat(21_000);
-    const sections = splitTextForTextDna(source);
-    const payload = singlePayload(sections);
-    payload.coverage = payload.coverage.slice(0, -1);
-
-    const checked = validateTextDnaPayload(payload, "single", sections);
-
-    expect(checked.ok).toBe(false);
-    if (!checked.ok) expect(checked.issues.join(" ")).toMatch(/неполное|отсутствует/i);
-  });
-
-  it("отвергает неизвестный id, дубликат и неполный диапазон", () => {
-    const sections = splitTextForTextDna("A".repeat(21_000));
-    const payload = singlePayload(sections);
-    payload.coverage[0].sectionId = "alien-section";
-    payload.coverage[1].sectionId = sections[0].id;
-    payload.coverage[1].sourceEnd = sections[1].end - 1;
-
-    const checked = validateTextDnaPayload(payload, "single", sections);
-
-    expect(checked.ok).toBe(false);
-    if (!checked.ok) {
-      const issues = checked.issues.join(" ");
-      expect(issues).toMatch(/неизвестная|повтор|диапазон/i);
-    }
-  });
-
-  it("не теряет связи, scene и отдельные карточки группы", () => {
-    const payload = groupPayload([{ id: "source-1", start: 0, end: 10 }]);
-    const prepared = prepareTextDnaPayload(payload);
-
-    expect(prepared.mode).toBe("group");
-    if (prepared.mode !== "group") throw new Error("expected group");
-    expect(prepared.characters).toHaveLength(3);
-    expect(prepared.relations).toHaveLength(2);
-    expect(prepared.relations[0].from).toBe(prepared.characters[0].id);
-    expect(prepared.relations[0].to).toBe(prepared.characters[1].id);
-    expect(prepared.directorNotes).toContain("ПОЛНЫЕ ОТНОШЕНИЯ");
-  });
-});
-
-describe("Text DNA: finish reason, JSON correction and diagnostics", () => {
-  it("различает оборванный output по finish_reason и не делает correction", async () => {
-    const source = "Имя Мира и её первое сообщение.";
-    const fetchMock = mockFetchWithQueue([
-      ['{"mode":"single","character":', { finishReason: "length", usage: { prompt_tokens: 100, completion_tokens: 6000, total_tokens: 6100 } }],
-    ]);
-
-    await expect(extractTextDna(apiConfig, source, "single")).rejects.toMatchObject({
-      kind: "output_limit",
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(await db.characters.count()).toBe(0);
-  });
-
-  it("делает один компактный correction для повреждённого, но завершённого JSON", async () => {
-    const source = "Имя Мира и её первое сообщение.";
-    const fetchMock = mockFetchWithQueue([
-      '{"mode":"single",}',
-      semanticSinglePayload(),
-    ]);
-
-    const result = await extractTextDna(apiConfig, source, "single");
-
-    expect(result.corrected).toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const firstBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
-    const secondBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
-    expect(secondBody.messages).toHaveLength(1);
-    expect(secondBody.messages[0].content).toContain("Краткая ожидаемая схема");
-    expect(secondBody.messages[0].content).not.toContain(source);
-    expect(JSON.stringify(secondBody).length).toBeLessThan(JSON.stringify(firstBody).length);
-  });
-
-  it("не скрывает неудачу, если обе попытки финального этапа неуспешны", async () => {
-    const source = "Имя Мира и её первое сообщение.";
-    const fetchMock = mockFetchWithQueue(["не JSON", "снова не JSON"]);
-
-    await expect(extractTextDna(apiConfig, source, "single")).rejects.toMatchObject({
-      kind: "no_json",
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(await db.characters.count()).toBe(0);
-    expect(await db.sessions.count()).toBe(0);
-  });
-
-  it("отличает отказ провайдера от ошибки JSON и не делает correction", async () => {
-    const source = "Имя Мира и её первое сообщение.";
-    const fetchMock = mockFetchWithQueue([["", { finishReason: "content_filter" }]]);
-
-    await expect(extractTextDna(apiConfig, source, "single")).rejects.toMatchObject({
-      kind: "provider",
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("не применяет неподдерживаемый состав группы и не просит модель молча обрезать его", async () => {
-    const source = "Мира, Илья, Соня, Лев и Ника действуют вместе.";
-    const tooMany = {
-      mode: "group",
-      scene: {},
-      characters: ["Мира", "Илья", "Соня", "Лев", "Ника"].map((name, index) => ({
-        key: `c${index}`,
-        name,
-        aliases: [],
-      })),
-      relations: [],
-      preservedMaterial: [],
-      coverage: [{ retainedFacts: ["состав"] }],
-    };
-    const fetchMock = mockFetchWithQueue([tooMany]);
-
-    await expect(extractTextDna(apiConfig, source, "group")).rejects.toMatchObject({
-      kind: "schema",
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(await db.characters.count()).toBe(0);
-    expect(await db.sessions.count()).toBe(0);
-  });
-
-  it("не дублирует большой payload в correction длинного этапа", async () => {
-    const source = longSource();
-    const sections = splitTextForTextDna(source);
-    const largeFact = "UNIQUE_LARGE_SOURCE_FACT_" + "x".repeat(2_000);
-    const fetchMock = mockFetchWithQueue([
-      ...sections.map(() => chunkEvidence(largeFact)),
-      { mode: "wrong" },
-      { mode: "wrong" },
-    ]);
-
-    await expect(extractTextDna(apiConfig, source, "single")).rejects.toMatchObject({
-      kind: "schema",
-    });
-    const firstIndexBody = JSON.parse(String(fetchMock.mock.calls[sections.length][1]?.body));
-    const correctionBody = JSON.parse(String(fetchMock.mock.calls[sections.length + 1][1]?.body));
-    const correctionText = JSON.stringify(correctionBody);
-    expect(JSON.stringify(firstIndexBody)).toContain(largeFact);
-    expect(correctionText).not.toContain(largeFact);
-    expect(correctionText.length).toBeLessThan(JSON.stringify(firstIndexBody).length);
-  });
-});
-
-describe("Text DNA: resumable long task", () => {
-  it("после сбоя index повторяет только index и карточку, а не секции", async () => {
-    const source = longSource();
-    const sections = splitTextForTextDna(source);
-    const task = createTextDnaTask(source, "single");
-    const fetchMock = mockFetchWithQueue([
-      ...sections.map((_, index) => chunkEvidence(`cached-fact-${index + 1}`)),
-      { mode: "wrong" },
-      { mode: "wrong" },
-    ]);
-
-    await expect(extractTextDna(apiConfig, source, "single", { task })).rejects.toMatchObject({
-      kind: "schema",
-    });
-    expect(task.evidence).toHaveLength(sections.length);
-    expect(task.index).toBeUndefined();
-
-    fetchMock.mockImplementationOnce(async () => responseFor(synthesisIndex()));
-    fetchMock.mockImplementationOnce(async () => responseFor(cardResponse()));
-    const resumed = await extractTextDna(apiConfig, source, "single", { task });
-
-    expect(fetchMock).toHaveBeenCalledTimes(sections.length + 4);
-    expect(resumed.prepared.mode).toBe("single");
-    expect(task.evidence).toHaveLength(sections.length);
-  });
-
-  it("интервально сводит большой evidence, не отправляя его целиком в каждый этап", async () => {
-    const source = longSource();
-    const sections = splitTextForTextDna(source);
-    const facts = sections.map((_, index) => `BATCH_FACT_${index}_${"x".repeat(16_000)}`);
-    const indexBatches = expectedIndexBatchCount(facts, sections);
-    const cardBatches = expectedEvidenceBatchCount(facts, sections, TEXT_DNA_CARD_BATCH_CHARS);
-    expect(JSON.stringify(facts).length).toBeGreaterThan(TEXT_DNA_INDEX_INPUT_MAX_CHARS);
-
-    const fetchMock = mockFetchWithQueue([
-      ...facts.map((fact) => chunkEvidence(fact)),
-      ...Array.from({ length: indexBatches }, () => synthesisIndex()),
-      synthesisIndex(),
-      ...Array.from({ length: cardBatches }, () => cardResponse()),
-      cardResponse(),
-    ]);
-
-    const result = await extractTextDna(apiConfig, source, "single");
-
-    expect(fetchMock).toHaveBeenCalledTimes(
-      sections.length + indexBatches + 1 + cardBatches + 1
-    );
     if (result.prepared.mode !== "single") throw new Error("expected single");
-    expect(result.prepared.directorNotes).toContain("BATCH_FACT_0");
-    expect(result.prepared.directorNotes).toContain(`BATCH_FACT_${facts.length - 1}`);
-  });
-
-  it("инвалидирует кэш при изменении исходника или режима", () => {
-    const source = longSource();
-    const task = createTextDnaTask(source, "single");
-
-    expect(isTextDnaTaskCompatible(task, source, "single")).toBe(true);
-    expect(isTextDnaTaskCompatible(task, `${source}!`, "single")).toBe(false);
-    expect(isTextDnaTaskCompatible(task, source, "group")).toBe(false);
-  });
-
-  it("сохраняет уникальные факты всех секций в итоговом ledger", async () => {
-    const source = longSource();
-    const sections = splitTextForTextDna(source);
-    const facts = sections.map((_, index) => `UNIQUE_FACT_${index + 1}`);
-    mockFetchWithQueue([
-      ...facts.map((fact) => chunkEvidence(fact)),
-      synthesisIndex(),
-      cardResponse(),
-    ]);
-
-    const result = await extractTextDna(apiConfig, source, "single");
-    if (result.prepared.mode !== "single") throw new Error("expected single");
-    for (const fact of facts) expect(result.prepared.directorNotes).toContain(fact);
-    expect(result.payload.coverage).toHaveLength(sections.length);
-    expect(result.payload.coverage.every((item) => item.retainedFacts.length > 0)).toBe(true);
-  });
-});
-
-describe("Text DNA: atomic application and no partial persistence", () => {
-  it("переносит факты, секрет, правила, лорбук и исходное приветствие в Character", async () => {
-    const source = "Имя Мира. Большая карточка с правилами, биографией и первым сообщением.";
-    mockFetchWithQueue([singlePayload(splitTextForTextDna(source))]);
-
-    const result = await extractTextDna(apiConfig, source, "single");
-    if (result.prepared.mode !== "single") throw new Error("expected single");
-
+    expect(result.payload.mode).toBe("single");
+    if (result.payload.mode !== "single") throw new Error("expected single payload");
+    expect(result.payload.character.aliases).toEqual(["Мир", "Архивистка"]);
     expect(result.prepared.character.name).toBe("Мира");
-    expect(result.prepared.character.systemPrompt).toContain("Не раскрывай секрет");
+    expect(result.prepared.character.systemPrompt).toContain("Альтернативные имена");
     expect(result.prepared.character.systemPrompt).toContain("не сглаживай противоречия");
     expect(result.prepared.character.firstMessage).toContain("Ты пришёл раньше");
     expect(result.prepared.character.alternateGreetings?.[0]).toContain("Я ждала");
@@ -558,75 +197,168 @@ describe("Text DNA: atomic application and no partial persistence", () => {
     expect(result.prepared.directorNotes).toContain("право выбора");
   });
 
-  it("не создаёт персонажей и сессии при любом неуспешном извлечении", async () => {
-    const source = "Имя Мира и её первое сообщение.";
-    mockFetchWithQueue(["не JSON", "снова не JSON"]);
+  it("обрабатывает group одним вызовом и сохраняет отдельные knowledge boundaries в карточках/сцене", async () => {
+    const source = "Мира, Илья и Соня встречаются в архиве; каждый знает разную часть истории.";
+    const fetchMock = mockFetchWithQueue([groupResponse()]);
 
-    await expect(extractTextDna(apiConfig, source, "single")).rejects.toThrow();
+    const result = await extractTextDna(apiConfig, source, "group");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.prepared.mode).toBe("group");
+    if (result.prepared.mode !== "group") throw new Error("expected group");
+    expect(result.prepared.characters).toHaveLength(3);
+    expect(result.prepared.relations).toHaveLength(2);
+    expect(result.prepared.summary).toContain("Закрытый городской архив");
+    expect(result.prepared.directorNotes).toContain("Соня знает правду");
+    expect(result.prepared.characters[0].systemPrompt).toContain("Альтернативные имена");
+  });
+
+  it("не делит большие и маленькие тексты на платные стадии: один запрос получает source целиком", async () => {
+    const small = "SMALL_SOURCE_MARKER";
+    const smallFetch = mockFetchWithQueue([modelSingleResponse()]);
+    await extractTextDna(apiConfig, small, "single");
+    expect(smallFetch).toHaveBeenCalledTimes(1);
+
+    const large = `${"LARGE_SOURCE_MARKER\n"}${"Подтверждённый факт. ".repeat(25_000)}`;
+    const largeFetch = mockFetchWithQueue([modelSingleResponse()]);
+    const largeResult = await extractTextDna(apiConfig, large, "single");
+    expect(largeFetch).toHaveBeenCalledTimes(1);
+    expect(largeResult.sourceLength).toBe(large.length);
+    expect(JSON.stringify(requestBody(largeFetch)).match(/LARGE_SOURCE_MARKER/g)).toHaveLength(1);
+  });
+
+  it("не дублирует полный исходник в техническом correction", async () => {
+    const source = "CORRECTION_SOURCE_MARKER\nМира и её полная история.";
+    const invalid = { mode: "single", character: {}, session: {}, preservedMaterial: [] };
+    const fetchMock = mockFetchWithQueue([invalid, modelSingleResponse()]);
+
+    const result = await extractTextDna(apiConfig, source, "single");
+
+    expect(result.corrected).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(requestBody(fetchMock, 0)).match(/CORRECTION_SOURCE_MARKER/g)).toHaveLength(1);
+    expect(JSON.stringify(requestBody(fetchMock, 1))).not.toContain("CORRECTION_SOURCE_MARKER");
+  });
+
+  it("отличает output limit и не пытается признать обрезанный JSON успешным", async () => {
+    const fetchMock = mockFetchWithQueue([["{\"mode\":\"single\"", { finishReason: "length" }]]);
+
+    await expect(extractTextDna(apiConfig, "OUTPUT_LIMIT_SOURCE", "single")).rejects.toMatchObject({
+      kind: "output_limit",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("не сохраняет ничего при неуспешном JSON или schema validation", async () => {
+    const fetchMock = mockFetchWithQueue(["не JSON", "снова не JSON"]);
+
+    await expect(extractTextDna(apiConfig, "NO_JSON_SOURCE", "single")).rejects.toMatchObject({
+      kind: "no_json",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(await db.characters.count()).toBe(0);
     expect(await db.sessions.count()).toBe(0);
     expect(await db.messages.count()).toBe(0);
   });
 
-  it("создаёт одиночный чат с mysteryMode до первого отображения", async () => {
-    const character = sanitizeCharacter({
-      id: "text-single",
-      name: "Мира",
-      firstMessage: "— Ты пришёл.",
-      initialStats: { ...DEFAULT_STATS },
-    });
+  it("передаёт успешный результат в атомарное сохранение Character и mystery session", async () => {
+    mockFetchWithQueue([modelSingleResponse()]);
+    const result = await extractTextDna(apiConfig, "PERSISTENCE_SOURCE", "single");
+    if (result.prepared.mode !== "single") throw new Error("expected single");
 
-    const session = await createSession(character, "Ночной архив", {
+    const character = sanitizeCharacter(result.prepared.character);
+    const session = await createSession(character, result.prepared.title, {
       persistCharacter: character,
       mysteryMode: true,
+      summary: result.prepared.summary,
+      directorNotes: result.prepared.directorNotes,
     });
 
     expect(session.mysteryMode).toBe(true);
-    expect(session.showRelationshipToasts).toBe(false);
     expect(await db.characters.get(character.id)).toBeTruthy();
     expect(await db.messages.where("sessionId").equals(session.id).count()).toBe(1);
   });
 
-  it("оставляет обычную новую сессию без глобального режима тайны", async () => {
-    const character = sanitizeCharacter({
-      id: "text-ordinary",
-      name: "Мира",
-      firstMessage: "— Обычное начало.",
-      initialStats: { ...DEFAULT_STATS },
+  it("не обрезает неподдерживаемую группу молча и не делает второй платный запрос", async () => {
+    const tooMany = {
+      mode: "group",
+      scene: {},
+      characters: ["Мира", "Илья", "Соня", "Лев", "Ника"].map((name, index) => ({
+        ...characterPayload(name, `c${index}`),
+      })),
+      relations: [],
+      preservedMaterial: [],
+    };
+    const fetchMock = mockFetchWithQueue([tooMany]);
+
+    await expect(extractTextDna(apiConfig, "TOO_MANY_SOURCE", "group")).rejects.toMatchObject({
+      kind: "schema",
     });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
 
-    const session = await createSession(character, undefined, { persistCharacter: character });
+describe("Text DNA: client metadata and in-memory task", () => {
+  it("сохраняет полный source в lossless utility, но task использует один full-source range", () => {
+    const source = `${"Раздел. Факт и правило.\n\n".repeat(700)}TAIL_MUST_SURVIVE`;
+    const sections = splitTextForTextDna(source, 1_000);
+    expect(sections.length).toBeGreaterThan(1);
+    expect(sections.map((section) => section.text).join("")).toBe(source);
+    expect(sections[0].start).toBe(0);
+    expect(sections.at(-1)?.end).toBe(source.length);
 
-    expect(session.mysteryMode).toBeUndefined();
-    expect(session.showRelationshipToasts).toBeUndefined();
+    const task = createTextDnaTask(source, "single");
+    expect(task.sections).toHaveLength(1);
+    expect(task.sections[0]).toMatchObject({ id: "source-1", start: 0, end: source.length });
+    expect(isTextDnaTaskCompatible(task, source, "single")).toBe(true);
+    expect(isTextDnaTaskCompatible(task, `${source}!`, "single")).toBe(false);
+    expect(isTextDnaTaskCompatible(task, source, "group")).toBe(false);
   });
 
-  it("создаёт групповую тайную сцену со всеми участниками и отношениями", async () => {
-    const cast: Character[] = ["Мира", "Илья", "Соня"].map((name, index) =>
-      sanitizeCharacter({
-        id: `text-${index}`,
-        name,
-        firstMessage: `— Я ${name}.`,
-        initialStats: { ...DEFAULT_STATS },
-      })
+  it("принимает direct JSON без технического coverage и строго проверяет переданный coverage", () => {
+    const source = "Мира и её сцена.";
+    const sections = createTextDnaTask(source, "single").sections;
+    const direct = validateTextDnaPayload(modelSingleResponse(), "single", sections);
+    expect(direct.ok).toBe(true);
+    if (direct.ok) expect(direct.payload.coverage[0].sectionId).toBe("source-1");
+
+    const broken = validateTextDnaPayload(
+      { ...modelSingleResponse(), coverage: [{ sectionId: "foreign", retainedFacts: ["x"] }] },
+      "single",
+      sections
     );
-    const relations = [
-      { id: "r1", from: cast[0].id, to: cast[1].id, text: "Мира подозревает Илью.", updatedAt: Date.now() },
-      { id: "r2", from: cast[1].id, to: cast[2].id, text: "Илья скрывает от Сони правду.", updatedAt: Date.now() },
-    ];
+    expect(broken.ok).toBe(false);
+  });
+});
 
-    const session = await createGroupSession(cast[0], [cast[1], cast[2]], {
-      opening: "*Лампа мерцает.*",
-      relations,
-      persistCharacters: cast,
-      mysteryMode: true,
-    });
+describe("Text DNA: TXT input helpers", () => {
+  it("принимает .txt с пустым MIME и отклоняет другие расширения", async () => {
+    const valid = { name: "material.TXT", text: async () => "полный текст\nс переносом" } as unknown as File;
+    const invalid = { name: "material.json", text: async () => "{}" } as unknown as File;
 
-    expect(session.mysteryMode).toBe(true);
-    expect(session.showRelationshipToasts).toBe(false);
-    expect(session.characterIds).toEqual([cast[1].id, cast[2].id]);
-    expect(session.relations).toHaveLength(2);
-    expect(await db.characters.count()).toBe(3);
-    expect((await db.messages.where("sessionId").equals(session.id).first())?.swipes[0]).toContain("Лампа");
+    expect(isTextDnaTextFile(valid)).toBe(true);
+    expect(isTextDnaTextFile(invalid)).toBe(false);
+    await expect(readTextDnaFile(valid)).resolves.toBe("полный текст\nс переносом");
+    await expect(readTextDnaFile(invalid)).rejects.toThrow(/только.*\.txt/i);
+  });
+
+  it("не теряет ошибки чтения и не подменяет их тихим пустым результатом", async () => {
+    const broken = {
+      name: "broken.txt",
+      text: async () => {
+        throw new Error("read failed");
+      },
+    } as unknown as File;
+
+    await expect(readTextDnaFile(broken)).rejects.toThrow(/не удалось прочитать/i);
+  });
+
+  it("скрывает и показывает многострочный source без его очистки или изменения", () => {
+    const source = "строка один\n\nстрока два\nсекрет и диалог";
+    const hidden = toggleTextDnaSourceVisibility({ source, visible: true });
+    const shown = toggleTextDnaSourceVisibility(hidden);
+
+    expect(hidden).toEqual({ source, visible: false });
+    expect(shown).toEqual({ source, visible: true });
   });
 });

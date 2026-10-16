@@ -35,8 +35,12 @@ export type TextDnaMode = "single" | "group";
 export const TEXT_DNA_CHUNK_CHARS = 10_000;
 /** Одна основная генерация и не более одного технического correction. */
 export const TEXT_DNA_MAX_ATTEMPTS = 2;
-/** Компактный итоговый JSON; лимит не увеличивается вместо исправления алгоритма. */
-export const TEXT_DNA_OUTPUT_TOKENS = 6_000;
+/**
+ * Лимит полного direct-ответа TextDNA. Он совпадает с целевым лимитом
+ * GroupDNA V2 по порядку величины, но остаётся стандартным 8192-token ceiling
+ * для провайдеров, где это значение поддерживается.
+ */
+export const TEXT_DNA_OUTPUT_TOKENS = 8_192;
 /** Correction переносит только короткий предыдущий ответ, не исходный текст. */
 export const TEXT_DNA_CORRECTION_MAX_CHARS = 18_000;
 

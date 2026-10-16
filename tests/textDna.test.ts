@@ -156,8 +156,10 @@ describe("Text DNA: direct full-source architecture", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(result.sourceLength).toBe(source.length);
     expect(result.sourceSections).toEqual([{ id: "source-1", start: 0, end: source.length }]);
-    const serializedRequest = JSON.stringify(requestBody(fetchMock));
+    const firstBody = requestBody(fetchMock);
+    const serializedRequest = JSON.stringify(firstBody);
     expect(serializedRequest.match(/UNIQUE_SOURCE_MARKER/g)).toHaveLength(1);
+    expect(firstBody.max_tokens).toBe(8_192);
   });
 
   it("отправляет компактную схему без coverage/evidence/index и строит coverage на клиенте", async () => {

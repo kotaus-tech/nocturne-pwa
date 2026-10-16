@@ -1,4 +1,4 @@
-const ALLOWED_HOSTS = new Set(["api.ru-openrouter.ru", "polza.ai"]);
+const ALLOWED_HOSTS = new Set(["api.ru-openrouter.ru", "polza.ai", "tooken.club"]);
 
 function corsHeaders(request: Request): Headers {
   const headers = new Headers({
